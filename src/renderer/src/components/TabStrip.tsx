@@ -1,18 +1,27 @@
 import { useCallback, useRef } from 'react'
+import { CloseIcon, DiffIcon, FileIcon, GlobeIcon, TerminalIcon } from '../icons'
 import { nextTabId, useActiveWorkspace, useApp, useTabs } from '../store'
 import type { Tab } from '@shared/types'
 
-const ICONS: Record<Tab['kind'], string> = {
-  terminal: '❯',
-  editor: '◧',
-  diff: '±',
-  browser: '◎'
+function TabIcon({ kind }: { kind: Tab['kind'] }): React.ReactElement {
+  switch (kind) {
+    case 'terminal':
+      return <TerminalIcon size={13} />
+    case 'editor':
+      return <FileIcon size={13} />
+    case 'diff':
+      return <DiffIcon size={13} />
+    case 'browser':
+      return <GlobeIcon size={13} />
+  }
 }
 
 export function TabStrip(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const tabs = useTabs()
-  const activeId = useApp((s) => (s.activeWorkspaceId ? s.activeTabByWorkspace[s.activeWorkspaceId] : null))
+  const activeId = useApp((s) =>
+    s.activeWorkspaceId ? s.activeTabByWorkspace[s.activeWorkspaceId] : null
+  )
   const setActiveTab = useApp((s) => s.setActiveTab)
   const closeTab = useApp((s) => s.closeTab)
   const openTab = useApp((s) => s.openTab)
@@ -23,106 +32,63 @@ export function TabStrip(): React.ReactElement {
   const addTerminal = useCallback(() => {
     if (!workspace) return
     openTab(workspace.id, {
-      id: nextTabId(),
-      kind: 'terminal',
-      title: 'terminal',
-      pinned: false,
-      windowId: null,
-      paneId: null
+      id: nextTabId(), kind: 'terminal', title: 'terminal', pinned: false,
+      windowId: null, paneId: null
     })
   }, [openTab, workspace])
 
   const addBrowser = useCallback(() => {
     if (!workspace) return
     openTab(workspace.id, {
-      id: nextTabId(),
-      kind: 'browser',
-      title: 'new tab',
-      pinned: false,
-      url: 'https://www.google.com',
-      viewId: '',
-      canGoBack: false,
-      canGoForward: false,
-      loading: false,
-      faviconDataUrl: null
+      id: nextTabId(), kind: 'browser', title: 'new tab', pinned: false,
+      url: 'https://www.google.com', viewId: '',
+      canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null
     })
   }, [openTab, workspace])
 
-  if (!workspace) return <div style={{ height: 'var(--tabstrip-h)', borderBottom: '1px solid var(--border)' }} />
+  if (!workspace) return <div className="tabstrip" />
 
   return (
-    <div
-      style={{
-        height: 'var(--tabstrip-h)',
-        flex: '0 0 auto',
-        display: 'flex',
-        alignItems: 'stretch',
-        background: 'var(--bg-elevated)',
-        borderBottom: '1px solid var(--border)',
-        overflowX: 'auto',
-        overflowY: 'hidden'
-      }}
-    >
-      {tabs.map((tab, i) => {
-        const active = tab.id === activeId
-        return (
-          <div
-            key={tab.id}
-            draggable
-            onDragStart={() => { dragFrom.current = i }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => {
-              if (dragFrom.current !== null) reorderTabs(workspace.id, dragFrom.current, i)
-              dragFrom.current = null
-            }}
-            onMouseDown={(e) => {
-              if (e.button === 1) { e.preventDefault(); closeTab(workspace.id, tab.id) }
-              else setActiveTab(workspace.id, tab.id)
-            }}
-            title={tabTooltip(tab)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '0 8px 0 11px',
-              minWidth: 110,
-              maxWidth: 220,
-              background: active ? 'var(--bg)' : 'transparent',
-              borderRight: '1px solid var(--border)',
-              borderTop: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
-              color: active ? 'var(--fg-bright)' : 'var(--fg-muted)',
-              cursor: 'pointer'
-            }}
+    <div className="tabstrip">
+      {tabs.map((tab, i) => (
+        <div
+          key={tab.id}
+          draggable
+          className={`tab${tab.id === activeId ? ' tab--active' : ''}`}
+          onDragStart={() => { dragFrom.current = i }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={() => {
+            if (dragFrom.current !== null) reorderTabs(workspace.id, dragFrom.current, i)
+            dragFrom.current = null
+          }}
+          onMouseDown={(e) => {
+            if (e.button === 1) { e.preventDefault(); closeTab(workspace.id, tab.id) }
+            else setActiveTab(workspace.id, tab.id)
+          }}
+          title={tabTooltip(tab)}
+        >
+          <span className="tab__icon"><TabIcon kind={tab.kind} /></span>
+          <span className="tab__label">{tab.title}</span>
+          <button
+            className="tab__close"
+            onClick={(e) => { e.stopPropagation(); closeTab(workspace.id, tab.id) }}
+            title="Close tab"
           >
-            <span style={{ fontSize: 11, opacity: 0.8 }}>{ICONS[tab.kind]}</span>
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
-              {tab.title}
-            </span>
-            <button
-              onClick={(e) => { e.stopPropagation(); closeTab(workspace.id, tab.id) }}
-              style={{ opacity: 0.6, padding: '0 2px', lineHeight: 1 }}
-              title="Close"
-            >
-              ×
-            </button>
-          </div>
-        )
-      })}
+            <CloseIcon size={11} />
+          </button>
+        </div>
+      ))}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '0 6px' }}>
-        <button onClick={addTerminal} title="New terminal" style={btn}>❯</button>
-        <button onClick={addBrowser} title="New browser tab" style={btn}>◎</button>
+      <div className="tabstrip__actions">
+        <button className="icon-button" onClick={addTerminal} title="New terminal">
+          <TerminalIcon size={14} />
+        </button>
+        <button className="icon-button" onClick={addBrowser} title="New browser tab">
+          <GlobeIcon size={14} />
+        </button>
       </div>
     </div>
   )
-}
-
-const btn: React.CSSProperties = {
-  width: 24,
-  height: 22,
-  borderRadius: 3,
-  color: 'var(--fg-muted)',
-  cursor: 'pointer'
 }
 
 function tabTooltip(tab: Tab): string {

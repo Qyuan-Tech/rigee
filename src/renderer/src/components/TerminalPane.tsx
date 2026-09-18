@@ -110,14 +110,15 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   }, [tab.id, tab.paneId, workspaceId, workspace, updateTab])
 
   return (
-    <div style={{ position: 'relative', height: '100%', background: '#141414' }}>
-      <div ref={host} style={{ position: 'absolute', inset: 0, padding: 4 }} />
+    <div style={{ position: 'relative', height: '100%', background: 'var(--bg)' }}>
+      <div ref={host} style={{ position: 'absolute', inset: 0, padding: '6px 4px 4px 8px' }} />
       {status.status !== 'connected' && <Overlay status={status} />}
     </div>
   )
 }
 
 function Overlay({ status }: { status: TmuxConnectionState }): React.ReactElement {
+  const busy = status.status === 'connecting'
   const message =
     status.status === 'connecting'
       ? 'attaching to tmux…'
@@ -128,25 +129,8 @@ function Overlay({ status }: { status: TmuxConnectionState }): React.ReactElemen
           : 'disconnected'
 
   return (
-    <div
-      style={{
-        position: 'absolute',
-        inset: 0,
-        display: 'grid',
-        placeItems: 'center',
-        background: '#141414e0',
-        // Never swallow clicks. If this ever renders over a terminal that is in fact usable,
-        // eating pointer events would stop xterm's textarea from taking focus and the terminal
-        // would look dead for a reason that has nothing to do with tmux.
-        pointerEvents: 'none',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 12,
-        color: status.status === 'connecting' ? 'var(--fg-muted)' : 'var(--git-deleted)',
-        textAlign: 'center',
-        padding: 24
-      }}
-    >
-      {message}
+    <div className={`overlay ${busy ? 'overlay--busy' : 'overlay--error'}`}>
+      <div style={{ maxWidth: 460, lineHeight: 1.7 }}>{message}</div>
     </div>
   )
 }

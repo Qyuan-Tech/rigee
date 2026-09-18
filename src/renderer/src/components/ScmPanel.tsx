@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { onEvent, rpc } from '../ipc'
+import { onEvent, isMac, rpc } from '../ipc'
+import { BranchIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
 import { nextTabId, useActiveWorkspace, useApp } from '../store'
 import type { DiffTarget, GitFileChange, RepoStatus } from '@shared/types'
 
@@ -69,9 +70,9 @@ export function ScmPanel(): React.ReactElement {
     [refresh]
   )
 
-  if (!workspace) return <Panel><Muted>No workspace open.</Muted></Panel>
+  if (!workspace) return <Panel><div className="muted">No workspace open.</div></Panel>
   if (repoRoots.length === 0) {
-    return <Panel><Muted>No git repository in this workspace.</Muted></Panel>
+    return <Panel><div className="muted">No git repository in this workspace.</div></Panel>
   }
 
   return (
@@ -79,22 +80,12 @@ export function ScmPanel(): React.ReactElement {
       {repoRoots.map((root) => {
         const status = scm[root]
         return status ? (
-          <RepoSection
-            key={root}
-            status={status}
-            multi={repoRoots.length > 1}
-            busy={busy}
-            act={act}
-          />
+          <RepoSection key={root} status={status} multi={repoRoots.length > 1} busy={busy} act={act} />
         ) : (
-          <Muted key={root}>loading {root}…</Muted>
+          <div className="muted" key={root}>reading {root.split('/').pop()}…</div>
         )
       })}
-      {error && (
-        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--git-deleted)', userSelect: 'text' }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="error-banner">{error}</div>}
     </Panel>
   )
 }
@@ -130,58 +121,53 @@ function RepoSection({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
-      <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+      <div className="scm__head">
         {multi && (
-          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 6 }}>{status.name}</div>
+          <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginBottom: 6 }}>{status.name}</div>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, fontSize: 11, color: 'var(--fg-muted)' }}>
-          <span>{status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}</span>
+
+        <div className="scm__branch">
+          <span className="scm__branch-name">
+            <BranchIcon size={12} />
+            {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
+          </span>
           {status.upstream && (status.ahead > 0 || status.behind > 0) && (
-            <span>↑{status.ahead} ↓{status.behind}</span>
+            <span className="badge">↑{status.ahead} ↓{status.behind}</span>
           )}
+          {status.stashCount > 0 && <span className="badge">stash {status.stashCount}</span>}
           {status.operation !== 'none' && (
-            <span style={{ color: 'var(--git-conflict)' }}>{status.operation.toUpperCase()}</span>
+            <span className="badge badge--warn">{status.operation}</span>
           )}
-          {status.stashCount > 0 && <span>stash {status.stashCount}</span>}
         </div>
+
         <textarea
+          className="scm__message"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(false) }
           }}
-          placeholder={`Message (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}Enter to commit)`}
+          placeholder={`Message (${isMac() ? 'Cmd' : 'Ctrl'}+Enter to commit)`}
           rows={2}
-          style={{
-            width: '100%',
-            resize: 'vertical',
-            background: 'var(--bg-input)',
-            color: 'var(--fg)',
-            border: '1px solid transparent',
-            borderRadius: 2,
-            padding: '4px 6px',
-            font: 'inherit',
-            outline: 'none',
-            userSelect: 'text'
-          }}
         />
-        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+
+        <div className="scm__buttons">
           <button
-            disabled={busy || (!message.trim() && status.staged.length === 0)}
+            className="btn btn--primary btn--block"
+            disabled={busy || !message.trim()}
             onClick={() => commit(false)}
-            style={primaryButton(busy || !message.trim())}
           >
-            Commit
+            Commit{status.staged.length > 0 ? ` ${status.staged.length}` : ''}
           </button>
-          <button disabled={busy} onClick={() => commit(true)} style={ghostButton} title="Amend the last commit">
+          <button className="btn" disabled={busy} onClick={() => commit(true)} title="Amend the last commit">
             Amend
           </button>
           {allUnstaged.length > 0 && (
             <button
+              className="btn"
               disabled={busy}
-              onClick={() => void act(() => rpc['scm:stage']({ repoRoot: root, paths: allUnstaged }))}
-              style={ghostButton}
               title="Stage everything"
+              onClick={() => void act(() => rpc['scm:stage']({ repoRoot: root, paths: allUnstaged }))}
             >
               Stage all
             </button>
@@ -189,24 +175,16 @@ function RepoSection({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {total === 0 && <Muted>No changes.</Muted>}
-        <FileGroup
-          title="Merge Changes" group="conflicts" files={status.conflicts} root={root} busy={busy} act={act}
-          against={{ kind: 'worktree-vs-head' }}
-        />
-        <FileGroup
-          title="Staged Changes" group="staged" files={status.staged} root={root} busy={busy} act={act}
-          against={{ kind: 'index-vs-head' }}
-        />
-        <FileGroup
-          title="Changes" group="unstaged" files={status.unstaged} root={root} busy={busy} act={act}
-          against={{ kind: 'worktree-vs-index' }}
-        />
-        <FileGroup
-          title="Untracked" group="untracked" files={status.untracked} root={root} busy={busy} act={act}
-          against={{ kind: 'worktree-vs-head' }}
-        />
+      <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 8 }}>
+        {total === 0 && <div className="muted">Working tree clean.</div>}
+        <FileGroup title="Merge changes" group="conflicts" files={status.conflicts} root={root}
+          busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
+        <FileGroup title="Staged" group="staged" files={status.staged} root={root}
+          busy={busy} act={act} against={{ kind: 'index-vs-head' }} />
+        <FileGroup title="Changes" group="unstaged" files={status.unstaged} root={root}
+          busy={busy} act={act} against={{ kind: 'worktree-vs-index' }} />
+        <FileGroup title="Untracked" group="untracked" files={status.untracked} root={root}
+          busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
       </div>
     </div>
   )
@@ -231,95 +209,62 @@ function FileGroup({
 }): React.ReactElement | null {
   const openTab = useApp((s) => s.openTab)
   const workspaceId = useApp((s) => s.activeWorkspaceId)
-  const [hover, setHover] = useState<string | null>(null)
   if (files.length === 0) return null
 
   const staged = group === 'staged'
 
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          height: 22,
-          padding: '0 10px',
-          fontSize: 11,
-          textTransform: 'uppercase',
-          letterSpacing: 0.4,
-          color: 'var(--fg-muted)'
-        }}
-      >
+      <div className="scm__group-header">
         <span style={{ flex: 1 }}>{title}</span>
-        <span>{files.length}</span>
+        <span className="badge">{files.length}</span>
       </div>
       {files.map((f) => {
         const letter = staged ? f.index : f.worktree !== '.' ? f.worktree : f.index
-        const showing = hover === f.path
         return (
           <div
             key={`${group}:${f.path}`}
+            className="row row--clickable"
             title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
-            onMouseEnter={() => setHover(f.path)}
-            onMouseLeave={() => setHover(null)}
             onClick={() => {
               if (!workspaceId) return
               openTab(workspaceId, {
-                id: nextTabId(),
-                kind: 'diff',
-                title: basename(f.path),
-                pinned: false,
-                filePath: f.path,
-                repoId: root,
-                against
+                id: nextTabId(), kind: 'diff', title: basename(f.path), pinned: false,
+                filePath: f.path, repoId: root, against
               })
             }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              height: 22,
-              padding: '0 10px',
-              fontSize: 12,
-              cursor: 'pointer',
-              background: showing ? 'var(--bg-hover)' : 'transparent'
-            }}
           >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {basename(f.path)}
-            </span>
-            <span style={{ flex: 1, fontSize: 11, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {dirname(f.path)}
-            </span>
+            <span className="row__label" style={{ flex: '0 1 auto' }}>{basename(f.path)}</span>
+            <span className="path-dim">{dirname(f.path)}</span>
 
-            {showing && (
-              <span style={{ display: 'flex', gap: 2 }} onClick={(e) => e.stopPropagation()}>
-                {!staged && (
-                  <RowButton
-                    title="Discard changes"
-                    disabled={busy}
-                    onClick={() => void act(() => rpc['scm:discard']({ repoRoot: root, paths: [f.path] }))}
-                  >
-                    ↺
-                  </RowButton>
-                )}
-                <RowButton
-                  title={staged ? 'Unstage' : 'Stage'}
+            <span className="row__actions" onClick={(e) => e.stopPropagation()}>
+              {!staged && (
+                <button
+                  className="icon-button"
+                  title="Discard changes"
                   disabled={busy}
-                  onClick={() =>
-                    void act(() =>
-                      staged
-                        ? rpc['scm:unstage']({ repoRoot: root, paths: [f.path] })
-                        : rpc['scm:stage']({ repoRoot: root, paths: [f.path] })
-                    )
-                  }
+                  onClick={() => void act(() => rpc['scm:discard']({ repoRoot: root, paths: [f.path] }))}
                 >
-                  {staged ? '−' : '+'}
-                </RowButton>
-              </span>
-            )}
+                  <DiscardIcon size={12} />
+                </button>
+              )}
+              <button
+                className="icon-button"
+                title={staged ? 'Unstage' : 'Stage'}
+                disabled={busy}
+                onClick={() =>
+                  void act(() =>
+                    staged
+                      ? rpc['scm:unstage']({ repoRoot: root, paths: [f.path] })
+                      : rpc['scm:stage']({ repoRoot: root, paths: [f.path] })
+                  )
+                }
+              >
+                {staged ? <UnstageIcon size={12} /> : <StageIcon size={12} />}
+              </button>
+            </span>
 
-            <span style={{ color: LETTER_COLOR[letter] ?? 'var(--fg-muted)', fontWeight: 600, width: 10, textAlign: 'center' }}>
+            <span className="status-letter" style={{ color: LETTER_COLOR[letter] ?? 'var(--fg-faint)' }}>
               {letter === '.' ? '' : letter}
             </span>
           </div>
@@ -329,52 +274,15 @@ function FileGroup({
   )
 }
 
-function RowButton({
-  children,
-  onClick,
-  title,
-  disabled
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  title: string
-  disabled?: boolean
-}): React.ReactElement {
-  return (
-    <button
-      title={title}
-      disabled={disabled}
-      onClick={onClick}
-      style={{ width: 18, height: 18, borderRadius: 3, cursor: 'pointer', opacity: disabled ? 0.3 : 0.8 }}
-    >
-      {children}
-    </button>
-  )
-}
-
-const primaryButton = (disabled: boolean): React.CSSProperties => ({
-  flex: 1,
-  height: 24,
-  borderRadius: 2,
-  background: disabled ? '#0078d455' : 'var(--accent)',
-  color: disabled ? 'var(--fg-muted)' : '#fff',
-  cursor: disabled ? 'default' : 'pointer'
-})
-
-const ghostButton: React.CSSProperties = {
-  height: 24,
-  padding: '0 8px',
-  borderRadius: 2,
-  background: 'var(--bg-input)',
-  cursor: 'pointer'
-}
-
 function Panel({ children }: { children: React.ReactNode }): React.ReactElement {
-  return <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>{children}</div>
-}
-
-function Muted({ children }: { children: React.ReactNode }): React.ReactElement {
-  return <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-muted)' }}>{children}</div>
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div className="section-header">
+        <span className="section-header__title">Source control</span>
+      </div>
+      {children}
+    </div>
+  )
 }
 
 const basename = (p: string): string => p.split('/').pop() ?? p

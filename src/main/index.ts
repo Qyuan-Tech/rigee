@@ -85,6 +85,7 @@ function createWindow(): void {
     window?.show()
     focusActiveView()
     if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
 
@@ -126,6 +127,28 @@ function createWindow(): void {
  * Give keyboard focus to whichever surface should have it: the visible browser tab if there is
  * one, otherwise the shell itself.
  */
+/**
+ * Render the shell to a PNG at ONESTOP_SHOT (default /tmp/onestop-shot.png). For looking at the
+ * interface while working on it — capturePage grabs exactly the shell's own surface, so it needs
+ * no screen recording permission and cannot catch anything else on the desktop.
+ */
+async function captureShot(): Promise<void> {
+  const wc = shellWc()
+  if (!wc || !window) { app.exit(1); return }
+  try {
+    // Give the boot sequence and any tab it restores a moment to paint.
+    await new Promise((r) => setTimeout(r, 4000))
+    const image = await wc.capturePage()
+    const out = process.env.ONESTOP_SHOT ?? '/tmp/onestop-shot.png'
+    writeFileSync(out, image.toPNG())
+    console.log(`[shot] ${out} ${image.getSize().width}x${image.getSize().height}`)
+    app.exit(0)
+  } catch (err) {
+    console.error('[shot] failed:', err)
+    app.exit(1)
+  }
+}
+
 function focusActiveView(): void {
   const browser = browserTabs?.focusVisible()
   if (!browser) shellWc()?.focus()

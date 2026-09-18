@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ensureView, showOnly, viewIdFor } from '../browserViews'
 import { onEvent, rpc } from '../ipc'
+import { BackIcon, DevToolsIcon, ForwardIcon, ReloadIcon, StopIcon } from '../icons'
 import { useApp } from '../store'
 import type { BrowserTab, ViewBounds } from '@shared/types'
 
@@ -107,25 +108,33 @@ export function BrowserPane({ tab }: { tab: BrowserTab }): React.ReactElement {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          padding: '4px 6px',
-          borderBottom: '1px solid var(--border)',
-          background: 'var(--bg-elevated)'
-        }}
-      >
-        <NavButton disabled={!tab.canGoBack} title="Back" onClick={() => act('browser:goBack')}>←</NavButton>
-        <NavButton disabled={!tab.canGoForward} title="Forward" onClick={() => act('browser:goForward')}>→</NavButton>
-        <NavButton
+      <div className="browser__bar">
+        <button
+          className="icon-button"
+          disabled={!tab.canGoBack}
+          title="Back"
+          onClick={() => act('browser:goBack')}
+        >
+          <BackIcon size={14} />
+        </button>
+        <button
+          className="icon-button"
+          disabled={!tab.canGoForward}
+          title="Forward"
+          onClick={() => act('browser:goForward')}
+        >
+          <ForwardIcon size={14} />
+        </button>
+        <button
+          className="icon-button"
           title={tab.loading ? 'Stop' : 'Reload'}
           onClick={() => act(tab.loading ? 'browser:stop' : 'browser:reload')}
         >
-          {tab.loading ? '×' : '↻'}
-        </NavButton>
+          {tab.loading ? <StopIcon size={13} /> : <ReloadIcon size={14} />}
+        </button>
+
         <input
+          className="browser__address"
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           onFocus={(e) => { setEditing(true); e.target.select() }}
@@ -135,9 +144,12 @@ export function BrowserPane({ tab }: { tab: BrowserTab }): React.ReactElement {
             if (e.key === 'Escape') { setAddress(tab.url); e.currentTarget.blur() }
           }}
           spellCheck={false}
-          style={{ flex: 1, userSelect: 'text' }}
+          placeholder="Search or enter address"
         />
-        <NavButton title="DevTools" onClick={() => act('browser:openDevTools')}>⚙</NavButton>
+
+        <button className="icon-button" title="DevTools" onClick={() => act('browser:openDevTools')}>
+          <DevToolsIcon size={14} />
+        </button>
       </div>
 
       {/* The native view is composited over exactly this rectangle. Keep it empty. */}
@@ -146,40 +158,15 @@ export function BrowserPane({ tab }: { tab: BrowserTab }): React.ReactElement {
   )
 }
 
-function NavButton({
-  children,
-  onClick,
-  title,
-  disabled
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  title: string
-  disabled?: boolean
-}): React.ReactElement {
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        width: 26,
-        height: 24,
-        borderRadius: 3,
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.3 : 0.85
-      }}
-    >
-      {children}
-    </button>
-  )
-}
-
 /** Treat input with no scheme and no dot as a search, matching what every browser does. */
 function normalizeUrl(raw: string): string {
   const s = raw.trim()
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith('about:')) return s
-  if (/^localhost(:\d+)?(\/|$)/.test(s) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(s)) return `http://${s}`
-  if (/\s/.test(s) || !s.includes('.')) return `https://www.google.com/search?q=${encodeURIComponent(s)}`
+  if (/^localhost(:\d+)?(\/|$)/.test(s) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(s)) {
+    return `http://${s}`
+  }
+  if (/\s/.test(s) || !s.includes('.')) {
+    return `https://www.google.com/search?q=${encodeURIComponent(s)}`
+  }
   return `https://${s}`
 }

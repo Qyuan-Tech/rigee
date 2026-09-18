@@ -29,12 +29,36 @@ export function CenterPane(): React.ReactElement {
   }
 }
 
+/** The app mark, at the size and weight the empty state can carry without shouting. */
+function EmptyMark(): React.ReactElement {
+  return (
+    <svg width="56" height="56" viewBox="0 0 56 56" className="empty__mark" aria-hidden="true">
+      <defs>
+        <linearGradient id="emptyMark" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#22d3ee" />
+          <stop offset="52%" stopColor="#818cf8" />
+          <stop offset="100%" stopColor="#c084fc" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M14 13 L29 28 L14 43"
+        fill="none"
+        stroke="url(#emptyMark)"
+        strokeWidth="6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect x="34" y="37" width="16" height="5" rx="2.5" fill="url(#emptyMark)" />
+    </svg>
+  )
+}
+
 function EmptyState(): React.ReactElement {
-  const mod = isMac() ? '⌘' : 'Ctrl'
+  const mod = isMac() ? 'Cmd' : 'Ctrl'
   return (
     <div className="empty">
       <div>
-        <div className="empty__mark" />
+        <EmptyMark />
         <div className="empty__title">Nothing open</div>
         <div className="empty__hint">
           <div>

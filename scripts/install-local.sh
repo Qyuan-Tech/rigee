@@ -53,8 +53,19 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 # NOT codesign --deep.
 
 echo "==> verify it boots"
-ONESTOP_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" 2>&1 | grep -E '\[smoke\]' || {
-  echo "the packaged app did not pass its smoke check" >&2; exit 1; }
+SMOKE_LOG=$(mktemp)
+if ONESTOP_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1; then :; else
+  echo "the packaged app exited non-zero during its smoke check:" >&2
+  grep -viE 'INFO:|WARNING:' "$SMOKE_LOG" | tail -20 >&2
+  exit 1
+fi
+if ! grep -qE '\[smoke\]' "$SMOKE_LOG"; then
+  echo "the packaged app produced no smoke report:" >&2
+  grep -viE 'INFO:|WARNING:' "$SMOKE_LOG" | tail -20 >&2
+  exit 1
+fi
+grep -E '\[smoke\]' "$SMOKE_LOG"
+rm -f "$SMOKE_LOG"
 
 echo "==> verify it launches through LaunchServices"
 ERRLOG=$(mktemp)

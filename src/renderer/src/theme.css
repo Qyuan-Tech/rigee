@@ -620,12 +620,9 @@ textarea:focus {
 }
 
 .empty__mark {
-  width: 46px;
-  height: 46px;
-  margin: 0 auto 16px;
-  border-radius: var(--r-lg);
-  background: var(--accent-gradient);
-  opacity: 0.16;
+  display: block;
+  margin: 0 auto 18px;
+  opacity: 0.5;
 }
 
 .empty__title {
