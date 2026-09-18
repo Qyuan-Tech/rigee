@@ -12,9 +12,59 @@ export function loadMonaco(): Promise<typeof import('monaco-editor')> {
   monacoP ??= (async () => {
     const monaco = await import('monaco-editor')
     await configureMonacoWorkers()
+    defineTheme(monaco)
     return monaco
   })()
   return monacoP
+}
+
+export const MONACO_THEME = 'onestop-dark'
+
+/**
+ * Monaco's built-in vs-dark paints #1e1e1e, which sits visibly lighter than the panes around it.
+ * Nothing makes an editor look unfinished faster than three surfaces disagreeing about their
+ * background, so the editor is given the app's own tokens rather than the other way round.
+ */
+function defineTheme(monaco: typeof import('monaco-editor')): void {
+  monaco.editor.defineTheme(MONACO_THEME, {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '5a6272', fontStyle: 'italic' },
+      { token: 'keyword', foreground: 'c084fc' },
+      { token: 'string', foreground: '8fd6a0' },
+      { token: 'number', foreground: 'e2b344' },
+      { token: 'type', foreground: '22d3ee' },
+      { token: 'function', foreground: '7c8cff' },
+      { token: 'variable', foreground: 'c8cfdd' }
+    ],
+    colors: {
+      'editor.background': '#0e1118',
+      'editor.foreground': '#c8cfdd',
+      'editorLineNumber.foreground': '#3c4354',
+      'editorLineNumber.activeForeground': '#7c8cff',
+      'editor.lineHighlightBackground': '#151a2480',
+      'editor.selectionBackground': '#7c8cff33',
+      'editor.inactiveSelectionBackground': '#7c8cff1f',
+      'editorCursor.foreground': '#7c8cff',
+      'editorIndentGuide.background1': '#1a1f2b',
+      'editorIndentGuide.activeBackground1': '#252c3a',
+      'editorWidget.background': '#0b0e15',
+      'editorWidget.border': '#252c3a',
+      'editorGutter.background': '#0e1118',
+      'editorGutter.addedBackground': '#6dc48a',
+      'editorGutter.modifiedBackground': '#e2b344',
+      'editorGutter.deletedBackground': '#e06c75',
+      'diffEditor.insertedTextBackground': '#6dc48a1f',
+      'diffEditor.removedTextBackground': '#e06c751f',
+      'diffEditor.border': '#1a1f2b',
+      'scrollbarSlider.background': '#ffffff12',
+      'scrollbarSlider.hoverBackground': '#ffffff22',
+      'scrollbarSlider.activeBackground': '#ffffff2e',
+      'minimap.background': '#0b0e15',
+      'editorOverviewRuler.border': '#00000000'
+    }
+  })
 }
 
 /**

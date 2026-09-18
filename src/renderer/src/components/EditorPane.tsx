@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { loadMonaco } from '../lazy'
+import { loadMonaco, MONACO_THEME } from '../lazy'
 import { editorFontSize, monoFamily } from '../fonts'
 import { rpc } from '../ipc'
 import type { DiffTab, EditorTab } from '@shared/types'
@@ -35,7 +35,7 @@ export function EditorPane({ tab }: { tab: EditorTab }): React.ReactElement {
 
         editor = monaco.editor.create(host.current, {
           model,
-          theme: 'vs-dark',
+          theme: MONACO_THEME,
           readOnly: tab.readOnly,
           automaticLayout: true,
           fontFamily: monoFamily(),
@@ -96,7 +96,7 @@ export function DiffPane({ tab }: { tab: DiffTab }): React.ReactElement {
         modified = monaco.editor.createModel(diff.modified, undefined)
 
         editor = monaco.editor.createDiffEditor(host.current, {
-          theme: 'vs-dark',
+          theme: MONACO_THEME,
           readOnly: true,
           automaticLayout: true,
           renderSideBySide: true,

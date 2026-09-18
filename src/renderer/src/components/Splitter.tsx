@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 interface Props {
   orientation: 'vertical' | 'horizontal'
@@ -8,17 +8,19 @@ interface Props {
 }
 
 /**
- * A 1px visual divider with a 7px hit area. Pointer capture keeps the drag alive when the cursor
- * outruns the element, which it always does.
+ * A 1px divider with a 9px hit area that lights up in the accent while dragging. Pointer capture
+ * keeps the drag alive when the cursor outruns the element, which it always does.
  */
 export function Splitter({ orientation, value, onDrag }: Props): React.ReactElement {
   const start = useRef({ pos: 0, value: 0 })
+  const [dragging, setDragging] = useState(false)
   const vertical = orientation === 'vertical'
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId)
       start.current = { pos: vertical ? e.clientX : e.clientY, value }
+      setDragging(true)
     },
     [value, vertical]
   )
@@ -34,31 +36,29 @@ export function Splitter({ orientation, value, onDrag }: Props): React.ReactElem
 
   const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.releasePointerCapture(e.pointerId)
+    setDragging(false)
   }, [])
 
   return (
     <div
       role="separator"
       aria-orientation={vertical ? 'vertical' : 'horizontal'}
+      className={`splitter${dragging ? ' splitter--active' : ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       style={{
-        flex: '0 0 auto',
         [vertical ? 'width' : 'height']: 1,
         [vertical ? 'height' : 'width']: '100%',
-        background: 'var(--border)',
-        cursor: vertical ? 'col-resize' : 'row-resize',
-        position: 'relative',
-        zIndex: 5
+        cursor: vertical ? 'col-resize' : 'row-resize'
       }}
     >
       {/* Widen the grab area without widening the line. */}
       <div
+        className="splitter__grab"
         style={{
-          position: 'absolute',
-          [vertical ? 'left' : 'top']: -3,
-          [vertical ? 'width' : 'height']: 7,
+          [vertical ? 'left' : 'top']: -4,
+          [vertical ? 'width' : 'height']: 9,
           [vertical ? 'top' : 'left']: 0,
           [vertical ? 'height' : 'width']: '100%'
         }}

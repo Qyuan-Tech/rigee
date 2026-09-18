@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { showOnly } from '../browserViews'
+import { isMac } from '../ipc'
 import { useActiveTab } from '../store'
 import { BrowserPane } from './BrowserPane'
 import { DiffPane, EditorPane } from './EditorPane'
@@ -29,21 +30,20 @@ export function CenterPane(): React.ReactElement {
 }
 
 function EmptyState(): React.ReactElement {
+  const mod = isMac() ? '⌘' : 'Ctrl'
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'grid',
-        placeItems: 'center',
-        color: 'var(--fg-muted)',
-        fontSize: 12,
-        lineHeight: 2
-      }}
-    >
-      <div style={{ textAlign: 'center' }}>
-        <div>No tab open</div>
-        <div style={{ opacity: 0.7 }}>Use the buttons in the tab strip to open a terminal or a browser tab,</div>
-        <div style={{ opacity: 0.7 }}>or click a file in the explorer.</div>
+    <div className="empty">
+      <div>
+        <div className="empty__mark" />
+        <div className="empty__title">Nothing open</div>
+        <div className="empty__hint">
+          <div>
+            Start a terminal with <span className="kbd">{mod}</span>
+            <span className="kbd">T</span>, or press the buttons in the tab strip
+          </div>
+          <div>Click a file in the explorer to read it</div>
+          <div>Click a change on the right to see its diff</div>
+        </div>
       </div>
     </div>
   )

@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { TabStrip } from './components/TabStrip'
 import { CenterPane } from './components/CenterPane'
 import { ScmPanel } from './components/ScmPanel'
 import { StatusBar } from './components/StatusBar'
 import { Splitter } from './components/Splitter'
-import { rpc } from './ipc'
-import { isMac } from './ipc'
-import { useApp } from './store'
+import { isMac, rpc } from './ipc'
+import { nextTabId, useActiveWorkspace, useApp } from './store'
 import { SCRATCH_WORKSPACE_ID, scratchWorkspace, type PersistedState } from '@shared/types'
 
 export function App(): React.ReactElement {
@@ -29,10 +28,8 @@ export function App(): React.ReactElement {
       // definition should follow the app rather than whatever was persisted long ago.
       const persisted = state.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
       store.setWorkspaces([scratchWorkspace(platform.homeDir), ...persisted])
-      store.setActiveWorkspace(
-        state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID
-      )
-      // Restore per-workspace tabs and the panel layout of the active workspace.
+      store.setActiveWorkspace(state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID)
+
       for (const [wsId, ui] of Object.entries(state.ui)) {
         useApp.setState((s) => ({
           tabsByWorkspace: { ...s.tabsByWorkspace, [wsId]: ui.tabs },
@@ -46,16 +43,15 @@ export function App(): React.ReactElement {
     return () => { cancelled = true }
   }, [])
 
+  useShortcuts()
+  usePersistence()
+
   const onLeftDrag = useCallback(
-    (dx: number, startWidth: number) => {
-      setLayout({ leftWidth: clamp(startWidth + dx, 160, 560) })
-    },
+    (dx: number, startWidth: number) => setLayout({ leftWidth: clamp(startWidth + dx, 180, 560) }),
     [setLayout]
   )
   const onRightDrag = useCallback(
-    (dx: number, startWidth: number) => {
-      setLayout({ rightWidth: clamp(startWidth - dx, 200, 640) })
-    },
+    (dx: number, startWidth: number) => setLayout({ rightWidth: clamp(startWidth - dx, 220, 680) }),
     [setLayout]
   )
 
@@ -65,26 +61,20 @@ export function App(): React.ReactElement {
   const rightW = layout.rightCollapsed ? 0 : layout.rightWidth
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateRows: `var(--titlebar-h) 1fr var(--statusbar-h)`,
-        height: '100%'
-      }}
-    >
+    <div className="shell">
       <TitleBar />
 
-      <div style={{ display: 'flex', minHeight: 0, minWidth: 0 }}>
+      <div className="body">
         {leftW > 0 && (
           <>
-            <div style={{ width: leftW, flex: '0 0 auto', minWidth: 0, background: 'var(--bg-elevated)' }}>
+            <div className="pane" style={{ width: leftW }}>
               <Sidebar />
             </div>
             <Splitter orientation="vertical" onDrag={onLeftDrag} value={layout.leftWidth} />
           </>
         )}
 
-        <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+        <div className="center">
           <TabStrip />
           <CenterPane />
         </div>
@@ -92,7 +82,7 @@ export function App(): React.ReactElement {
         {rightW > 0 && (
           <>
             <Splitter orientation="vertical" onDrag={onRightDrag} value={layout.rightWidth} />
-            <div style={{ width: rightW, flex: '0 0 auto', minWidth: 0, background: 'var(--bg-elevated)' }}>
+            <div className="pane" style={{ width: rightW }}>
               <ScmPanel />
             </div>
           </>
@@ -105,29 +95,22 @@ export function App(): React.ReactElement {
 }
 
 function TitleBar(): React.ReactElement {
-  // On macOS the traffic lights are inset over this strip, so keep the left side clear.
+  const workspace = useActiveWorkspace()
   return (
-    <div
-      style={{
-        height: 'var(--titlebar-h)',
-        display: 'flex',
-        alignItems: 'center',
-        paddingLeft: isMac() ? 78 : 10,
-        paddingRight: 10,
-        borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-elevated)',
-        WebkitAppRegion: 'drag'
-      } as React.CSSProperties}
-    >
-      <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>onestop</span>
+    <div className="titlebar" style={{ paddingLeft: isMac() ? 80 : 12 }}>
+      <span className="titlebar__brand">
+        <span className="titlebar__mark" />
+        onestop
+      </span>
+      {workspace && <span className="titlebar__context">{workspace.name}</span>}
     </div>
   )
 }
 
 function Splash(): React.ReactElement {
   return (
-    <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: 'var(--fg-muted)' }}>
-      loading…
+    <div className="empty" style={{ height: '100%' }}>
+      <div className="empty__mark" />
     </div>
   )
 }
@@ -136,10 +119,42 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
 }
 
+/** Cmd/Ctrl shortcuts for the things worth reaching without the mouse. */
+function useShortcuts(): void {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = isMac() ? e.metaKey : e.ctrlKey
+      if (!mod) return
+      const s = useApp.getState()
+      const ws = s.activeWorkspaceId
+      if (!ws) return
+
+      if (e.key === 't') {
+        e.preventDefault()
+        s.openTab(ws, {
+          id: nextTabId(), kind: 'terminal', title: 'terminal', pinned: false,
+          windowId: null, paneId: null
+        })
+      } else if (e.key === 'w') {
+        e.preventDefault()
+        const active = s.activeTabByWorkspace[ws]
+        if (active) s.closeTab(ws, active)
+      } else if (e.key === 'b') {
+        e.preventDefault()
+        s.setLayout({ leftCollapsed: !s.layout.leftCollapsed })
+      } else if (e.key === 'g' && e.shiftKey) {
+        e.preventDefault()
+        s.setLayout({ rightCollapsed: !s.layout.rightCollapsed })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+}
+
 /** Persist layout and tabs on change, coalesced so dragging a splitter does not hammer the disk. */
-export function usePersistence(): void {
+function usePersistence(): void {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [, force] = useState(0)
   useEffect(() => {
     const unsub = useApp.subscribe(
       (s) => [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId] as const,
@@ -157,7 +172,6 @@ export function usePersistence(): void {
               expandedDirs: []
             }
           })
-          force((n) => n + 1)
         }, 400)
       }
     )

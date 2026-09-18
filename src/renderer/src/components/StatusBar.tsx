@@ -1,44 +1,46 @@
 import { useEffect, useState } from 'react'
 import { rpc } from '../ipc'
+import { BranchIcon, TerminalIcon } from '../icons'
 import { useActiveWorkspace, useApp } from '../store'
 
 export function StatusBar(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const scm = useApp((s) => s.scm)
-  const [tmux, setTmux] = useState<string | null>(null)
+  const [tmux, setTmux] = useState<{ ok: boolean; label: string } | null>(null)
 
   useEffect(() => {
-    void rpc['app:getPlatformInfo']().then((info) => {
-      setTmux(info.tmuxAvailable ? info.tmuxVersion : 'tmux not found')
-    })
+    void rpc['app:getPlatformInfo']().then((info) =>
+      setTmux({ ok: info.tmuxAvailable, label: info.tmuxVersion ?? 'tmux not found' })
+    )
   }, [])
 
   const repo = workspace?.folders.find((f) => f.repoRoot)?.repoRoot
   const status = repo ? scm[repo] : undefined
-  const dirty = status ? status.staged.length + status.unstaged.length + status.untracked.length : 0
+  const dirty = status
+    ? status.staged.length + status.unstaged.length + status.untracked.length
+    : 0
 
   return (
-    <div
-      style={{
-        height: 'var(--statusbar-h)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 16,
-        padding: '0 10px',
-        fontSize: 11,
-        color: 'var(--fg-muted)',
-        background: 'var(--bg-elevated)',
-        borderTop: '1px solid var(--border)'
-      }}
-    >
-      <span>{workspace ? workspace.name : 'no workspace'}</span>
-      {status?.branch && (
-        <span>
-          {status.branch}
-          {dirty > 0 ? ` · ${dirty}` : ''}
+    <div className="statusbar">
+      {workspace && <span className="statusbar__item">{workspace.name}</span>}
+
+      {status && (
+        <span className="statusbar__item">
+          <BranchIcon size={12} />
+          {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
+          {dirty > 0 && <span style={{ color: 'var(--git-modified)' }}>{dirty}</span>}
+          {status.operation !== 'none' && (
+            <span style={{ color: 'var(--git-conflict)' }}>{status.operation}</span>
+          )}
         </span>
       )}
-      <span style={{ marginLeft: 'auto' }}>{tmux ?? '…'}</span>
+
+      <span className="statusbar__item" style={{ marginLeft: 'auto' }}>
+        <TerminalIcon size={12} />
+        <span style={{ color: tmux && !tmux.ok ? 'var(--git-deleted)' : undefined }}>
+          {tmux?.label ?? '…'}
+        </span>
+      </span>
     </div>
   )
 }

@@ -56,11 +56,30 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
       letterSpacing: 0,
       cursorBlink: true,
       scrollback: 10000,
+      // Same tokens as theme.css and the Monaco theme: the terminal must not look like a
+      // different application pasted into the middle of the window.
       theme: {
-        background: '#141414',
-        foreground: '#cccccc',
-        cursor: '#cccccc',
-        selectionBackground: '#37373d'
+        background: '#0e1118',
+        foreground: '#c8cfdd',
+        cursor: '#7c8cff',
+        cursorAccent: '#0e1118',
+        selectionBackground: '#7c8cff40',
+        black: '#0b0e15',
+        red: '#e06c75',
+        green: '#6dc48a',
+        yellow: '#e2b344',
+        blue: '#7c8cff',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#c8cfdd',
+        brightBlack: '#4a5263',
+        brightRed: '#f08a92',
+        brightGreen: '#8fd6a0',
+        brightYellow: '#f0cb6b',
+        brightBlue: '#9aa6ff',
+        brightMagenta: '#d3a6fd',
+        brightCyan: '#5ce0f5',
+        brightWhite: '#f0f4fa'
       }
     })
 
