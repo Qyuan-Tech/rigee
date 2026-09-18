@@ -1,0 +1,96 @@
+<!--
+  onestop app icon — source of truth. Rasterised by scripts/make-icons.sh.
+
+  The mark is a shell prompt `>_`, drawn so the chevron's three endpoints are glowing nodes: read
+  one way it is a terminal caret, read another it is a three-node directed path. That is the whole
+  product in one glyph — a prompt you drive, and agents doing the work behind it.
+
+  Constraints it is built to: legible at 16px (the chevron and bar survive; the nodes and the
+  background constellation are the first things to drop out), and no thin strokes that alias badly
+  at small sizes.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#121A2E"/>
+      <stop offset="55%" stop-color="#0C1120"/>
+      <stop offset="100%" stop-color="#080B14"/>
+    </linearGradient>
+
+    <radialGradient id="bloom" cx="0.28" cy="0.82" r="0.85">
+      <stop offset="0%" stop-color="#4C6BFF" stop-opacity="0.38"/>
+      <stop offset="55%" stop-color="#4C6BFF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#4C6BFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="52%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#C084FC"/>
+    </linearGradient>
+
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7C8CFF" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#7C8CFF" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.35"/>
+    </linearGradient>
+
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="17" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="softglow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+
+    <clipPath id="tileClip">
+      <rect x="76" y="76" width="872" height="872" rx="200" ry="200"/>
+    </clipPath>
+  </defs>
+
+  <!-- tile -->
+  <g clip-path="url(#tileClip)">
+    <rect x="76" y="76" width="872" height="872" fill="url(#tile)"/>
+    <rect x="76" y="76" width="872" height="872" fill="url(#bloom)"/>
+
+    <!-- faint agent constellation: present at large sizes, gone by 32px, never competing -->
+    <g stroke="#8FA3FF" stroke-opacity="0.13" stroke-width="3" fill="none">
+      <path d="M735 240 L862 331 L806 470"/>
+      <path d="M735 240 L806 470"/>
+      <path d="M214 742 L300 828"/>
+    </g>
+    <g fill="#A9B8FF" fill-opacity="0.28">
+      <circle cx="735" cy="240" r="9"/>
+      <circle cx="862" cy="331" r="7"/>
+      <circle cx="806" cy="470" r="7"/>
+      <circle cx="214" cy="742" r="7"/>
+      <circle cx="300" cy="828" r="9"/>
+    </g>
+  </g>
+
+  <!-- inner rim: gives the tile depth without a hard border -->
+  <rect x="76" y="76" width="872" height="872" rx="200" ry="200"
+        fill="none" stroke="url(#rim)" stroke-width="3"/>
+
+  <!-- diffuse light behind the mark -->
+  <ellipse cx="470" cy="520" rx="250" ry="180" fill="#5B7CFF" opacity="0.20" filter="url(#softglow)"/>
+
+  <!-- the prompt -->
+  <g filter="url(#glow)">
+    <path d="M300 330 L520 512 L300 694"
+          fill="none" stroke="url(#accent)" stroke-width="96"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="580" y="636" width="232" height="58" rx="29" fill="url(#accent)"/>
+  </g>
+
+  <!-- endpoint nodes: the chevron re-read as a three-node path -->
+  <g>
+    <circle cx="300" cy="330" r="29" fill="#EAF2FF"/>
+    <circle cx="520" cy="512" r="29" fill="#EAF2FF"/>
+    <circle cx="300" cy="694" r="29" fill="#EAF2FF"/>
+  </g>
+</svg>

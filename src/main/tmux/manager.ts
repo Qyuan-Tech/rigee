@@ -99,7 +99,13 @@ export class TmuxManager {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       entry.state = /ENOENT/.test(message)
-        ? { status: 'unavailable', reason: process.platform === 'win32' ? 'WSL or tmux not found' : 'tmux not found on PATH' }
+        ? {
+            status: 'unavailable',
+            reason:
+              process.platform === 'win32'
+                ? 'WSL or tmux not found. Install WSL2, then install tmux inside your distribution.'
+                : `tmux not found. Searched: ${process.env.PATH ?? '(empty PATH)'}`
+          }
         : { status: 'failed', error: message }
     }
     return entry.state

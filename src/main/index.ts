@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { BrowserTabs } from './browser'
+import { ensureShellPath } from './env'
 import type { TmuxClient } from './tmux/client'
 import { TmuxManager } from './tmux/manager'
 import { emit, handle } from './ipc'
@@ -130,22 +131,35 @@ async function runSmokeTest(): Promise<void> {
     // Give React a beat to mount after did-finish-load.
     await new Promise((r) => setTimeout(r, 1500))
     const report = (await wc.executeJavaScript(
-      `(() => {
+      `(async () => {
         const root = document.getElementById('root')
         const bridge = typeof window.onestop === 'object' && window.onestop !== null
+        // Goes through the real preload bridge and the real IPC handler, so this also proves
+        // PATH recovery worked: a packaged app launched from Finder starts with a PATH that
+        // cannot see Homebrew.
+        let platform = null
+        try { platform = await window.onestop.invoke('app:getPlatformInfo') } catch (e) {
+          platform = { error: String(e) }
+        }
         return JSON.stringify({
           bridge,
           bridgeKeys: bridge ? Object.keys(window.onestop) : [],
           rootChildren: root ? root.children.length : -1,
           elements: document.querySelectorAll('*').length,
-          text: (document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 240)
+          tmux: platform,
+          text: (document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120)
         })
       })()`,
       true
     )) as string
     console.log('[smoke]', report)
-    const parsed = JSON.parse(report) as { bridge: boolean; rootChildren: number }
-    app.exit(parsed.bridge && parsed.rootChildren > 0 ? 0 : 1)
+    const parsed = JSON.parse(report) as {
+      bridge: boolean
+      rootChildren: number
+      tmux: { tmuxAvailable?: boolean } | null
+    }
+    const ok = parsed.bridge && parsed.rootChildren > 0 && parsed.tmux?.tmuxAvailable === true
+    app.exit(ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke] failed:', err)
     app.exit(1)
@@ -164,6 +178,9 @@ function layoutShell(): void {
 
 app.whenReady().then(() => {
   mark('app ready')
+  // Kick off PATH recovery immediately but do not block first paint on it; the handlers that
+  // actually need a resolved PATH await the same promise.
+  void ensureShellPath().then(() => mark('shell PATH resolved'))
   registerHandlers()
   createWindow()
   app.on('activate', () => { if (!window) createWindow() })
@@ -207,6 +224,7 @@ function registerHandlers(): void {
   handle('app:getVersions', () => ({ ...process.versions }))
 
   handle('app:getPlatformInfo', async () => {
+    await ensureShellPath()
     let tmuxVersion: string | null = null
     try {
       const { stdout } =
@@ -315,11 +333,13 @@ function registerTmuxHandlers(): void {
     return c
   }
 
-  handle('tmux:connect', async ({ workspaceId, sessionName, cwd }) =>
+  handle('tmux:connect', async ({ workspaceId, sessionName, cwd }) => {
+    // A packaged app starts with a minimal PATH, so tmux must be findable before we spawn it.
+    await ensureShellPath()
     // Initial geometry is a placeholder; the renderer sends the real size via tmux:resizeClient
     // as soon as the xterm instance has measured itself.
-    mgr().connect(workspaceId, sessionName, cwd, 120, 30)
-  )
+    return mgr().connect(workspaceId, sessionName, cwd, 120, 30)
+  })
   handle('tmux:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
   handle('tmux:listState', ({ workspaceId }) => mgr().listState(workspaceId))
 

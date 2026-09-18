@@ -27,6 +27,7 @@ extraMetadata:
   main: out/main/index.js
 
 mac:
+  icon: build/icon.icns
   target:
     - target: dmg
       arch: [x64, arm64]
@@ -50,6 +51,7 @@ dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64, arm64]
@@ -63,6 +65,8 @@ nsis:
   deleteAppDataOnUninstall: false
 
 linux:
+  # A directory: electron-builder picks whichever size each target needs.
+  icon: build/icons
   target:
     - target: AppImage
       arch: [x64, arm64]
