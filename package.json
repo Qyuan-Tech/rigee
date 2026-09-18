@@ -32,7 +32,9 @@
     "pack:win": "pnpm run build && electron-builder --win --publish never",
     "pack:linux": "pnpm run build && electron-builder --linux --publish never",
     "pack:all": "pnpm run build && electron-builder -mwl --publish never",
-    "tmux:selftest": "esbuild scripts/tmux-selftest.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/tmux-selftest.mjs --log-level=warning && node node_modules/.tmp/tmux-selftest.mjs"
+    "tmux:selftest": "esbuild scripts/tmux-selftest.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/tmux-selftest.mjs --log-level=warning && node node_modules/.tmp/tmux-selftest.mjs",
+    "git:selftest": "esbuild scripts/git-selftest.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/git-selftest.mjs --log-level=warning && node node_modules/.tmp/git-selftest.mjs",
+    "smoke:terminal": "ONESTOP_SMOKE=terminal electron ."
   },
   "dependencies": {
     "node-pty": "1.2.0-beta.15"

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { rpc } from '../ipc'
 import { nextTabId, nextWorkspaceId, useActiveWorkspace, useApp } from '../store'
-import type { FileStat, Workspace, WorkspaceFolder } from '@shared/types'
+import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
 
 export function Sidebar(): React.ReactElement {
   return (
@@ -23,7 +23,11 @@ function WorkspaceList(): React.ReactElement {
 
   const persist = useCallback(() => {
     const s = useApp.getState()
-    void rpc['state:saveWorkspaces']({ workspaces: s.workspaces, activeWorkspaceId: s.activeWorkspaceId })
+    void rpc['state:saveWorkspaces']({
+      // Scratch is rebuilt at boot; persisting it would let a stale copy outlive the code.
+      workspaces: s.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID),
+      activeWorkspaceId: s.activeWorkspaceId
+    })
   }, [])
 
   const createWorkspace = useCallback(async () => {
@@ -73,9 +77,9 @@ function WorkspaceList(): React.ReactElement {
         ]}
       />
       <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-        {workspaces.length === 0 && (
-          <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-muted)' }}>
-            No workspaces yet — press + to open a folder.
+        {workspaces.length <= 1 && (
+          <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--fg-muted)' }}>
+            Scratch is always here for terminals. Press + to add a folder as a workspace.
           </div>
         )}
         {workspaces.map((w) => (
@@ -96,14 +100,22 @@ function WorkspaceList(): React.ReactElement {
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {w.name}
             </span>
-            <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>{w.folders.length}</span>
-            <button
-              title="Remove workspace"
-              onClick={(e) => { e.stopPropagation(); remove(w.id); persist() }}
-              style={{ opacity: 0.5, cursor: 'pointer' }}
-            >
-              ×
-            </button>
+            {w.id === SCRATCH_WORKSPACE_ID ? (
+              <span style={{ fontSize: 10, color: 'var(--fg-muted)' }} title="Always available; no folders">
+                ❯
+              </span>
+            ) : (
+              <>
+                <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>{w.folders.length}</span>
+                <button
+                  title="Remove workspace"
+                  onClick={(e) => { e.stopPropagation(); remove(w.id); persist() }}
+                  style={{ opacity: 0.5, cursor: 'pointer' }}
+                >
+                  ×
+                </button>
+              </>
+            )}
           </div>
         ))}
       </div>
@@ -121,6 +133,9 @@ function FileExplorer(): React.ReactElement {
       <SectionHeader label="Explorer" />
       <div style={{ flex: 1, overflow: 'auto', paddingBottom: 8 }}>
         {!workspace && <Empty>Open a workspace to browse files.</Empty>}
+        {workspace && workspace.folders.length === 0 && (
+          <Empty>No folders in this workspace. Terminals still work.</Empty>
+        )}
         {workspace?.folders.map((f) => (
           <DirNode key={f.path} path={f.path} name={f.name} depth={0} defaultOpen />
         ))}

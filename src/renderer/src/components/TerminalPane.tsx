@@ -35,7 +35,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
       host.current?.appendChild(handle.element)
       handle.fit.fit()
 
-      const cwd = workspace.folders[0]?.path ?? workspace.folders[0]?.repoRoot ?? '.'
+      const cwd = workspace.folders[0]?.path ?? workspace.defaultCwd ?? '.'
       const connection = await rpc['tmux:connect']({
         workspaceId,
         sessionName: workspace.tmuxSessionName,
@@ -49,7 +49,17 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
       await rpc['terminal:requestPort']({ workspaceId })
       if (cancelled) return
 
-      let paneId = tab.paneId
+      // A persisted pane id is only a hint. Tabs outlive tmux sessions — the server is killed,
+      // the machine reboots, the pane is closed from another client — and a stale id fails
+      // silently: send-keys reports "can't find pane" into a promise nobody awaits, so the
+      // terminal accepts no input and produces no output and shows no error. Validate it.
+      const live = await rpc['tmux:listState']({ workspaceId })
+      if (cancelled) return
+      let paneId = tab.paneId && live.panes.some((p) => p.id === tab.paneId) ? tab.paneId : null
+      if (tab.paneId && !paneId) {
+        console.warn(`[terminal] pane ${tab.paneId} is gone; opening a fresh one`)
+      }
+
       if (!paneId) {
         // A terminal tab owns a tmux window; splits inside the tab become panes of that window.
         const { windowId } = await rpc['tmux:newWindow']({ workspaceId, cwd })
@@ -65,7 +75,11 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
         writeToPane(pane, data)
       })
 
-      handle.term.onData((data) => {
+      // Rebind rather than add: this effect re-runs whenever tab.paneId changes (which it does,
+      // once, right after the pane is created) and under StrictMode's double-invoke. Stacking
+      // onData listeners would send every keystroke N times.
+      handle.input?.dispose()
+      handle.input = handle.term.onData((data) => {
         window.onestop.writeTerminal(workspaceId, paneId!, data)
       })
 
@@ -121,6 +135,10 @@ function Overlay({ status }: { status: TmuxConnectionState }): React.ReactElemen
         display: 'grid',
         placeItems: 'center',
         background: '#141414e0',
+        // Never swallow clicks. If this ever renders over a terminal that is in fact usable,
+        // eating pointer events would stop xterm's textarea from taking focus and the terminal
+        // would look dead for a reason that has nothing to do with tmux.
+        pointerEvents: 'none',
         fontFamily: 'var(--font-mono)',
         fontSize: 12,
         color: status.status === 'connecting' ? 'var(--fg-muted)' : 'var(--git-deleted)',

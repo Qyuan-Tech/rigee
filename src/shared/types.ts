@@ -55,6 +55,30 @@ export interface WorkspaceFolder {
   repoRoot: string | null
 }
 
+/**
+ * The always-present workspace with no folders.
+ *
+ * Plenty of terminal work has nothing to do with a repository — an ssh session, a one-off script,
+ * poking at a cluster. Forcing the user to invent a workspace first would be friction for no
+ * gain, but special-casing "a terminal with no workspace" would fork every code path that keys
+ * off a workspace id (tmux sessions, tab persistence, the byte transport). A synthetic workspace
+ * keeps one path and costs nothing: it is rebuilt at boot, never persisted as a folder set, and
+ * cannot be removed.
+ */
+export const SCRATCH_WORKSPACE_ID: WorkspaceId = '__scratch__'
+
+export function scratchWorkspace(homeDir: string): Workspace {
+  return {
+    id: SCRATCH_WORKSPACE_ID,
+    name: 'Scratch',
+    folders: [],
+    tmuxSessionName: 'onestop-scratch',
+    createdAt: 0,
+    lastOpenedAt: 0,
+    defaultCwd: homeDir
+  }
+}
+
 export interface Workspace {
   id: WorkspaceId
   name: string
@@ -66,6 +90,8 @@ export interface Workspace {
   tmuxSessionName: string
   createdAt: number
   lastOpenedAt: number
+  /** Where terminals start when the workspace has no folders. Only set for Scratch. */
+  defaultCwd?: string
 }
 
 // ---------------------------------------------------------------------------

@@ -14,11 +14,12 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { BrowserTabs } from './browser'
 import { ensureShellPath } from './env'
+import { GitService } from './git/service'
 import type { TmuxClient } from './tmux/client'
 import { TmuxManager } from './tmux/manager'
 import { emit, handle } from './ipc'
 import { loadState, saveUi, saveWorkspaces } from './store'
-import type { FileStat, RepoStatus, ViewBounds } from '@shared/types'
+import type { FileStat, ViewBounds } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -36,6 +37,7 @@ let window: BaseWindow | null = null
 let shellView: WebContentsView | null = null
 let browserTabs: BrowserTabs | null = null
 let tmux: TmuxManager | null = null
+const gitService = new GitService()
 
 const shellWc = (): WebContents | null =>
   shellView && !shellView.webContents.isDestroyed() ? shellView.webContents : null
@@ -85,7 +87,8 @@ function createWindow(): void {
   shellView.webContents.once('did-finish-load', () => {
     mark('shell did-finish-load')
     window?.show()
-    if (process.env.ONESTOP_SMOKE) void runSmokeTest()
+    if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
+    else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
 
   // Without these, a renderer that fails to boot just shows nothing and the window never appears.
@@ -166,6 +169,101 @@ async function runSmokeTest(): Promise<void> {
   }
 }
 
+/**
+ * End-to-end check of the terminal: open a tab, type into it through the real MessagePort path,
+ * and assert the shell echoed the result back. Covers everything a human would exercise —
+ * tmux attach, window creation, the byte transport in both directions, and xterm rendering.
+ */
+async function runTerminalSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const log = (...a: unknown[]): void => console.log('[smoke:terminal]', ...a)
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, getTerminal, nextTabId } = window.__onestop
+        const trail = []
+
+        // The shell boots asynchronously (state load + platform probe) after did-finish-load.
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch-workspace', trail })
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const tabId = nextTabId()
+        store.getState().openTab(scratch.id, {
+          id: tabId, kind: 'terminal', title: 'e2e', pinned: false, windowId: null, paneId: null
+        })
+        trail.push('tab opened')
+
+        // Wait for the pane to be created and bound to the xterm instance.
+        let handle = null
+        for (let i = 0; i < 120; i++) {
+          await sleep(250)
+          handle = getTerminal(tabId)
+          if (handle && handle.paneId) break
+        }
+        if (!handle) return JSON.stringify({ ok: false, stage: 'no-xterm-instance', trail })
+        if (!handle.paneId) return JSON.stringify({ ok: false, stage: 'pane-never-bound', trail })
+        trail.push('pane ' + handle.paneId)
+
+        const read = () => {
+          const b = handle.term.buffer.active
+          let out = ''
+          for (let i = 0; i < b.length; i++) out += (b.getLine(i)?.translateToString(true) ?? '') + String.fromCharCode(10)
+          return out
+        }
+
+        // Did anything arrive from tmux at all? A shell prompt should have rendered by now.
+        await sleep(800)
+        const beforeLen = read().trim().length
+        trail.push('output before typing: ' + beforeLen + ' chars')
+
+        // Where the keyboard actually lands. xterm renders into its own textarea, and if that
+        // is not focused — or if the onData subscription was lost — keystrokes go nowhere even
+        // though the transport underneath is perfectly healthy.
+        const active = document.activeElement
+        const focused = !!(active && handle.element.contains(active))
+        trail.push('focus inside terminal: ' + focused + ' (' + (active ? active.tagName.toLowerCase() : 'none') + ')')
+
+        let onDataFired = 0
+        const probe = handle.term.onData(() => { onDataFired++ })
+
+        // term.input() drives the same path a real keypress does: it fires onData, which is what
+        // the component subscribes to. Writing straight to the port would skip exactly the wiring
+        // that was reported broken.
+        handle.term.input('echo ONESTOP-E2E-$((6*7))' + String.fromCharCode(13), true)
+        probe.dispose()
+        trail.push('onData fired ' + onDataFired + 'x')
+        if (onDataFired !== 1) {
+          return JSON.stringify({ ok: false, stage: 'onData-not-1', trail })
+        }
+
+        for (let i = 0; i < 40; i++) {
+          await sleep(250)
+          if (read().includes('ONESTOP-E2E-42')) {
+            return JSON.stringify({ ok: true, stage: 'echoed', trail })
+          }
+        }
+        return JSON.stringify({
+          ok: false, stage: 'no-echo', trail, tail: read().trim().slice(-300)
+        })
+      })()`,
+      true
+    )) as string
+    log(result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    log('threw:', err)
+    app.exit(1)
+  }
+}
+
 function layoutShell(): void {
   if (!window || !shellView) return
   const { width, height } = window.getContentBounds()
@@ -190,6 +288,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('before-quit', () => {
   browserTabs?.destroyAll()
   tmux?.disposeAll()
+  gitService.dispose()
 })
 
 /**
@@ -319,7 +418,7 @@ function registerHandlers(): void {
   handle('browser:openDevTools', ({ viewId }) => { browserTabs?.openDevTools(viewId) })
 
   registerTmuxHandlers()
-  registerPlaceholderHandlers()
+  registerScmHandlers()
 }
 
 function registerTmuxHandlers(): void {
@@ -365,35 +464,16 @@ function registerTmuxHandlers(): void {
   handle('terminal:requestPort', ({ workspaceId }) => { mgr().establishPort(workspaceId) })
 }
 
-/**
- * Source control is not implemented yet — the git plumbing is still being pinned down. These keep
- * the IPC surface total so the renderer can be built against the real contract, and they fail
- * loudly rather than silently returning junk.
- */
-function registerPlaceholderHandlers(): void {
-  const emptyStatus = (repoRoot: string): RepoStatus => ({
-    repoId: repoRoot,
-    root: repoRoot,
-    name: basename(repoRoot),
-    branch: null,
-    upstream: null,
-    ahead: 0,
-    behind: 0,
-    detachedAt: null,
-    operation: 'none',
-    staged: [],
-    unstaged: [],
-    untracked: [],
-    conflicts: [],
-    stashCount: 0,
-    at: Date.now()
+function registerScmHandlers(): void {
+  handle('scm:status', ({ repoRoot }) => gitService.status(repoRoot))
+  handle('scm:statusAll', ({ repoRoots }) => gitService.statusAll(repoRoots))
+  handle('scm:diff', ({ repoRoot, path, against }) => gitService.diff(repoRoot, path, against))
+  handle('scm:stage', ({ repoRoot, paths }) => gitService.stage(repoRoot, paths))
+  handle('scm:unstage', ({ repoRoot, paths }) => gitService.unstage(repoRoot, paths))
+  handle('scm:discard', ({ repoRoot, paths }) => gitService.discard(repoRoot, paths))
+  handle('scm:commit', ({ repoRoot, message, amend }) => gitService.commit(repoRoot, message, amend))
+  handle('scm:watch', () => {
+    // TODO: watch the .git paths that matter (HEAD, index, refs/, packed-refs, MERGE_HEAD) and
+    // push scm:status on change. Until then the renderer refreshes on its own.
   })
-  handle('scm:status', ({ repoRoot }) => emptyStatus(repoRoot))
-  handle('scm:statusAll', ({ repoRoots }) => repoRoots.map(emptyStatus))
-  handle('scm:diff', () => ({ original: '', modified: '', binary: false, tooLarge: false }))
-  handle('scm:stage', () => { throw new Error('not implemented') })
-  handle('scm:unstage', () => { throw new Error('not implemented') })
-  handle('scm:discard', () => { throw new Error('not implemented') })
-  handle('scm:commit', () => { throw new Error('not implemented') })
-  handle('scm:watch', () => { /* no-op */ })
 }

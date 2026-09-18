@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { onEvent, rpc } from '../ipc'
 import { nextTabId, useActiveWorkspace, useApp } from '../store'
 import type { DiffTarget, GitFileChange, RepoStatus } from '@shared/types'
 
-/** Badge colour per status letter, matching VSCode's source control decorations. */
+/** Badge colours, matching VS Code's source control decorations. */
 const LETTER_COLOR: Record<string, string> = {
   M: 'var(--git-modified)',
   A: 'var(--git-added)',
@@ -16,107 +16,225 @@ const LETTER_COLOR: Record<string, string> = {
   T: 'var(--git-modified)'
 }
 
+type Group = 'conflicts' | 'staged' | 'unstaged' | 'untracked'
+
 export function ScmPanel(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const scm = useApp((s) => s.scm)
   const setRepoStatus = useApp((s) => s.setRepoStatus)
-  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const repoRoots = (workspace?.folders ?? [])
     .map((f) => f.repoRoot)
     .filter((r): r is string => r !== null)
   const rootsKey = repoRoots.join('|')
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (repoRoots.length === 0) return
-    let cancelled = false
-    void rpc['scm:statusAll']({ repoRoots }).then((all) => {
-      if (cancelled) return
+    try {
+      const all = await rpc['scm:statusAll']({ repoRoots })
       for (const s of all) setRepoStatus(s)
-    })
-    void rpc['scm:watch']({ repoRoots })
-    const off = onEvent('scm:status', ({ status }) => setRepoStatus(status))
-    return () => { cancelled = true; off() }
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootsKey, setRepoStatus])
 
-  if (!workspace) {
-    return <Panel><Muted>No workspace open.</Muted></Panel>
-  }
+  useEffect(() => {
+    void refresh()
+    const off = onEvent('scm:status', ({ status }) => setRepoStatus(status))
+    // No .git watcher yet, so poll while the panel is open. Cheap: status on a large repo
+    // measured ~140 ms, and it is the only thing keeping the panel honest when the user runs
+    // git in one of the app's own terminals.
+    const timer = setInterval(() => void refresh(), 3000)
+    return () => { off(); clearInterval(timer) }
+  }, [refresh, setRepoStatus])
+
+  /** Run a mutation, then refresh so the panel reflects reality rather than what we assumed. */
+  const act = useCallback(
+    async (fn: () => Promise<unknown>) => {
+      setBusy(true)
+      try {
+        await fn()
+        setError(null)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setBusy(false)
+        await refresh()
+      }
+    },
+    [refresh]
+  )
+
+  if (!workspace) return <Panel><Muted>No workspace open.</Muted></Panel>
   if (repoRoots.length === 0) {
     return <Panel><Muted>No git repository in this workspace.</Muted></Panel>
   }
 
   return (
     <Panel>
-      <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-        <input
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Message (⌘Enter to commit)"
-          style={{ width: '100%' }}
-        />
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {repoRoots.map((root) => {
-          const status = scm[root]
-          return status ? (
-            <RepoSection key={root} status={status} multi={repoRoots.length > 1} />
-          ) : (
-            <Muted key={root}>loading {root}…</Muted>
-          )
-        })}
-      </div>
+      {repoRoots.map((root) => {
+        const status = scm[root]
+        return status ? (
+          <RepoSection
+            key={root}
+            status={status}
+            multi={repoRoots.length > 1}
+            busy={busy}
+            act={act}
+          />
+        ) : (
+          <Muted key={root}>loading {root}…</Muted>
+        )
+      })}
+      {error && (
+        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--git-deleted)', userSelect: 'text' }}>
+          {error}
+        </div>
+      )}
     </Panel>
   )
 }
 
-function RepoSection({ status, multi }: { status: RepoStatus; multi: boolean }): React.ReactElement {
+function RepoSection({
+  status,
+  multi,
+  busy,
+  act
+}: {
+  status: RepoStatus
+  multi: boolean
+  busy: boolean
+  act: (fn: () => Promise<unknown>) => Promise<void>
+}): React.ReactElement {
+  const [message, setMessage] = useState('')
+  const root = status.root
   const total =
     status.staged.length + status.unstaged.length + status.untracked.length + status.conflicts.length
 
+  const commit = useCallback(
+    (amend: boolean) => {
+      if (!message.trim() && !amend) return
+      void act(async () => {
+        await rpc['scm:commit']({ repoRoot: root, message, amend })
+        setMessage('')
+      })
+    },
+    [act, message, root]
+  )
+
+  const allUnstaged = [...status.unstaged, ...status.untracked].map((f) => f.path)
+
   return (
-    <div>
-      {multi && (
-        <div
-          style={{
-            display: 'flex',
-            gap: 6,
-            padding: '5px 10px',
-            fontSize: 11,
-            color: 'var(--fg-muted)',
-            background: 'var(--bg)',
-            position: 'sticky',
-            top: 0
-          }}
-        >
-          <span style={{ flex: 1 }}>{status.name}</span>
-          {status.branch && <span>{status.branch}</span>}
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
+      <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+        {multi && (
+          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 6 }}>{status.name}</div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, fontSize: 11, color: 'var(--fg-muted)' }}>
+          <span>{status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}</span>
+          {status.upstream && (status.ahead > 0 || status.behind > 0) && (
+            <span>↑{status.ahead} ↓{status.behind}</span>
+          )}
+          {status.operation !== 'none' && (
+            <span style={{ color: 'var(--git-conflict)' }}>{status.operation.toUpperCase()}</span>
+          )}
+          {status.stashCount > 0 && <span>stash {status.stashCount}</span>}
         </div>
-      )}
-      {total === 0 && <Muted>No changes.</Muted>}
-      <Group title="Merge Changes" files={status.conflicts} repoRoot={status.root} against={{ kind: 'worktree-vs-head' }} />
-      <Group title="Staged Changes" files={status.staged} repoRoot={status.root} against={{ kind: 'index-vs-head' }} />
-      <Group title="Changes" files={status.unstaged} repoRoot={status.root} against={{ kind: 'worktree-vs-index' }} />
-      <Group title="Untracked" files={status.untracked} repoRoot={status.root} against={{ kind: 'worktree-vs-head' }} />
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(false) }
+          }}
+          placeholder={`Message (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}Enter to commit)`}
+          rows={2}
+          style={{
+            width: '100%',
+            resize: 'vertical',
+            background: 'var(--bg-input)',
+            color: 'var(--fg)',
+            border: '1px solid transparent',
+            borderRadius: 2,
+            padding: '4px 6px',
+            font: 'inherit',
+            outline: 'none',
+            userSelect: 'text'
+          }}
+        />
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <button
+            disabled={busy || (!message.trim() && status.staged.length === 0)}
+            onClick={() => commit(false)}
+            style={primaryButton(busy || !message.trim())}
+          >
+            Commit
+          </button>
+          <button disabled={busy} onClick={() => commit(true)} style={ghostButton} title="Amend the last commit">
+            Amend
+          </button>
+          {allUnstaged.length > 0 && (
+            <button
+              disabled={busy}
+              onClick={() => void act(() => rpc['scm:stage']({ repoRoot: root, paths: allUnstaged }))}
+              style={ghostButton}
+              title="Stage everything"
+            >
+              Stage all
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {total === 0 && <Muted>No changes.</Muted>}
+        <FileGroup
+          title="Merge Changes" group="conflicts" files={status.conflicts} root={root} busy={busy} act={act}
+          against={{ kind: 'worktree-vs-head' }}
+        />
+        <FileGroup
+          title="Staged Changes" group="staged" files={status.staged} root={root} busy={busy} act={act}
+          against={{ kind: 'index-vs-head' }}
+        />
+        <FileGroup
+          title="Changes" group="unstaged" files={status.unstaged} root={root} busy={busy} act={act}
+          against={{ kind: 'worktree-vs-index' }}
+        />
+        <FileGroup
+          title="Untracked" group="untracked" files={status.untracked} root={root} busy={busy} act={act}
+          against={{ kind: 'worktree-vs-head' }}
+        />
+      </div>
     </div>
   )
 }
 
-function Group({
+function FileGroup({
   title,
+  group,
   files,
-  repoRoot,
+  root,
+  busy,
+  act,
   against
 }: {
   title: string
+  group: Group
   files: GitFileChange[]
-  repoRoot: string
+  root: string
+  busy: boolean
+  act: (fn: () => Promise<unknown>) => Promise<void>
   against: DiffTarget
 }): React.ReactElement | null {
   const openTab = useApp((s) => s.openTab)
   const workspaceId = useApp((s) => s.activeWorkspaceId)
+  const [hover, setHover] = useState<string | null>(null)
   if (files.length === 0) return null
+
+  const staged = group === 'staged'
 
   return (
     <div>
@@ -136,11 +254,14 @@ function Group({
         <span>{files.length}</span>
       </div>
       {files.map((f) => {
-        const letter = f.worktree !== '.' ? f.worktree : f.index
+        const letter = staged ? f.index : f.worktree !== '.' ? f.worktree : f.index
+        const showing = hover === f.path
         return (
           <div
-            key={f.path}
+            key={`${group}:${f.path}`}
             title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
+            onMouseEnter={() => setHover(f.path)}
+            onMouseLeave={() => setHover(null)}
             onClick={() => {
               if (!workspaceId) return
               openTab(workspaceId, {
@@ -149,7 +270,7 @@ function Group({
                 title: basename(f.path),
                 pinned: false,
                 filePath: f.path,
-                repoId: repoRoot,
+                repoId: root,
                 against
               })
             }}
@@ -160,10 +281,9 @@ function Group({
               height: 22,
               padding: '0 10px',
               fontSize: 12,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              background: showing ? 'var(--bg-hover)' : 'transparent'
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {basename(f.path)}
@@ -171,12 +291,82 @@ function Group({
             <span style={{ flex: 1, fontSize: 11, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {dirname(f.path)}
             </span>
-            <span style={{ color: LETTER_COLOR[letter] ?? 'var(--fg-muted)', fontWeight: 600 }}>{letter}</span>
+
+            {showing && (
+              <span style={{ display: 'flex', gap: 2 }} onClick={(e) => e.stopPropagation()}>
+                {!staged && (
+                  <RowButton
+                    title="Discard changes"
+                    disabled={busy}
+                    onClick={() => void act(() => rpc['scm:discard']({ repoRoot: root, paths: [f.path] }))}
+                  >
+                    ↺
+                  </RowButton>
+                )}
+                <RowButton
+                  title={staged ? 'Unstage' : 'Stage'}
+                  disabled={busy}
+                  onClick={() =>
+                    void act(() =>
+                      staged
+                        ? rpc['scm:unstage']({ repoRoot: root, paths: [f.path] })
+                        : rpc['scm:stage']({ repoRoot: root, paths: [f.path] })
+                    )
+                  }
+                >
+                  {staged ? '−' : '+'}
+                </RowButton>
+              </span>
+            )}
+
+            <span style={{ color: LETTER_COLOR[letter] ?? 'var(--fg-muted)', fontWeight: 600, width: 10, textAlign: 'center' }}>
+              {letter === '.' ? '' : letter}
+            </span>
           </div>
         )
       })}
     </div>
   )
+}
+
+function RowButton({
+  children,
+  onClick,
+  title,
+  disabled
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  title: string
+  disabled?: boolean
+}): React.ReactElement {
+  return (
+    <button
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      style={{ width: 18, height: 18, borderRadius: 3, cursor: 'pointer', opacity: disabled ? 0.3 : 0.8 }}
+    >
+      {children}
+    </button>
+  )
+}
+
+const primaryButton = (disabled: boolean): React.CSSProperties => ({
+  flex: 1,
+  height: 24,
+  borderRadius: 2,
+  background: disabled ? '#0078d455' : 'var(--accent)',
+  color: disabled ? 'var(--fg-muted)' : '#fff',
+  cursor: disabled ? 'default' : 'pointer'
+})
+
+const ghostButton: React.CSSProperties = {
+  height: 24,
+  padding: '0 8px',
+  borderRadius: 2,
+  background: 'var(--bg-input)',
+  cursor: 'pointer'
 }
 
 function Panel({ children }: { children: React.ReactNode }): React.ReactElement {

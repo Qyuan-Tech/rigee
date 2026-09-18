@@ -1,6 +1,7 @@
 import { loadXterm } from './lazy'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import { editorFontSize, monoFamily } from './fonts'
 
 /**
  * xterm.js instances, owned outside React.
@@ -17,6 +18,8 @@ export interface TerminalHandle {
   /** The element xterm rendered into; re-parented on tab switch. */
   element: HTMLDivElement
   paneId: string | null
+  /** The single live onData subscription; replaced, never stacked, when the effect re-runs. */
+  input: { dispose: () => void } | null
   dispose: () => void
 }
 
@@ -24,8 +27,7 @@ const handles = new Map<string, TerminalHandle>()
 /** Guards against two concurrent mounts racing to create the same terminal. */
 const creating = new Map<string, Promise<TerminalHandle>>()
 
-const FONT_FAMILY =
-  '"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace'
+
 
 export function getTerminal(tabId: string): TerminalHandle | undefined {
   return handles.get(tabId)
@@ -46,8 +48,8 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
 
     const term = new Terminal({
       allowProposedApi: true,
-      fontFamily: FONT_FAMILY,
-      fontSize: 13,
+      fontFamily: monoFamily(),
+      fontSize: editorFontSize(),
       lineHeight: 1.2,
       // Leave letterSpacing at 0: any non-integer advance makes the WebGL atlas fall back to a
       // slow per-glyph path.
@@ -84,8 +86,10 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
       fit,
       element,
       paneId: null,
+      input: null,
       dispose: () => {
         handles.delete(tabId)
+        handle.input?.dispose()
         term.dispose()
         element.remove()
       }

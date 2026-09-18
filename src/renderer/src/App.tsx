@@ -8,7 +8,7 @@ import { Splitter } from './components/Splitter'
 import { rpc } from './ipc'
 import { isMac } from './ipc'
 import { useApp } from './store'
-import type { PersistedState } from '@shared/types'
+import { SCRATCH_WORKSPACE_ID, scratchWorkspace, type PersistedState } from '@shared/types'
 
 export function App(): React.ReactElement {
   const ready = useApp((s) => s.ready)
@@ -18,11 +18,20 @@ export function App(): React.ReactElement {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const state = (await rpc['state:load']()) as PersistedState
+      const [state, platform] = await Promise.all([
+        rpc['state:load']() as Promise<PersistedState>,
+        rpc['app:getPlatformInfo']()
+      ])
       if (cancelled) return
       const store = useApp.getState()
-      store.setWorkspaces(state.workspaces)
-      store.setActiveWorkspace(state.activeWorkspaceId ?? state.workspaces[0]?.id ?? null)
+
+      // Scratch is synthesised, never loaded: it must exist even on a first run, and its
+      // definition should follow the app rather than whatever was persisted long ago.
+      const persisted = state.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
+      store.setWorkspaces([scratchWorkspace(platform.homeDir), ...persisted])
+      store.setActiveWorkspace(
+        state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID
+      )
       // Restore per-workspace tabs and the panel layout of the active workspace.
       for (const [wsId, ui] of Object.entries(state.ui)) {
         useApp.setState((s) => ({

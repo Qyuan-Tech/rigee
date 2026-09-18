@@ -32,8 +32,11 @@
   --tabstrip-h: 35px;
   --statusbar-h: 22px;
 
-  --font-ui: ui-sans-serif, -apple-system, "Segoe UI", Ubuntu, sans-serif;
-  --font-mono: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  /* Overwritten at boot by src/fonts.ts with the exact VS Code stack for this platform.
+     These are only the values used before that runs, and by any stylesheet loaded standalone. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, Ubuntu, sans-serif;
+  --font-mono: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace;
+  --font-ui-size: 13px;
 }
 
 * {
@@ -51,7 +54,7 @@ body,
 body {
   background: var(--bg);
   color: var(--fg);
-  font: 13px/1.4 var(--font-ui);
+  font: var(--font-ui-size) / 1.4 var(--font-ui);
   -webkit-font-smoothing: antialiased;
   /* The whole shell is chrome; text selection is opt-in per component. */
   user-select: none;

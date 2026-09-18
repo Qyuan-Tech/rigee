@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadMonaco } from '../lazy'
+import { editorFontSize, monoFamily } from '../fonts'
 import { rpc } from '../ipc'
 import type { DiffTab, EditorTab } from '@shared/types'
 import type * as Monaco from 'monaco-editor'
@@ -37,8 +38,8 @@ export function EditorPane({ tab }: { tab: EditorTab }): React.ReactElement {
           theme: 'vs-dark',
           readOnly: tab.readOnly,
           automaticLayout: true,
-          fontFamily: 'var(--font-mono)',
-          fontSize: 13,
+          fontFamily: monoFamily(),
+          fontSize: editorFontSize(),
           minimap: { enabled: true },
           scrollBeyondLastLine: false,
           renderWhitespace: 'selection',
@@ -99,8 +100,8 @@ export function DiffPane({ tab }: { tab: DiffTab }): React.ReactElement {
           readOnly: true,
           automaticLayout: true,
           renderSideBySide: true,
-          fontFamily: 'var(--font-mono)',
-          fontSize: 13,
+          fontFamily: monoFamily(),
+          fontSize: editorFontSize(),
           ignoreTrimWhitespace: false
         })
         editor.setModel({ original, modified })
