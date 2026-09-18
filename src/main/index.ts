@@ -13,6 +13,8 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { BrowserTabs } from './browser'
+import type { TmuxClient } from './tmux/client'
+import { TmuxManager } from './tmux/manager'
 import { emit, handle } from './ipc'
 import { loadState, saveUi, saveWorkspaces } from './store'
 import type { FileStat, RepoStatus, ViewBounds } from '@shared/types'
@@ -32,6 +34,7 @@ const MAX_EDITABLE_BYTES = 8 * 1024 * 1024
 let window: BaseWindow | null = null
 let shellView: WebContentsView | null = null
 let browserTabs: BrowserTabs | null = null
+let tmux: TmuxManager | null = null
 
 const shellWc = (): WebContents | null =>
   shellView && !shellView.webContents.isDestroyed() ? shellView.webContents : null
@@ -70,6 +73,7 @@ function createWindow(): void {
   window.on('resize', layoutShell)
 
   browserTabs = new BrowserTabs(window, shellWc)
+  tmux = new TmuxManager(shellWc)
 
   // The trusted shell never opens windows itself; anything it tries goes to the real browser.
   shellView.webContents.setWindowOpenHandler(({ url }) => {
@@ -166,7 +170,10 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => { browserTabs?.destroyAll() })
+app.on('before-quit', () => {
+  browserTabs?.destroyAll()
+  tmux?.disposeAll()
+})
 
 /**
  * HTTP 401/407. Registered once on `app`, not per WebContents: Session has no 'login' event, and
@@ -293,25 +300,57 @@ function registerHandlers(): void {
   handle('browser:stop', ({ viewId }) => { browserTabs?.stop(viewId) })
   handle('browser:openDevTools', ({ viewId }) => { browserTabs?.openDevTools(viewId) })
 
+  registerTmuxHandlers()
   registerPlaceholderHandlers()
 }
 
+function registerTmuxHandlers(): void {
+  const mgr = (): TmuxManager => {
+    if (!tmux) throw new Error('window not ready')
+    return tmux
+  }
+  const requireClient = (workspaceId: string): TmuxClient => {
+    const c = mgr().client(workspaceId)
+    if (!c) throw new Error(`no tmux session for workspace ${workspaceId}`)
+    return c
+  }
+
+  handle('tmux:connect', async ({ workspaceId, sessionName, cwd }) =>
+    // Initial geometry is a placeholder; the renderer sends the real size via tmux:resizeClient
+    // as soon as the xterm instance has measured itself.
+    mgr().connect(workspaceId, sessionName, cwd, 120, 30)
+  )
+  handle('tmux:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
+  handle('tmux:listState', ({ workspaceId }) => mgr().listState(workspaceId))
+
+  handle('tmux:newWindow', async ({ workspaceId, cwd }) => ({
+    windowId: await requireClient(workspaceId).newWindow(cwd)
+  }))
+  handle('tmux:splitPane', async ({ workspaceId, paneId, direction }) => ({
+    paneId: await requireClient(workspaceId).splitPane(paneId, direction)
+  }))
+  handle('tmux:killPane', async ({ workspaceId, paneId }) => {
+    await requireClient(workspaceId).killPane(paneId)
+  })
+  handle('tmux:selectPane', async ({ workspaceId, paneId }) => {
+    await requireClient(workspaceId).selectPane(paneId)
+  })
+  handle('tmux:resizeClient', ({ workspaceId, cols, rows }) => {
+    // The renderer addresses the active window; per-window overrides keep tabs independently
+    // sized instead of all following one client geometry.
+    const client = mgr().client(workspaceId)
+    const windowId = mgr().listState(workspaceId).windows.find((w) => w.active)?.id
+    if (client && windowId) client.resizeWindow(windowId, cols, rows)
+  })
+  handle('terminal:requestPort', ({ workspaceId }) => { mgr().establishPort(workspaceId) })
+}
+
 /**
- * tmux and source control are not implemented yet — the control-mode protocol and the git
- * plumbing are still being pinned down. These keep the IPC surface total so the renderer can be
- * built against the real contract, and they fail loudly rather than silently returning junk.
+ * Source control is not implemented yet — the git plumbing is still being pinned down. These keep
+ * the IPC surface total so the renderer can be built against the real contract, and they fail
+ * loudly rather than silently returning junk.
  */
 function registerPlaceholderHandlers(): void {
-  handle('tmux:connect', () => ({ status: 'unavailable' as const, reason: 'tmux integration not implemented yet' }))
-  handle('tmux:disconnect', () => { /* no-op */ })
-  handle('tmux:listState', () => ({ windows: [], panes: [] }))
-  handle('tmux:newWindow', () => { throw new Error('not implemented') })
-  handle('tmux:splitPane', () => { throw new Error('not implemented') })
-  handle('tmux:killPane', () => { /* no-op */ })
-  handle('tmux:selectPane', () => { /* no-op */ })
-  handle('tmux:resizeClient', () => { /* no-op */ })
-  handle('terminal:requestPort', () => { /* no-op until the tmux client exists */ })
-
   const emptyStatus = (repoRoot: string): RepoStatus => ({
     repoId: repoRoot,
     root: repoRoot,

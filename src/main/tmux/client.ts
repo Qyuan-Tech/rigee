@@ -314,7 +314,11 @@ export class TmuxClient extends EventEmitter {
     try {
       await this.command(`load-buffer -b ${bufferName} ${quote(file)}`)
       // -p requests bracketed paste; tmux emits the markers only if the application enabled
-      // them, so it is always safe. -r keeps LF raw instead of translating to CR.
+      // them, so it is always safe either way.
+      // -r keeps LF raw. paste-buffer would otherwise translate LF to CR, which would make a
+      // write behave differently either side of the SEND_KEYS_MAX_BYTES threshold. write() is a
+      // transport, not a translator: xterm.js already emits CR for Enter, so the bytes handed to
+      // us are terminal-correct and must be delivered unchanged.
       await this.command(`paste-buffer -d -p -r -b ${bufferName} -t ${paneId}`)
     } finally {
       await unlink(file).catch(() => { /* best effort */ })
