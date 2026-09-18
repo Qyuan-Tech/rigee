@@ -1,39 +1,67 @@
 /*
- * One token set drives the app chrome, Monaco and xterm.js so the three read as one product.
- * Values track VSCode Dark Modern closely enough that Monaco's built-in theme blends in.
+ * onestop design tokens.
+ *
+ * One palette drives the app chrome, Monaco and xterm — see src/renderer/src/fonts.ts for the
+ * matching type stacks and the custom Monaco theme in lazy.ts. Three surfaces that disagree about
+ * their background is the single thing that makes an editor look unfinished, so the editor and
+ * terminal backgrounds are the same token as the panes around them, not their defaults.
+ *
+ * The accent runs cyan -> indigo -> violet, the same ramp as the app icon.
  */
 :root {
-  --bg: #1f1f1f;
-  --bg-elevated: #181818;
-  --bg-input: #313131;
-  --bg-hover: #2a2d2e;
-  --bg-active: #04395e;
-  --bg-selected: #37373d;
+  /* --- surfaces, darkest to lightest --- */
+  --bg-deep: #0a0d13; /* window behind everything */
+  --bg: #0e1118; /* editor / terminal / main content */
+  --bg-panel: #0b0e15; /* side panels, title bar, status bar */
+  --bg-raised: #151a24; /* inputs, hovered rows */
+  --bg-hover: #161b26;
+  --bg-active: #1b2130;
+  --bg-selected: #1d2434;
 
-  --fg: #cccccc;
-  --fg-muted: #8b8b8b;
-  --fg-bright: #ffffff;
+  /* --- text --- */
+  --fg: #c8cfdd;
+  --fg-bright: #f0f4fa;
+  --fg-muted: #6e7889;
+  --fg-faint: #4a5263;
 
-  --border: #2b2b2b;
-  --border-strong: #3c3c3c;
-  --focus: #0078d4;
+  /* --- lines --- */
+  --border: #1a1f2b;
+  --border-strong: #252c3a;
 
-  --accent: #0078d4;
-  --accent-hover: #026ec1;
+  /* --- accent ramp, matching the icon --- */
+  --accent-cyan: #22d3ee;
+  --accent: #7c8cff;
+  --accent-violet: #c084fc;
+  --accent-hover: #8f9dff;
+  --accent-dim: #7c8cff26;
+  --accent-gradient: linear-gradient(135deg, #22d3ee 0%, #818cf8 52%, #c084fc 100%);
 
-  --git-modified: #e2c08d;
-  --git-added: #81b88b;
-  --git-deleted: #c74e39;
-  --git-untracked: #73c991;
-  --git-conflict: #e4676b;
-  --git-ignored: #8c8c8c;
+  /* --- git status --- */
+  --git-modified: #e2b344;
+  --git-added: #6dc48a;
+  --git-deleted: #e06c75;
+  --git-untracked: #6dc48a;
+  --git-conflict: #e06c75;
+  --git-ignored: #5a6272;
 
-  --titlebar-h: 36px;
-  --tabstrip-h: 35px;
-  --statusbar-h: 22px;
+  /* --- metrics --- */
+  --titlebar-h: 38px;
+  --tabstrip-h: 36px;
+  --statusbar-h: 24px;
+  --row-h: 24px;
 
-  /* Overwritten at boot by src/fonts.ts with the exact VS Code stack for this platform.
-     These are only the values used before that runs, and by any stylesheet loaded standalone. */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  --shadow-sm: 0 1px 2px #0006;
+  --shadow-md: 0 4px 16px #00000059;
+  --shadow-lg: 0 12px 40px #00000073;
+
+  --t-fast: 90ms ease;
+  --t-med: 160ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Replaced at boot by src/fonts.ts with the exact VS Code stack for this platform. */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, Ubuntu, sans-serif;
   --font-mono: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace;
   --font-ui-size: 13px;
@@ -52,11 +80,12 @@ body,
 }
 
 body {
-  background: var(--bg);
+  background: var(--bg-deep);
   color: var(--fg);
-  font: var(--font-ui-size) / 1.4 var(--font-ui);
+  font: var(--font-ui-size) / 1.45 var(--font-ui);
   -webkit-font-smoothing: antialiased;
-  /* The whole shell is chrome; text selection is opt-in per component. */
+  text-rendering: optimizeLegibility;
+  /* The shell is chrome; text selection is opt-in per component. */
   user-select: none;
   cursor: default;
 }
@@ -66,33 +95,614 @@ button {
   color: inherit;
   background: none;
   border: none;
-  cursor: default;
+  padding: 0;
+  cursor: pointer;
 }
 
-input {
+button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+input,
+textarea {
   font: inherit;
   color: var(--fg);
-  background: var(--bg-input);
-  border: 1px solid transparent;
-  border-radius: 2px;
-  padding: 3px 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
   outline: none;
+  user-select: text;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
 
-input:focus {
-  border-color: var(--focus);
+input::placeholder,
+textarea::placeholder {
+  color: var(--fg-faint);
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #4f4f4f80;
-  border-radius: 5px;
+  background: #ffffff14;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #6f6f6fcc;
+  background: #ffffff2b;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ===================================================================== */
+/* Shell                                                                  */
+/* ===================================================================== */
+
+.shell {
+  display: grid;
+  grid-template-rows: var(--titlebar-h) 1fr var(--statusbar-h);
+  height: 100%;
+  background: var(--bg-deep);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+.titlebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--fg-muted);
+}
+
+.titlebar__mark {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background: var(--accent-gradient);
+  box-shadow: 0 0 10px #7c8cff4d;
+}
+
+.titlebar__context {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
+.body {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pane {
+  flex: 0 0 auto;
+  min-width: 0;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.center {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* A hairline that widens into the accent while dragging. */
+.splitter {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 5;
+  background: var(--border);
+  transition: background var(--t-fast);
+}
+
+.splitter:hover,
+.splitter--active {
+  background: var(--accent);
+}
+
+.splitter__grab {
+  position: absolute;
+}
+
+/* ===================================================================== */
+/* Sections and rows                                                      */
+/* ===================================================================== */
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+
+.section-header__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-bright);
+}
+
+.icon-button:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--row-h);
+  padding: 0 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  position: relative;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.row--clickable {
+  cursor: pointer;
+}
+
+.row--clickable:hover {
+  background: var(--bg-hover);
+}
+
+.row--selected {
+  background: var(--bg-selected);
+  color: var(--fg-bright);
+}
+
+/* Accent bar on the selected workspace, the one place the ramp appears in the chrome. */
+.row--selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent-gradient);
+}
+
+.row__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__meta {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.row__actions {
+  display: none;
+  align-items: center;
+  gap: 1px;
+}
+
+.row:hover .row__actions {
+  display: flex;
+}
+
+.row:hover .row__meta--hide-on-hover {
+  display: none;
+}
+
+.muted {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-faint);
+}
+
+/* ===================================================================== */
+/* Tabs                                                                   */
+/* ===================================================================== */
+
+.tabstrip {
+  height: var(--tabstrip-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tabstrip::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 12px;
+  min-width: 120px;
+  max-width: 220px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  position: relative;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.tab--active {
+  background: var(--bg);
+  color: var(--fg-bright);
+}
+
+.tab--active::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--accent-gradient);
+}
+
+.tab__icon {
+  display: grid;
+  place-items: center;
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+
+.tab--active .tab__icon {
+  color: var(--accent);
+}
+
+.tab__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab__close {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: var(--r-sm);
+  color: var(--fg-faint);
+  opacity: 0;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+
+.tab:hover .tab__close,
+.tab--active .tab__close {
+  opacity: 1;
+}
+
+.tab__close:hover {
+  background: var(--bg-active);
+  color: var(--fg-bright);
+}
+
+.tabstrip__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+/* ===================================================================== */
+/* Buttons                                                                */
+/* ===================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--fg-bright);
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #0b0e15;
+  font-weight: 600;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: #0b0e15;
+}
+
+.btn--block {
+  flex: 1;
+}
+
+/* ===================================================================== */
+/* Source control                                                         */
+/* ===================================================================== */
+
+.scm__head {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.scm__branch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.scm__branch-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge--warn {
+  background: #e06c7524;
+  color: var(--git-conflict);
+}
+
+.scm__message {
+  width: 100%;
+  resize: vertical;
+  min-height: 48px;
+  font-size: 12.5px;
+}
+
+.scm__buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.scm__group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--fg-faint);
+}
+
+.status-letter {
+  width: 13px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.path-dim {
+  flex: 1;
+  font-size: 11px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* ===================================================================== */
+/* Status bar                                                             */
+/* ===================================================================== */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}
+
+.statusbar__item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* ===================================================================== */
+/* Empty states and overlays                                              */
+/* ===================================================================== */
+
+.empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  text-align: center;
+  color: var(--fg-faint);
+}
+
+.empty__mark {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 16px;
+  border-radius: var(--r-lg);
+  background: var(--accent-gradient);
+  opacity: 0.16;
+}
+
+.empty__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+
+.empty__hint {
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 2px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  background: #0e1118e6;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  /* Never swallow clicks: if this renders over a usable terminal, eating pointer events would
+     stop xterm's textarea taking focus and the terminal would look dead for the wrong reason. */
+  pointer-events: none;
+}
+
+.overlay--error {
+  color: var(--git-deleted);
+}
+
+.overlay--busy {
+  color: var(--fg-muted);
+}
+
+/* ===================================================================== */
+/* Browser chrome                                                         */
+/* ===================================================================== */
+
+.browser__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.browser__address {
+  flex: 1;
+  height: 26px;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.error-banner {
+  padding: 7px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--git-deleted);
+  background: #e06c7514;
+  border-top: 1px solid #e06c7526;
+  user-select: text;
 }

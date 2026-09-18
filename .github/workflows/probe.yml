@@ -1,0 +1,19 @@
+# Diagnostic only — delete once the release workflow is green.
+#
+# Deliberately uses no `uses:` at all, not even actions/checkout. If this run succeeds, the
+# release workflow's failure is an Actions *policy* problem (which actions are permitted). If it
+# fails the same way — a few seconds, no step logs — then no job can run here at all, and the
+# cause is runner availability or Actions billing for this private repository, not the YAML.
+name: probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "runner reached"
+          uname -a
+          node --version || true
