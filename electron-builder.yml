@@ -39,7 +39,12 @@ mac:
       arch: [x64, arm64]
   category: public.app-category.developer-tools
   darkModeSupport: true
-  hardenedRuntime: true
+  # Hardened runtime is a NOTARIZATION requirement, not a signing one, and combining it with an
+  # ad-hoc signature is what stops the app launching through LaunchServices: run the binary
+  # directly and it is fine, double-click it and it dies before main with only
+  # `codesign_util.cc: task_name_for_pid` on stderr. Turn it on again together with a real
+  # Developer ID and notarization.
+  hardenedRuntime: false
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
