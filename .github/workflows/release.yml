@@ -85,6 +85,20 @@ jobs:
         # partial matrix cannot leave a half-populated release behind.
         run: pnpm exec electron-builder ${{ matrix.targets }} --publish never
 
+      # A packaged app that throws during module evaluation shows no window and logs nothing,
+      # so only actually booting it catches it. Needs a display on Linux.
+      - name: Boot the packaged app
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          # Both arches are built; run the one native to the runner, since Rosetta may not be
+          # present. macos-latest is arm64, which electron-builder puts in mac-arm64/.
+          DIR="release/$(node -p "require('./package.json').version")"
+          APP="$DIR/mac-arm64/onestop.app"
+          [ -d "$APP" ] || APP="$DIR/mac/onestop.app"
+          echo "booting $APP"
+          ONESTOP_SMOKE=1 "$APP/Contents/MacOS/onestop"
+
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.name }}

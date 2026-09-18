@@ -7,9 +7,11 @@ directories:
 files:
   - out/**/*
   - package.json
-  - '!node_modules/**/*'
-  - 'node_modules/node-pty/**/*'
-  - 'node_modules/@parcel/watcher*/**/*'
+  # NO blanket '!node_modules/**/*' + allowlist. electron-builder already packs `dependencies`
+  # and their transitive deps and nothing else, and hand-listing packages silently drops the
+  # things they in turn require: @parcel/watcher needs picomatch, and without it the main process
+  # threw during module evaluation and the app produced no output whatsoever — no window, no log,
+  # nothing to debug. Prune inside the packages instead of choosing the packages.
   - '!node_modules/node-pty/{src,scripts,deps,third_party,typings}/**'
   # @electron/rebuild output is host-arch only and SHADOWS the correct prebuild
   # (node-pty resolves build/Release before prebuilds/). It poisons cross-packaging.

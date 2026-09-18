@@ -18,6 +18,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm tmux:selftest` | 26 checks against a real tmux server on a private socket |
 | `pnpm git:selftest` | 48 checks against the git binary and a fixture repo |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
+| `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
 
 ## Layout
@@ -78,6 +79,13 @@ webContents; a BaseWindow does not hand it to a WebContentsView. The window look
 reports focus wherever it was set programmatically, and yet nothing the user types reaches the
 app — not the terminal, not the commit box. `focusActiveView()` is called after load, on window
 focus, and whenever a browser tab is shown or hidden. `pnpm smoke` asserts `shellFocused=true`.
+
+**Do not hand-list packages in electron-builder `files`.** It packs `dependencies` and their
+transitive deps already. An allowlist written when there was one dependency silently dropped
+`picomatch`, which `@parcel/watcher` requires, and the packaged app then threw during module
+evaluation and produced no window, no log and no exit code worth reading — the failure mode is
+invisible. Prune *inside* packages, never choose packages. `pnpm pack:check` boots the packaged
+app so this cannot ship again.
 
 **Do not watch directories with chokidar.** It opens one fs.watch per directory, and a
 GUI-launched app on macOS inherits `launchctl limit maxfiles` — a soft limit of **256**, not the
