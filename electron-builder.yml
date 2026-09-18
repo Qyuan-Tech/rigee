@@ -9,6 +9,7 @@ files:
   - package.json
   - '!node_modules/**/*'
   - 'node_modules/node-pty/**/*'
+  - 'node_modules/@parcel/watcher*/**/*'
   - '!node_modules/node-pty/{src,scripts,deps,third_party,typings}/**'
   # @electron/rebuild output is host-arch only and SHADOWS the correct prebuild
   # (node-pty resolves build/Release before prebuilds/). It poisons cross-packaging.
@@ -22,6 +23,7 @@ files:
 asar: true
 asarUnpack:
   - '**/node_modules/node-pty/**'
+  - '**/node_modules/@parcel/watcher*/**'
 
 extraMetadata:
   main: out/main/index.js

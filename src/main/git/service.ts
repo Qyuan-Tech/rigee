@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { BlobReader, looksBinary } from './blobs'
 import { git, gitText } from './exec'
 import { readStatus, resolveRepoPaths, type RepoPaths } from './status'
+import { ScmWatchers } from './watcher'
 import type { DiffTarget, RepoStatus } from '@shared/types'
 
 /**
@@ -20,6 +21,9 @@ interface Repo {
 
 export class GitService {
   private readonly repos = new Map<string, Repo>()
+  private watchers: ScmWatchers | null = null
+  /** Last status emitted per repo, so unchanged refreshes stay silent. */
+  private readonly lastStatusKey = new Map<string, string>()
 
   private async repo(repoRoot: string): Promise<Repo> {
     let entry = this.repos.get(repoRoot)
@@ -162,8 +166,68 @@ export class GitService {
     return { sha }
   }
 
+  /**
+   * Watch these repositories and push a fresh status whenever anything changes, replacing the
+   * renderer's polling. Called again on every workspace switch; repos no longer in the list are
+   * released.
+   */
+  async watch(repoRoots: string[], onStatus: (status: RepoStatus) => void): Promise<void> {
+    this.watchers ??= new ScmWatchers(async (paths) => {
+      const status = await readStatus(paths)
+      // Emit only when the status actually differs.
+      //
+      // Filesystem events are not the signal the UI wants; a change in what git reports is. This
+      // matters beyond saving renders: we deliberately let git write back its refreshed index
+      // (see the --no-optional-locks note in exec.ts), so our own `git status` mutates
+      // .git/index, which trips the watcher, which runs status again. Comparing results breaks
+      // that loop at the only place it can be broken correctly.
+      const key = statusKey(status)
+      if (this.lastStatusKey.get(paths.root) === key) return
+      this.lastStatusKey.set(paths.root, key)
+      onStatus(status)
+    })
+
+    const resolved: string[] = []
+    for (const root of repoRoots) {
+      try {
+        const { paths } = await this.repo(root)
+        resolved.push(paths.root)
+        await this.watchers.watch(paths)
+      } catch (err) {
+        console.warn(`[git] cannot watch ${root}: ${String(err)}`)
+      }
+    }
+    this.watchers.retain(new Set(resolved))
+  }
+
   dispose(): void {
+    this.lastStatusKey.clear()
+    this.watchers?.dispose()
+    this.watchers = null
     for (const repo of new Set(this.repos.values())) repo.blobs.dispose()
     this.repos.clear()
   }
+}
+
+
+/**
+ * Identity of a status for change detection. `at` is excluded — it is a timestamp, so including
+ * it would make every refresh look like a change and defeat the whole point.
+ */
+function statusKey(s: RepoStatus): string {
+  const files = (fs: RepoStatus['staged']): string =>
+    fs.map((f) => `${f.path}:${f.origPath ?? ''}:${f.index}${f.worktree}`).join('|')
+  return [
+    s.branch,
+    s.upstream,
+    s.ahead,
+    s.behind,
+    s.detachedAt,
+    s.operation,
+    s.stashCount,
+    files(s.staged),
+    files(s.unstaged),
+    files(s.untracked),
+    files(s.conflicts)
+  ].join('\u001f')
 }

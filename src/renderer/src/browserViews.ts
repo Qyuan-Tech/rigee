@@ -50,6 +50,8 @@ export function showOnly(tabId: string | null): void {
   if (keep) {
     void rpc['browser:setVisible']({ viewId: keep, visible: true })
   } else {
+    // Hiding every browser view also hands keyboard focus back to the shell, which main does as
+    // part of browser:setVisible(false).
     for (const viewId of viewByTab.values()) {
       void rpc['browser:setVisible']({ viewId, visible: false })
     }

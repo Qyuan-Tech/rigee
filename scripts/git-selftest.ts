@@ -13,6 +13,17 @@ import { parsePorcelainV2 } from '../src/main/git/status.ts'
 
 const DIR = '/tmp/onestop-git-selftest'
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+async function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (pred()) return true
+    await sleep(50)
+  }
+  return pred()
+}
+
 let failures = 0
 let checks = 0
 
@@ -204,6 +215,41 @@ async function liveTests(): Promise<void> {
     g('merge', '--abort')
     st = await svc.status(DIR)
     eq('operation clears after abort', st.operation, 'none')
+    // --- watching -------------------------------------------------------
+    // Reset to a clean, non-conflicted tree first.
+    g('reset', '-q', '--hard', 'HEAD')
+
+    const seen: string[] = []
+    await svc.watch([DIR], (s2) => {
+      seen.push(`${s2.unstaged.length}u/${s2.staged.length}s/${s2.untracked.length}?`)
+    })
+
+    // Settle, then confirm the watcher is quiet when nothing happens. This is the feedback-loop
+    // check: git's fsmonitor cookie files are created and deleted by every status we run
+    // ourselves, so watching them would refresh forever.
+    await sleep(900)
+    seen.length = 0
+    await svc.status(DIR)
+    await sleep(900)
+    eq('idle watcher fires nothing, even while we poll status', seen.length, 0)
+
+    // A worktree write must push a status without anyone asking.
+    writeFileSync(join(DIR, 'watched.txt'), 'hello\n')
+    const gotWorktree = await waitFor(() => seen.length > 0, 4000)
+    check('worktree write pushes a status', gotWorktree, JSON.stringify(seen))
+
+    // Staging from outside the service — as the user's own terminal would — must also push.
+    seen.length = 0
+    g('add', 'watched.txt')
+    const gotIndex = await waitFor(() => seen.some((x) => x.includes('1s')), 4000)
+    check('external git add pushes a status', gotIndex, JSON.stringify(seen))
+
+    // A burst must collapse, not produce one refresh per file.
+    seen.length = 0
+    for (let i = 0; i < 200; i++) writeFileSync(join(DIR, `burst-${i}.txt`), 'x')
+    await sleep(1500)
+    check('200 writes collapse into a handful of refreshes', seen.length > 0 && seen.length <= 4,
+      `${seen.length} refreshes`)
   } finally {
     svc.dispose()
     rmSync(DIR, { recursive: true, force: true })

@@ -151,8 +151,23 @@ export class BrowserTabs {
     if (!entry) return
     entry.visible = visible
     entry.view.setVisible(visible)
-    // Raise the active view above its siblings; addChildView on an existing child re-appends it.
-    if (visible) this.window.contentView.addChildView(entry.view)
+    if (visible) {
+      // Raise above its siblings; addChildView on an existing child re-appends it.
+      this.window.contentView.addChildView(entry.view)
+      // And take keyboard focus, or typing in the page would go to the shell behind it.
+      entry.view.webContents.focus()
+    }
+  }
+
+  /** Focus the visible browser view, if any. Returns whether one took focus. */
+  focusVisible(): boolean {
+    for (const entry of this.views.values()) {
+      if (entry.visible && !entry.view.webContents.isDestroyed()) {
+        entry.view.webContents.focus()
+        return true
+      }
+    }
+    return false
   }
 
   /** Hide every view except `keepId`. Used on tab switch and when a non-browser tab activates. */

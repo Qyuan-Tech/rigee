@@ -75,6 +75,13 @@ function createWindow(): void {
   layoutShell()
   window.on('resize', layoutShell)
 
+  // A BaseWindow does not hand keyboard focus to a child view the way a BrowserWindow hands it
+  // to its own webContents. Without this the window looks alive, the DOM reports focus on
+  // whatever was focused programmatically, and yet nothing the user types reaches the app —
+  // not the terminal, not the commit box, nothing. Verified: shellView.webContents.isFocused()
+  // was false after show until focus() was called explicitly.
+  window.on('focus', focusActiveView)
+
   browserTabs = new BrowserTabs(window, shellWc)
   tmux = new TmuxManager(shellWc)
 
@@ -87,6 +94,7 @@ function createWindow(): void {
   shellView.webContents.once('did-finish-load', () => {
     mark('shell did-finish-load')
     window?.show()
+    focusActiveView()
     if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -155,7 +163,7 @@ async function runSmokeTest(): Promise<void> {
       })()`,
       true
     )) as string
-    console.log('[smoke]', report)
+    console.log('[smoke]', report, `shellFocused=${wc.isFocused()}`)
     const parsed = JSON.parse(report) as {
       bridge: boolean
       rootChildren: number
@@ -262,6 +270,15 @@ async function runTerminalSmoke(): Promise<void> {
     log('threw:', err)
     app.exit(1)
   }
+}
+
+/**
+ * Give keyboard focus to whichever view should have it: the visible browser tab if there is one,
+ * otherwise the React shell.
+ */
+function focusActiveView(): void {
+  const browser = browserTabs?.focusVisible()
+  if (!browser) shellWc()?.focus()
 }
 
 function layoutShell(): void {
@@ -404,8 +421,12 @@ function registerHandlers(): void {
   })
   handle('browser:destroy', ({ viewId }) => { browserTabs?.destroy(viewId) })
   handle('browser:setVisible', ({ viewId, visible }) => {
-    if (visible) browserTabs?.showOnly(viewId)
-    else browserTabs?.setVisible(viewId, false)
+    if (visible) {
+      browserTabs?.showOnly(viewId)
+    } else {
+      browserTabs?.setVisible(viewId, false)
+      shellWc()?.focus()
+    }
   })
   handle('browser:setBounds', ({ viewId, bounds }: { viewId: string; bounds: ViewBounds }) => {
     browserTabs?.setBounds(viewId, bounds)
@@ -472,8 +493,7 @@ function registerScmHandlers(): void {
   handle('scm:unstage', ({ repoRoot, paths }) => gitService.unstage(repoRoot, paths))
   handle('scm:discard', ({ repoRoot, paths }) => gitService.discard(repoRoot, paths))
   handle('scm:commit', ({ repoRoot, message, amend }) => gitService.commit(repoRoot, message, amend))
-  handle('scm:watch', () => {
-    // TODO: watch the .git paths that matter (HEAD, index, refs/, packed-refs, MERGE_HEAD) and
-    // push scm:status on change. Until then the renderer refreshes on its own.
-  })
+  handle('scm:watch', ({ repoRoots }) =>
+    gitService.watch(repoRoots, (status) => emit(shellWc(), 'scm:status', { status }))
+  )
 }

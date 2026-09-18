@@ -7,8 +7,8 @@ terminal multiplexer, an editor you use to read diffs, and a browser full of doc
 those three in one window without pretending any of them is something it isn't — the terminal is
 real tmux, the editor is the real VS Code editor, and the browser is real Chromium.
 
-> **Status: early.** The shell, browser tabs, editor and tmux terminals work. Source control is
-> not implemented yet — the panel renders but reports no changes. See
+> **Status: early but usable.** Terminals, editor, browser tabs and source control all work.
+> Hunk-level staging and the tmux split UI do not yet. See
 > [What works today](#what-works-today).
 
 ## What it looks like
@@ -57,7 +57,8 @@ Builds are currently **unsigned**, so every OS will object the first time:
 
 ### Requirements
 
-**tmux** must be installed for terminal tabs. Everything else works without it.
+**tmux** must be installed for terminal tabs. Everything else works without it. onestop finds it
+even when launched from Finder, where an app inherits almost no PATH.
 
 ```bash
 brew install tmux        # macOS
@@ -76,8 +77,11 @@ distribution. The status bar tells you which tmux was detected, or that none was
 | Editor — Monaco, syntax highlighting, view state kept per tab | works |
 | Browser tabs — navigation, persistent logins, DevTools, `target=_blank` opens a tab | works |
 | Terminals — real tmux via control mode, one session per workspace | works |
+| Scratch workspace — terminals without setting anything up | works |
+| Source control — status, diff, stage, unstage, discard, commit, amend | works |
+| Live refresh — the panel updates when git runs in your own terminal | works |
+| Staging a hunk or a line range | **not implemented** — whole files only |
 | Split panes, tmux window/tab mapping in the UI | partial — panes exist, the split UI does not |
-| Source control — status, diff, stage, commit | **not implemented** |
 | HTTP auth prompt in browser tabs | **not implemented** — auth requests are cancelled |
 
 ## Your tmux is safe

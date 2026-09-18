@@ -16,6 +16,8 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm tmux:selftest` | 26 checks against a real tmux server on a private socket |
+| `pnpm git:selftest` | 48 checks against the git binary and a fixture repo |
+| `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
 
 ## Layout
@@ -70,6 +72,22 @@ event at all. Dropping `authenticationResponseDetails` from the `WebContents` fo
 **Pin the dependency versions.** electron-vite 5 constrains vite to ≤7, `@vitejs/plugin-react` 6
 requires vite 8, and `@types/node@latest` still points at the 22 line while Electron 44 runs Node
 24. The set in `package.json` is one that actually installs and builds together.
+
+**A BaseWindow does not focus its child views.** A BrowserWindow hands keyboard focus to its own
+webContents; a BaseWindow does not hand it to a WebContentsView. The window looks alive, the DOM
+reports focus wherever it was set programmatically, and yet nothing the user types reaches the
+app — not the terminal, not the commit box. `focusActiveView()` is called after load, on window
+focus, and whenever a browser tab is shown or hidden. `pnpm smoke` asserts `shellFocused=true`.
+
+**Do not watch directories with chokidar.** It opens one fs.watch per directory, and a
+GUI-launched app on macOS inherits `launchctl limit maxfiles` — a soft limit of **256**, not the
+1M a terminal reports. Watching any real repository dies with EMFILE. @parcel/watcher uses one
+FSEvents stream instead.
+
+**A long-lived `git cat-file --batch` caches the index it started with.** After `git add`, the
+same process keeps returning the pre-add blob for `:0:<path>`. Since the user's own terminal is
+a likely place to run `git add`, the reader accepts object ids only and callers resolve specs
+through `rev-parse` first.
 
 ## The tmux client
 

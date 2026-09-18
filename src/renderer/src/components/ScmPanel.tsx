@@ -43,14 +43,14 @@ export function ScmPanel(): React.ReactElement {
   }, [rootsKey, setRepoStatus])
 
   useEffect(() => {
+    // One initial read, then main pushes on every filesystem change — including changes made by
+    // git running in one of the app's own terminals. No polling.
     void refresh()
     const off = onEvent('scm:status', ({ status }) => setRepoStatus(status))
-    // No .git watcher yet, so poll while the panel is open. Cheap: status on a large repo
-    // measured ~140 ms, and it is the only thing keeping the panel honest when the user runs
-    // git in one of the app's own terminals.
-    const timer = setInterval(() => void refresh(), 3000)
-    return () => { off(); clearInterval(timer) }
-  }, [refresh, setRepoStatus])
+    if (repoRoots.length > 0) void rpc['scm:watch']({ repoRoots })
+    return off
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootsKey, refresh, setRepoStatus])
 
   /** Run a mutation, then refresh so the panel reflects reality rather than what we assumed. */
   const act = useCallback(
