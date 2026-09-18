@@ -43,9 +43,14 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Unsigned local dev build. arm64 artifacts additionally need an ad-hoc signature to launch:
-  #   codesign --force --deep --sign - release/<ver>/mac-arm64/onestop.app
-  identity: null
+  # Ad-hoc sign ("-") rather than leaving the bundle unsigned (null).
+  #
+  # An unsigned bundle runs when its binary is executed directly but is refused by Gatekeeper
+  # when launched through LaunchServices, which is how anyone actually starts an app: it exits
+  # instantly, with no window and nothing on stdout. Letting electron-builder do the signing is
+  # what makes this correct — it signs the nested helper bundles in the right order, which a
+  # post-hoc `codesign --deep` does not.
+  identity: '-'
   notarize: false
   extendInfo:
     NSMicrophoneUsageDescription: Terminal programs may access the microphone.

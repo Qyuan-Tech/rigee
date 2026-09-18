@@ -20,7 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      # No pnpm/action-setup: third-party actions are frequently blocked by enterprise Actions
+      # policy, and corepack ships with Node and reads `packageManager` from package.json.
+      - run: corepack enable
 
       - uses: actions/setup-node@v4
         with:
@@ -63,7 +65,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      # No pnpm/action-setup: third-party actions are frequently blocked by enterprise Actions
+      # policy, and corepack ships with Node and reads `packageManager` from package.json.
+      - run: corepack enable
 
       - uses: actions/setup-node@v4
         with:
@@ -125,19 +129,28 @@ jobs:
 
       - run: ls -lhR artifacts
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/**/*
-          generate_release_notes: true
-          draft: false
-          # Anything that is not a plain vX.Y.Z is treated as a pre-release.
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          body: |
-            Builds are unsigned. First launch needs one extra step:
+      # `gh` is preinstalled on every runner, so the release needs no third-party action either.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NOTES=$(mktemp)
+          cat > "$NOTES" <<'EOT'
+          Builds are ad-hoc signed, not notarised, so the first launch needs one extra step:
 
-            - **macOS** — right-click the app and choose *Open*, or
-              `xattr -dr com.apple.quarantine /Applications/onestop.app`
-            - **Windows** — SmartScreen: *More info → Run anyway*
-            - **Linux** — `chmod +x` the AppImage
+          - **macOS** — right-click the app and choose *Open*, or
+            `xattr -dr com.apple.quarantine /Applications/onestop.app`
+          - **Windows** — SmartScreen: *More info → Run anyway*
+          - **Linux** — `chmod +x` the AppImage
 
-            Terminal tabs need `tmux` installed (via WSL2 on Windows).
+          Terminal tabs need `tmux` installed (via WSL2 on Windows).
+          EOT
+          PRERELEASE=""
+          case "${{ github.ref_name }}" in *-*) PRERELEASE="--prerelease";; esac
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file "$NOTES" \
+            --generate-notes \
+            $PRERELEASE \
+            artifacts/*
