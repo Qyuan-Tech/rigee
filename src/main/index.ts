@@ -1,11 +1,4 @@
-import {
-  app,
-  BaseWindow,
-  WebContentsView,
-  dialog,
-  shell,
-  type WebContents
-} from 'electron'
+import { app, BrowserWindow, dialog, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -33,36 +26,37 @@ mark('main module evaluated')
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024
 
-let window: BaseWindow | null = null
-let shellView: WebContentsView | null = null
+let window: BrowserWindow | null = null
 let browserTabs: BrowserTabs | null = null
 let tmux: TmuxManager | null = null
 const gitService = new GitService()
 
 const shellWc = (): WebContents | null =>
-  shellView && !shellView.webContents.isDestroyed() ? shellView.webContents : null
+  window && !window.webContents.isDestroyed() ? window.webContents : null
 
 // ---------------------------------------------------------------------------
 // Window
 //
-// BaseWindow + a WebContentsView for the React shell, rather than a BrowserWindow.
-// Child views always composite above a BrowserWindow's own web contents, which would let a
-// browser tab occlude the shell's overlays (command palette, menus, dialogs). With BaseWindow the
-// shell is just another child view and can be raised above the browser views on demand.
+// A BrowserWindow, not a BaseWindow + WebContentsView.
+//
+// BaseWindow looked like the tidier structure — the shell would be just another child view, so it
+// could be raised above a browser tab when an overlay needs to cover one. But a BaseWindow does
+// not give keyboard focus to a child view the way a BrowserWindow gives it to its own
+// webContents, and `webContents.focus()` sets the flag without actually routing keystrokes. The
+// result was an app that looked completely normal and accepted no typing anywhere: not the
+// terminal, not the commit box. Browser tabs still composite above the shell as child views of
+// contentView, which is all the layering we actually need today.
 // ---------------------------------------------------------------------------
 
 function createWindow(): void {
-  window = new BaseWindow({
+  window = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
     minHeight: 560,
     show: false,
     backgroundColor: '#1e1e1e',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default'
-  })
-
-  shellView = new WebContentsView({
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirnameESM, '../preload/index.cjs'), // .cjs, never .mjs — see vite config
       contextIsolation: true,
@@ -71,27 +65,22 @@ function createWindow(): void {
       webviewTag: false
     }
   })
-  window.contentView.addChildView(shellView)
-  layoutShell()
-  window.on('resize', layoutShell)
-
-  // A BaseWindow does not hand keyboard focus to a child view the way a BrowserWindow hands it
-  // to its own webContents. Without this the window looks alive, the DOM reports focus on
-  // whatever was focused programmatically, and yet nothing the user types reaches the app —
-  // not the terminal, not the commit box, nothing. Verified: shellView.webContents.isFocused()
-  // was false after show until focus() was called explicitly.
-  window.on('focus', focusActiveView)
 
   browserTabs = new BrowserTabs(window, shellWc)
   tmux = new TmuxManager(shellWc)
 
   // The trusted shell never opens windows itself; anything it tries goes to the real browser.
-  shellView.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
 
-  shellView.webContents.once('did-finish-load', () => {
+  window.once('ready-to-show', () => {
+    mark('ready-to-show')
+    window?.show()
+  })
+
+  window.webContents.once('did-finish-load', () => {
     mark('shell did-finish-load')
     window?.show()
     focusActiveView()
@@ -99,36 +88,47 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
 
+  window.on('focus', focusActiveView)
+  window.on('closed', () => { window = null })
+
   // Without these, a renderer that fails to boot just shows nothing and the window never appears.
-  shellView.webContents.on('did-fail-load', (_e, code, desc, url) => {
+  window.webContents.on('did-fail-load', (_e, code, desc, url) => {
     console.error(`[shell] did-fail-load ${code} ${desc} ${url}`)
     window?.show()
   })
-  shellView.webContents.on('preload-error', (_e, preloadPath, error) => {
+  window.webContents.on('preload-error', (_e, preloadPath, error) => {
     console.error(`[shell] preload-error ${preloadPath}:`, error)
   })
-  shellView.webContents.on('render-process-gone', (_e, details) => {
+  window.webContents.on('render-process-gone', (_e, details) => {
     console.error('[shell] render-process-gone', details)
   })
-  shellView.webContents.on('console-message', (event) => {
+  window.webContents.on('console-message', (event) => {
     if (event.level === 'error' || event.level === 'warning') {
       console.error(`[shell:${event.level}] ${event.message} (${event.sourceId}:${event.lineNumber})`)
     }
   })
-
-  shellView.webContents.on('did-start-loading', () => mark('shell did-start-loading'))
-  shellView.webContents.on('dom-ready', () => mark('shell dom-ready'))
+  window.webContents.on('did-start-loading', () => mark('shell did-start-loading'))
+  window.webContents.on('dom-ready', () => mark('shell dom-ready'))
 
   // Load first so renderer boot overlaps any main-side initialisation.
   const devUrl = process.env.ELECTRON_RENDERER_URL
   const indexHtml = join(__dirnameESM, '../renderer/index.html')
   const loading = devUrl
-    ? shellView.webContents.loadURL(devUrl)
-    : shellView.webContents.loadFile(indexHtml)
+    ? window.webContents.loadURL(devUrl)
+    : window.webContents.loadFile(indexHtml)
   loading.catch((err: unknown) => {
     console.error(`[shell] failed to load ${devUrl ?? indexHtml}:`, err)
     window?.show()
   })
+}
+
+/**
+ * Give keyboard focus to whichever surface should have it: the visible browser tab if there is
+ * one, otherwise the shell itself.
+ */
+function focusActiveView(): void {
+  const browser = browserTabs?.focusVisible()
+  if (!browser) shellWc()?.focus()
 }
 
 /**
@@ -270,21 +270,6 @@ async function runTerminalSmoke(): Promise<void> {
     log('threw:', err)
     app.exit(1)
   }
-}
-
-/**
- * Give keyboard focus to whichever view should have it: the visible browser tab if there is one,
- * otherwise the React shell.
- */
-function focusActiveView(): void {
-  const browser = browserTabs?.focusVisible()
-  if (!browser) shellWc()?.focus()
-}
-
-function layoutShell(): void {
-  if (!window || !shellView) return
-  const { width, height } = window.getContentBounds()
-  shellView.setBounds({ x: 0, y: 0, width, height })
 }
 
 // ---------------------------------------------------------------------------

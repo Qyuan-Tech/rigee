@@ -52,6 +52,8 @@ Builds are currently **unsigned**, so every OS will object the first time:
 
 - **macOS** — right-click the app and choose *Open*, or
   `xattr -dr com.apple.quarantine /Applications/onestop.app`.
+  Do **not** try to "fix" it with `codesign --deep`; see the note in
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 - **Windows** — SmartScreen shows "Windows protected your PC"; choose *More info → Run anyway*.
 - **Linux** — nothing to bypass.
 

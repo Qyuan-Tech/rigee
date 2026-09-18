@@ -19,6 +19,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm git:selftest` | 48 checks against the git binary and a fixture repo |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
+| `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
 
 ## Layout
@@ -79,6 +80,26 @@ webContents; a BaseWindow does not hand it to a WebContentsView. The window look
 reports focus wherever it was set programmatically, and yet nothing the user types reaches the
 app — not the terminal, not the commit box. `focusActiveView()` is called after load, on window
 focus, and whenever a browser tab is shown or hidden. `pnpm smoke` asserts `shellFocused=true`.
+
+**Copy app bundles with `ditto`, never `cp -R`.** A macOS bundle carries metadata that plain
+`cp` does not faithfully reproduce, and Electron validates its own bundle at startup — Info.plist
+holds an `ElectronAsarIntegrity` SHA256 of app.asar. A `cp -R` copy dies before main runs: no
+window, no stdout, and a lone `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)` on
+stderr. Use `pnpm install:local`, which does this correctly.
+
+**Verify installs with `open`, not by running the binary.** Both of the bundle-corruption bugs
+above reproduce only through LaunchServices; invoking
+`onestop.app/Contents/MacOS/onestop` directly works perfectly in each case, which is exactly why
+they survived several rounds of "it works here".
+
+**Never run `codesign --force --deep --sign -` on the built app.** `--deep` is deprecated and
+signs Electron's nested helper bundles in a way Electron itself rejects: the app dies at startup
+with `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)` and, launched from Finder,
+simply never appears. electron-builder already leaves the bundle in a launchable state; on Intel
+macOS an unsigned app runs once `xattr -dr com.apple.quarantine` has been applied. If an arm64
+bundle genuinely needs an ad-hoc signature, sign it without `--deep` and verify by launching it
+through `open`, not by running the binary directly — the binary runs fine either way, which is
+what makes this so easy to miss.
 
 **Do not hand-list packages in electron-builder `files`.** It packs `dependencies` and their
 transitive deps already. An allowlist written when there was one dependency silently dropped

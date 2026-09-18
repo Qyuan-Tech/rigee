@@ -35,7 +35,8 @@
     "tmux:selftest": "esbuild scripts/tmux-selftest.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/tmux-selftest.mjs --log-level=warning && node node_modules/.tmp/tmux-selftest.mjs",
     "git:selftest": "esbuild scripts/git-selftest.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/git-selftest.mjs --log-level=warning && node node_modules/.tmp/git-selftest.mjs",
     "smoke:terminal": "ONESTOP_SMOKE=terminal electron .",
-    "pack:check": "pnpm run build && electron-builder --dir --publish never && ONESTOP_SMOKE=1 ./release/$npm_package_version/mac/onestop.app/Contents/MacOS/onestop"
+    "pack:check": "pnpm run build && electron-builder --dir --publish never && ONESTOP_SMOKE=1 ./release/$npm_package_version/mac/onestop.app/Contents/MacOS/onestop",
+    "install:local": "./scripts/install-local.sh"
   },
   "dependencies": {
     "@parcel/watcher": "2.6.0",
