@@ -1,0 +1,88 @@
+appId: dev.onestop.app
+productName: onestop
+directories:
+  output: release/${version}
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!node_modules/**/*'
+  - 'node_modules/node-pty/**/*'
+  - '!node_modules/node-pty/{src,scripts,deps,third_party,typings}/**'
+  # @electron/rebuild output is host-arch only and SHADOWS the correct prebuild
+  # (node-pty resolves build/Release before prebuilds/). It poisons cross-packaging.
+  - '!node_modules/node-pty/{build,bin}/**'
+  - '!node_modules/node-pty/binding.gyp'
+  - '!**/*.pdb'
+  - '!**/*.map'
+
+# .node files cannot be dlopen'd from inside an asar, and spawn-helper must be a real
+# executable on disk. node-pty rewrites app.asar -> app.asar.unpacked itself.
+asar: true
+asarUnpack:
+  - '**/node_modules/node-pty/**'
+
+extraMetadata:
+  main: out/main/index.js
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Unsigned local dev build. arm64 artifacts additionally need an ad-hoc signature to launch:
+  #   codesign --force --deep --sign - release/<ver>/mac-arm64/onestop.app
+  identity: null
+  notarize: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Terminal programs may access the microphone.
+    NSCameraUsageDescription: Terminal programs may access the camera.
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+  category: Development
+  maintainer: onestop <dev@onestop.local>
+  synopsis: Agentic IDE
+  # Without this, desktop environments cannot associate running windows with the .desktop entry.
+  syncDesktopName: true
+  desktop:
+    entry:
+      StartupWMClass: onestop
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# node-pty is a Node-API addon shipping prebuilds for all six targets; rebuilding breaks things.
+npmRebuild: false
+# Works around an electron-builder 26.16.1 computeChannelNames TypeError.
+publish: null
+electronDownload:
+  cache: .cache/electron

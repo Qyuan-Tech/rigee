@@ -1,0 +1,63 @@
+{
+  "name": "onestop",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "description": "Agentic IDE: tmux control-mode terminals, Monaco, Chromium tabs",
+  "author": {
+    "name": "onestop",
+    "email": "dev@onestop.local"
+  },
+  "homepage": "https://github.com/initisan/onestop",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/initisan/onestop.git"
+  },
+  "license": "MIT",
+  "desktopName": "onestop.desktop",
+  "packageManager": "pnpm@10.29.2",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "electron-vite dev --watch",
+    "dev:renderer": "electron-vite dev --rendererOnly",
+    "build": "pnpm run typecheck && electron-vite build",
+    "typecheck": "tsc -b --force",
+    "preview": "electron-vite preview",
+    "smoke": "ONESTOP_SMOKE=1 electron .",
+    "pack:dir": "pnpm run build && electron-builder --dir --publish never",
+    "pack:mac": "pnpm run build && electron-builder --mac --publish never",
+    "pack:win": "pnpm run build && electron-builder --win --publish never",
+    "pack:linux": "pnpm run build && electron-builder --linux --publish never",
+    "pack:all": "pnpm run build && electron-builder -mwl --publish never"
+  },
+  "dependencies": {
+    "node-pty": "1.2.0-beta.15"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-search": "0.16.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/xterm": "6.0.0",
+    "electron": "44.4.1",
+    "electron-builder": "26.16.1",
+    "electron-vite": "5.0.0",
+    "monaco-editor": "0.56.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "zustand": "5.0.15"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  }
+}

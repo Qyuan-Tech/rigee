@@ -1,0 +1,95 @@
+/*
+ * One token set drives the app chrome, Monaco and xterm.js so the three read as one product.
+ * Values track VSCode Dark Modern closely enough that Monaco's built-in theme blends in.
+ */
+:root {
+  --bg: #1f1f1f;
+  --bg-elevated: #181818;
+  --bg-input: #313131;
+  --bg-hover: #2a2d2e;
+  --bg-active: #04395e;
+  --bg-selected: #37373d;
+
+  --fg: #cccccc;
+  --fg-muted: #8b8b8b;
+  --fg-bright: #ffffff;
+
+  --border: #2b2b2b;
+  --border-strong: #3c3c3c;
+  --focus: #0078d4;
+
+  --accent: #0078d4;
+  --accent-hover: #026ec1;
+
+  --git-modified: #e2c08d;
+  --git-added: #81b88b;
+  --git-deleted: #c74e39;
+  --git-untracked: #73c991;
+  --git-conflict: #e4676b;
+  --git-ignored: #8c8c8c;
+
+  --titlebar-h: 36px;
+  --tabstrip-h: 35px;
+  --statusbar-h: 22px;
+
+  --font-ui: ui-sans-serif, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+  --font-mono: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  /* The whole shell is chrome; text selection is opt-in per component. */
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: default;
+}
+
+input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--focus);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4f4f4f80;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6f6f6fcc;
+}

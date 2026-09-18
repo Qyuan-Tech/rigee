@@ -1,0 +1,54 @@
+# --- dependencies & build output ---
+node_modules/
+out/
+dist/
+release/
+.cache/
+.vite/
+*.tsbuildinfo
+
+# --- secrets and code-signing material ---
+# electron-builder reads CSC_LINK / APPLE_APP_SPECIFIC_PASSWORD from the environment; never let
+# a certificate or a .env holding those land in the repo.
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.cer
+*.certSigningRequest
+*.mobileprovision
+
+# --- logs & diagnostics ---
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+.eslintcache
+coverage/
+*.heapsnapshot
+*.cpuprofile
+
+# --- editors ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+*.swp
+*~
+
+# --- OS junk ---
+.DS_Store
+._*
+.AppleDouble
+Thumbs.db
+desktop.ini
+
+# --- packaging scratch ---
+*.tgz
+*.dmg
+*.AppImage
+*.deb
+*.exe
