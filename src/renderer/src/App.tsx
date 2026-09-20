@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { TabStrip } from './components/TabStrip'
 import { CenterPane } from './components/CenterPane'
@@ -6,12 +6,20 @@ import { ScmPanel } from './components/ScmPanel'
 import { StatusBar } from './components/StatusBar'
 import { Splitter } from './components/Splitter'
 import { AuthDialog } from './components/AuthDialog'
+import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
+import { GearIcon } from './icons'
 import { newTerminalTab, sanitizeTabs, useActiveWorkspace, useApp } from './store'
-import { SCRATCH_WORKSPACE_ID, scratchWorkspace, type PersistedState } from '@shared/types'
+import {
+  SCRATCH_WORKSPACE_ID,
+  scratchWorkspace,
+  type PersistedState,
+  type WorkspaceUiState
+} from '@shared/types'
 
 export function App(): React.ReactElement {
   const ready = useApp((s) => s.ready)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const layout = useApp((s) => s.layout)
   const setLayout = useApp((s) => s.setLayout)
 
@@ -45,6 +53,7 @@ export function App(): React.ReactElement {
       }
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
       if (activeUi) store.setLayout(activeUi.layout)
+      if (state.keybindings) store.setKeybindings(state.keybindings)
       store.setReady(true)
     })()
     return () => { cancelled = true }
@@ -69,7 +78,7 @@ export function App(): React.ReactElement {
 
   return (
     <div className="shell">
-      <TitleBar />
+      <TitleBar onSettings={() => setSettingsOpen(true)} />
 
       <div className="body">
         {leftW > 0 && (
@@ -98,11 +107,12 @@ export function App(): React.ReactElement {
 
       <StatusBar />
       <AuthDialog />
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }
 
-function TitleBar(): React.ReactElement {
+function TitleBar({ onSettings }: { onSettings: () => void }): React.ReactElement {
   const workspace = useActiveWorkspace()
   return (
     <div className="titlebar" style={{ paddingLeft: isMac() ? 80 : 12 }}>
@@ -111,6 +121,14 @@ function TitleBar(): React.ReactElement {
         onestop
       </span>
       {workspace && <span className="titlebar__context">{workspace.name}</span>}
+      <button
+        className="icon-button"
+        title="Key bindings"
+        onClick={onSettings}
+        style={{ marginLeft: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <GearIcon size={14} />
+      </button>
     </div>
   )
 }
@@ -157,32 +175,64 @@ function useShortcuts(): void {
   }, [])
 }
 
-/** Persist layout and tabs on change, coalesced so dragging a splitter does not hammer the disk. */
+/**
+ * Persist open tabs, split layouts and panel sizes.
+ *
+ * Every workspace is written, not just the active one. Saving only the active workspace loses the
+ * others: switching changes activeWorkspaceId, so the next save writes the NEW workspace and the
+ * one just left behind never reaches disk with its latest tabs.
+ *
+ * Three triggers, because each covers a case the others miss: a debounce catches ordinary edits,
+ * an interval catches a session that sits open for hours and then crashes or loses power, and
+ * beforeunload catches the close itself.
+ */
+const SAVE_DEBOUNCE_MS = 400
+const SAVE_INTERVAL_MS = 15_000
+
 function usePersistence(): void {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    const unsub = useApp.subscribe(
-      (s) => [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId] as const,
-      () => {
-        if (timer.current) clearTimeout(timer.current)
-        timer.current = setTimeout(() => {
-          const s = useApp.getState()
-          if (!s.activeWorkspaceId) return
-          void rpc['state:saveUi']({
-            workspaceId: s.activeWorkspaceId,
-            ui: {
-              tabs: s.tabsByWorkspace[s.activeWorkspaceId] ?? [],
-              activeTabId: s.activeTabByWorkspace[s.activeWorkspaceId] ?? null,
-              layout: s.layout,
-              expandedDirs: []
-            }
-          })
-        }, 400)
+
+  const save = useCallback(() => {
+    const s = useApp.getState()
+    if (!s.ready) return // never write over a good document with a half-loaded one
+
+    const ui: Record<string, WorkspaceUiState> = {}
+    for (const ws of s.workspaces) {
+      ui[ws.id] = {
+        tabs: s.tabsByWorkspace[ws.id] ?? [],
+        activeTabId: s.activeTabByWorkspace[ws.id] ?? null,
+        layout: s.layout,
+        expandedDirs: []
       }
+    }
+    rpc['state:saveAllUi']({ ui }).catch((e: unknown) => console.error('[persist] saveAllUi failed', e))
+    rpc['state:saveWorkspaces']({
+      workspaces: s.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID),
+      activeWorkspaceId: s.activeWorkspaceId
+    }).catch((e: unknown) => console.error('[persist] saveWorkspaces failed', e))
+  }, [])
+
+  useEffect(() => {
+    const schedule = (): void => {
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(save, SAVE_DEBOUNCE_MS)
+    }
+
+    const unsub = useApp.subscribe(
+      (s) =>
+        [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces] as const,
+      schedule
     )
+    const interval = setInterval(save, SAVE_INTERVAL_MS)
+    // Synchronous on the way out: a debounce that has not fired yet would be lost.
+    window.addEventListener('beforeunload', save)
+
     return () => {
       unsub()
+      clearInterval(interval)
+      window.removeEventListener('beforeunload', save)
       if (timer.current) clearTimeout(timer.current)
+      save()
     }
-  }, [])
+  }, [save])
 }

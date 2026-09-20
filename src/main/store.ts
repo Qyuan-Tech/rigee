@@ -3,11 +3,13 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  DEFAULT_KEYBINDINGS,
   PERSISTED_STATE_VERSION,
   type PersistedState,
   type Workspace,
   type WorkspaceId,
-  type WorkspaceUiState
+  type WorkspaceUiState,
+  type KeyBindings
 } from '@shared/types'
 
 /**
@@ -25,7 +27,8 @@ const EMPTY: PersistedState = {
   version: PERSISTED_STATE_VERSION,
   workspaces: [],
   activeWorkspaceId: null,
-  ui: {}
+  ui: {},
+  keybindings: { ...DEFAULT_KEYBINDINGS }
 }
 
 function statePath(): string {
@@ -53,18 +56,29 @@ function writeAtomic(file: string, contents: string): void {
  */
 function migrate(raw: unknown): PersistedState {
   if (raw === null || typeof raw !== 'object') return { ...EMPTY }
-  const doc = raw as Partial<PersistedState> & { version?: number }
+  // Deliberately NOT typed as Partial<PersistedState>: that narrows `version` to the current
+  // literal and makes comparing against older versions a type error, which is precisely the
+  // comparison a migration has to make.
+  const doc = raw as Record<string, unknown> & { version?: number }
 
-  if (typeof doc.version !== 'number') return { ...EMPTY }
-  // if (doc.version === 1) { ...produce v2...; doc.version = 2 }
+  let version = typeof doc.version === 'number' ? doc.version : 0
+  if (version === 0) return { ...EMPTY }
 
-  if (doc.version !== PERSISTED_STATE_VERSION) return { ...EMPTY }
+  // v1 -> v2: key bindings joined the document. Everything else carries over, so a user's
+  // workspaces and layouts survive the upgrade instead of being reset.
+  if (version === 1) version = 2
+
+  if (version !== PERSISTED_STATE_VERSION) return { ...EMPTY }
 
   return {
     version: PERSISTED_STATE_VERSION,
-    workspaces: Array.isArray(doc.workspaces) ? doc.workspaces : [],
-    activeWorkspaceId: doc.activeWorkspaceId ?? null,
-    ui: doc.ui && typeof doc.ui === 'object' ? doc.ui : {}
+    workspaces: Array.isArray(doc.workspaces) ? (doc.workspaces as Workspace[]) : [],
+    activeWorkspaceId: (doc.activeWorkspaceId as WorkspaceId | null) ?? null,
+    ui:
+      doc.ui && typeof doc.ui === 'object'
+        ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>)
+        : {},
+    keybindings: { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) }
   }
 }
 
@@ -95,14 +109,36 @@ export function saveWorkspaces(workspaces: Workspace[], activeWorkspaceId: Works
   const state = loadState()
   state.workspaces = workspaces
   state.activeWorkspaceId = activeWorkspaceId
-  // Drop UI state for workspaces that no longer exist so the document cannot grow forever.
-  const live = new Set(workspaces.map((w) => w.id))
-  for (const id of Object.keys(state.ui)) if (!live.has(id)) delete state.ui[id]
+  // Deliberately does NOT prune `ui`. It used to, and it silently destroyed the Scratch
+  // workspace's tabs on every save: Scratch is synthesised rather than persisted, so it is
+  // absent from this list by design, and pruning "workspaces not in the list" deleted the UI
+  // that saveAllUi had just written. Pruning belongs to saveAllUi, which sees every live
+  // workspace including the synthetic ones.
   flush()
 }
 
 export function saveUi(workspaceId: WorkspaceId, ui: WorkspaceUiState): void {
   const state = loadState()
   state.ui[workspaceId] = ui
+  flush()
+}
+
+/**
+ * Persist every workspace's UI at once. AUTHORITATIVE: the map replaces what is on disk, which is
+ * also what keeps the document from growing forever as workspaces come and go.
+ *
+ * Saving only the active workspace loses the others: switching away changes activeWorkspaceId,
+ * so the subscription that fires next writes the NEW workspace and the one just left behind
+ * never reaches disk.
+ */
+export function saveAllUi(ui: Record<WorkspaceId, WorkspaceUiState>): void {
+  const state = loadState()
+  state.ui = { ...ui }
+  flush()
+}
+
+export function saveKeybindings(keybindings: KeyBindings): void {
+  const state = loadState()
+  state.keybindings = keybindings
   flush()
 }

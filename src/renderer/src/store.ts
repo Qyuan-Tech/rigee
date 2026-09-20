@@ -2,11 +2,13 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { newLeaf } from './paneTree'
 import {
+  DEFAULT_KEYBINDINGS,
   DEFAULT_PANEL_LAYOUT,
   type PanelLayout,
   type RepoStatus,
   type Tab,
   type TabId,
+  type KeyBindings,
   type PaneNode,
   type Workspace,
   type WorkspaceId
@@ -37,6 +39,8 @@ interface AppState {
   /** Keyed by repo root. */
   scm: Record<string, RepoStatus>
 
+  keybindings: KeyBindings
+
   // --- actions ---
   setReady: (ready: boolean) => void
   setWorkspaces: (workspaces: Workspace[]) => void
@@ -52,6 +56,7 @@ interface AppState {
 
   setLayout: (patch: Partial<PanelLayout>) => void
   setRepoStatus: (status: RepoStatus) => void
+  setKeybindings: (keybindings: KeyBindings) => void
 }
 
 export const useApp = create<AppState>()(
@@ -63,6 +68,7 @@ export const useApp = create<AppState>()(
     activeTabByWorkspace: {},
     layout: { ...DEFAULT_PANEL_LAYOUT },
     scm: {},
+    keybindings: { ...DEFAULT_KEYBINDINGS },
 
     setReady: (ready) => set({ ready }),
     setWorkspaces: (workspaces) => set({ workspaces }),
@@ -150,7 +156,8 @@ export const useApp = create<AppState>()(
       }),
 
     setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
-    setRepoStatus: (status) => set((s) => ({ scm: { ...s.scm, [status.root]: status } }))
+    setRepoStatus: (status) => set((s) => ({ scm: { ...s.scm, [status.root]: status } })),
+    setKeybindings: (keybindings) => set({ keybindings })
   }))
 )
 

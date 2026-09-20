@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -11,7 +11,7 @@ import { GitService } from './git/service'
 import type { ParsedDiff } from './git/patch'
 import { PtyManager } from './pty/manager'
 import { emit, handle } from './ipc'
-import { loadState, saveUi, saveWorkspaces } from './store'
+import { loadState, saveAllUi, saveKeybindings, saveUi, saveWorkspaces } from './store'
 import type { DiffHunkView, FileStat, ViewBounds } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -22,6 +22,20 @@ const mark = (label: string): void => {
   console.log(`[perf] ${label} +${Date.now() - T0}ms (uptime ${Math.round(process.uptime() * 1000)}ms)`)
 }
 mark('main module evaluated')
+
+/**
+ * Every smoke mode runs against a throwaway data directory.
+ *
+ * Without this the tests read and write the developer's real workspaces.json — and the
+ * persistence test in particular would overwrite their actual open tabs with its fixtures. Has to
+ * happen before anything calls getPath('userData').
+ */
+if (process.env.ONESTOP_SMOKE) {
+  const dir = process.env.ONESTOP_SMOKE_DATA ?? join(tmpdir(), `onestop-smoke-${process.pid}`)
+  mkdirSync(dir, { recursive: true })
+  app.setPath('userData', dir)
+  console.log(`[smoke] userData = ${dir}`)
+}
 
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024
@@ -87,6 +101,8 @@ function createWindow(): void {
     window?.show()
     focusActiveView()
     if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'split') void runSplitSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'persist') void runPersistSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -151,6 +167,218 @@ function withLineNumbers(parsed: ParsedDiff): DiffHunkView[] {
       }))
     }
   })
+}
+
+/**
+ * End-to-end check of splitting: open a terminal, split it twice, and assert that each pane ends
+ * up with its own live pty and its own xterm instance.
+ */
+async function runSplitSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, getTerminal, paneKey, newTerminalTab } = window.__onestop
+        const trail = []
+
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch', trail })
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const tab = newTerminalTab()
+        store.getState().openTab(scratch.id, tab)
+
+        const current = () =>
+          (store.getState().tabsByWorkspace[scratch.id] ?? []).find(t => t.id === tab.id)
+        const leafIds = (n) => n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIds)
+
+        /** Wait until every leaf has a pty bound and an xterm instance. */
+        const settle = async (want) => {
+          for (let i = 0; i < 120; i++) {
+            await sleep(250)
+            const t = current()
+            if (!t) continue
+            const ids = leafIds(t.root)
+            if (ids.length !== want) continue
+            const bound = ids.filter(id => {
+              const h = getTerminal(paneKey(t.id, id))
+              return h && h.paneId
+            })
+            if (bound.length === want) return { t, ids }
+          }
+          const t = current()
+          return { t, ids: t ? leafIds(t.root) : [] }
+        }
+
+        let st = await settle(1)
+        if (st.ids.length !== 1) return JSON.stringify({ ok: false, stage: 'first-pane', trail })
+        trail.push('1 pane bound')
+
+        // Split beside, exactly as the keybinding does.
+        // Deliver it where a real keypress lands. The binding runs from xterm's key hook, so a
+        // window-level dispatch would never reach it.
+        const press = (init) => {
+          const target = document.activeElement ?? window
+          target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+        }
+        press({ key: 'd', metaKey: true })
+        st = await settle(2)
+        trail.push('after split#1: ' + st.ids.length + ' leaves')
+        if (st.ids.length !== 2) {
+          return JSON.stringify({ ok: false, stage: 'split-1-failed', trail,
+            shape: st.t ? JSON.stringify(st.t.root) : 'no tab' })
+        }
+
+        // Split below.
+        press({ key: 'd', metaKey: true, shiftKey: true })
+        st = await settle(3)
+        trail.push('after split#2: ' + st.ids.length + ' leaves')
+        if (st.ids.length !== 3) {
+          return JSON.stringify({ ok: false, stage: 'split-2-failed', trail })
+        }
+
+        // Every pane must be a distinct pty and a distinct terminal.
+        const ptys = new Set()
+        for (const id of st.ids) {
+          const h = getTerminal(paneKey(st.t.id, id))
+          if (!h || !h.paneId) return JSON.stringify({ ok: false, stage: 'unbound-pane', trail })
+          ptys.add(h.paneId)
+        }
+        if (ptys.size !== 3) {
+          return JSON.stringify({ ok: false, stage: 'ptys-not-distinct', trail,
+            ptys: [...ptys] })
+        }
+        trail.push('3 distinct ptys')
+
+        // Typing must reach only the focused pane.
+        const active = st.t.activeLeafId
+        const h = getTerminal(paneKey(st.t.id, active))
+        h.term.input('echo SPLIT-OK-$((8*8))' + String.fromCharCode(13), true)
+        const read = (hh) => {
+          const b = hh.term.buffer.active
+          let out = ''
+          for (let i = 0; i < b.length; i++) out += (b.getLine(i)?.translateToString(true) ?? '')
+          return out
+        }
+        for (let i = 0; i < 40; i++) {
+          await sleep(250)
+          if (read(h).includes('SPLIT-OK-64')) {
+            const others = st.ids.filter(id => id !== active)
+              .map(id => read(getTerminal(paneKey(st.t.id, id))))
+            if (others.some(o => o.includes('SPLIT-OK-64'))) {
+              return JSON.stringify({ ok: false, stage: 'output-leaked-across-panes', trail })
+            }
+            return JSON.stringify({ ok: true, stage: 'split-and-echo', trail })
+          }
+        }
+        return JSON.stringify({ ok: false, stage: 'no-echo-in-active-pane', trail })
+      })()`,
+      true
+    )) as string
+    console.log('[smoke:split]', result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:split] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * End-to-end check that what is on screen survives a restart: build a terminal with splits and a
+ * browser tab, let the debounce fire, then read the document main actually wrote to disk.
+ */
+async function runPersistSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const built = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, newTerminalTab } = window.__onestop
+
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch' })
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const tab = newTerminalTab()
+        store.getState().openTab(scratch.id, tab)
+        await sleep(1200)
+
+        const press = (init) => {
+          const target = document.activeElement ?? window
+          target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+        }
+        press({ key: 'd', metaKey: true })
+        await sleep(1500)
+        press({ key: 'd', metaKey: true, shiftKey: true })
+        await sleep(1500)
+
+        store.getState().openTab(scratch.id, {
+          id: 'persist-browser-tab', kind: 'browser', title: 'probe', pinned: false,
+          url: 'https://example.com/persisted', viewId: '',
+          canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null
+        })
+
+        // Longer than the save debounce.
+        await sleep(1500)
+        const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+        const count = (n) => n.kind === 'leaf' ? 1 : n.children.reduce((a, c) => a + count(c), 0)
+        return JSON.stringify({ ok: true, terminalTabId: tab.id, leaves: t ? count(t.root) : 0 })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(built) as { ok: boolean; terminalTabId?: string; leaves?: number }
+    if (!info.ok) { console.log('[smoke:persist]', built); app.exit(1); return }
+
+    const file = join(app.getPath('userData'), 'workspaces.json')
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as {
+      version: number
+      keybindings?: { prefix?: string }
+      ui?: Record<string, { tabs?: Array<Record<string, unknown>>; activeTabId?: string | null }>
+    }
+    const tabs = doc.ui?.['__scratch__']?.tabs ?? []
+    const term = tabs.find((t) => t.id === info.terminalTabId)
+    const browser = tabs.find((t) => t.kind === 'browser')
+
+    const countLeaves = (n: unknown): number => {
+      const node = n as { kind?: string; children?: unknown[] }
+      if (!node || node.kind === 'leaf') return 1
+      return (node.children ?? []).reduce((a: number, c) => a + countLeaves(c), 0)
+    }
+
+    const report = {
+      version: doc.version,
+      keybindingsSaved: doc.keybindings?.prefix ?? null,
+      tabsOnDisk: tabs.length,
+      terminalRestored: !!term,
+      leavesInMemory: info.leaves,
+      leavesOnDisk: term ? countLeaves((term as { root?: unknown }).root) : 0,
+      browserUrlOnDisk: (browser as { url?: string } | undefined)?.url ?? null
+    }
+    const ok =
+      report.terminalRestored &&
+      report.leavesOnDisk === info.leaves &&
+      report.leavesOnDisk === 3 &&
+      report.browserUrlOnDisk === 'https://example.com/persisted' &&
+      report.keybindingsSaved === 'ctrl+a'
+    console.log('[smoke:persist]', JSON.stringify({ ok, ...report }))
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:persist] threw:', err)
+    app.exit(1)
+  }
 }
 
 /**
@@ -399,6 +627,13 @@ function registerHandlers(): void {
     saveWorkspaces(workspaces, activeWorkspaceId)
   })
   handle('state:saveUi', ({ workspaceId, ui }) => { saveUi(workspaceId, ui) })
+  handle('state:saveAllUi', ({ ui }) => {
+    if (process.env.ONESTOP_SMOKE) {
+      console.log(`[persist] saveAllUi keys=${Object.keys(ui).join(',')} tabs=${Object.values(ui).map((u) => u.tabs.length).join(',')}`)
+    }
+    saveAllUi(ui)
+  })
+  handle('state:saveKeybindings', ({ keybindings }) => { saveKeybindings(keybindings) })
 
   // --- workspaces --------------------------------------------------------
   handle('workspace:pickFolder', async () => {

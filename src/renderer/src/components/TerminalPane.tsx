@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMac, onEvent, rpc } from '../ipc'
+import { chordBytes, formatChord, matchesChord, parseChord } from '../keys'
 import { bindPane, leaves, neighbourOf, newLeaf, removeLeaf, setSizes, splitLeaf } from '../paneTree'
 import {
   disposeTerminal,
@@ -28,6 +29,11 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   const workspace = useApp((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId) ?? null)
   const updateTab = useApp((s) => s.updateTab)
   const [error, setError] = useState<string | null>(null)
+  const bindings = useApp((s) => s.keybindings)
+  const [prefixArmed, setPrefixArmed] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number; leafId: string } | null>(null)
+  // Synchronous mirror: the key handler runs before React can re-render.
+  const armed = useRef(false)
 
   const cwd = workspace?.folders[0]?.path ?? workspace?.defaultCwd ?? '.'
 
@@ -81,18 +87,72 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     [tab.root, tab.activeLeafId, patch]
   )
 
-  // Splits follow iTerm: Cmd-D beside, Shift-Cmd-D below.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
+  /**
+   * tmux-style prefix handling, run from xterm's key hook so it intercepts before the bytes
+   * reach the shell. Returns false to swallow the key.
+   *
+   * Pressing the prefix twice sends a literal one, which is the escape hatch tmux gives you for
+   * Ctrl-A at the start of a line. An unbound key after the prefix is swallowed, also like tmux:
+   * passing it through would run a command the user did not mean to type.
+   */
+  const handleKey = useCallback(
+    (leafId: string, e: KeyboardEvent): boolean => {
+      if (e.type !== 'keydown') return true
+      const prefix = parseChord(bindings.prefix)
+      if (!prefix) return true
+
+      if (armed.current) {
+        armed.current = false
+        setPrefixArmed(false)
+
+        if (matchesChord(e, prefix)) {
+          // Prefix twice: deliver the real control byte.
+          const handle = getTerminal(paneKey(tab.id, leafId))
+          if (handle?.paneId && workspaceId) {
+            window.onestop.writeTerminal(workspaceId, handle.paneId, chordBytes(prefix))
+          }
+          return false
+        }
+        if (e.key === bindings.splitRight) { split('row'); return false }
+        if (e.key === bindings.splitDown) { split('column'); return false }
+        if (e.key === bindings.closePane) { closeLeaf(leafId); return false }
+        return false
+      }
+
+      if (matchesChord(e, prefix)) {
+        armed.current = true
+        setPrefixArmed(true)
+        return false
+      }
+
+      // Keep the iTerm combos as a second way in, for anyone who reaches for them.
       const mod = isMac() ? e.metaKey : e.ctrlKey
-      if (!mod || e.key.toLowerCase() !== 'd') return
-      e.preventDefault()
-      e.stopPropagation()
-      split(e.shiftKey ? 'column' : 'row')
+      if (mod && e.key.toLowerCase() === 'd') {
+        split(e.shiftKey ? 'column' : 'row')
+        return false
+      }
+      return true
+    },
+    [bindings, split, closeLeaf, tab.id, workspaceId]
+  )
+
+  // Arming times out, so a stray prefix does not silently eat the next keystroke minutes later.
+  useEffect(() => {
+    if (!prefixArmed) return
+    const t = setTimeout(() => { armed.current = false; setPrefixArmed(false) }, 3000)
+    return () => clearTimeout(t)
+  }, [prefixArmed])
+
+  useEffect(() => {
+    if (!menu) return
+    const dismiss = (): void => setMenu(null)
+    window.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', dismiss)
+    return () => {
+      window.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', dismiss)
     }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [split])
+  }, [menu])
 
   // A pane the tree no longer contains must not keep an xterm instance alive.
   useEffect(() => {
@@ -113,8 +173,65 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
         onClose={closeLeaf}
         onResize={(splitId, sizes) => patch((t) => ({ root: setSizes(t.root, splitId, sizes) }))}
         onError={setError}
+        onKey={handleKey}
+        onContextMenu={(leafId, x, y) => setMenu({ x, y, leafId })}
       />
+
+      {prefixArmed && <div className="term__prefix">prefix</div>}
+
+      {menu && (
+        <PaneMenu
+          x={menu.x}
+          y={menu.y}
+          bindings={bindings}
+          onSplitRight={() => { setMenu(null); split('row') }}
+          onSplitDown={() => { setMenu(null); split('column') }}
+          onClose={() => { const id = menu.leafId; setMenu(null); closeLeaf(id) }}
+        />
+      )}
+
       {error && <div className="error-banner">{error}</div>}
+    </div>
+  )
+}
+
+function PaneMenu({
+  x,
+  y,
+  bindings,
+  onSplitRight,
+  onSplitDown,
+  onClose
+}: {
+  x: number
+  y: number
+  bindings: { prefix: string; splitRight: string; splitDown: string; closePane: string }
+  onSplitRight: () => void
+  onSplitDown: () => void
+  onClose: () => void
+}): React.ReactElement {
+  const hint = (key: string): string =>
+    `${formatChord(bindings.prefix, isMac())} ${key}`
+
+  return (
+    <div
+      className="menu"
+      style={{ left: x, top: y }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button className="menu__item" onClick={onSplitRight}>
+        <span>Split right</span>
+        <span className="menu__hint">{hint(bindings.splitRight)}</span>
+      </button>
+      <button className="menu__item" onClick={onSplitDown}>
+        <span>Split down</span>
+        <span className="menu__hint">{hint(bindings.splitDown)}</span>
+      </button>
+      <div className="menu__sep" />
+      <button className="menu__item" onClick={onClose}>
+        <span>Close pane</span>
+        <span className="menu__hint">{hint(bindings.closePane)}</span>
+      </button>
     </div>
   )
 }
@@ -129,6 +246,8 @@ interface NodeProps {
   onClose: (leafId: string) => void
   onResize: (splitId: string, sizes: number[]) => void
   onError: (message: string) => void
+  onKey: (leafId: string, e: KeyboardEvent) => boolean
+  onContextMenu: (leafId: string, x: number, y: number) => void
 }
 
 function NodeView(props: NodeProps): React.ReactElement {
@@ -207,7 +326,9 @@ function LeafView({
   onBind,
   onFocus,
   onClose,
-  onError
+  onError,
+  onKey,
+  onContextMenu
 }: NodeProps & { leaf: Extract<PaneNode, { kind: 'leaf' }> }): React.ReactElement {
   const host = useRef<HTMLDivElement>(null)
   const key = paneKey(tab.id, leaf.id)
@@ -248,6 +369,10 @@ function LeafView({
         }
       }
 
+      // Runs before xterm turns the key into bytes, which is the only place a prefix binding can
+      // intercept without racing the shell.
+      handle.term.attachCustomKeyEventHandler((e) => onKey(leaf.id, e))
+
       // Rebind rather than stack: this effect re-runs once the pane id is assigned.
       handle.input?.dispose()
       handle.input = handle.term.onData((data) => {
@@ -263,7 +388,7 @@ function LeafView({
       const el = host.current?.firstElementChild
       if (el) host.current?.removeChild(el)
     }
-  }, [key, leaf.id, leaf.paneId, workspaceId, cwd, onBind, onError, active])
+  }, [key, leaf.id, leaf.paneId, workspaceId, cwd, onBind, onError, onKey, active])
 
   // The pty's geometry must always match what xterm is showing, or line wrapping goes wrong.
   useEffect(() => {
@@ -291,6 +416,11 @@ function LeafView({
     <div
       className={`term__pane${active ? ' term__pane--active' : ''}`}
       onMouseDown={() => onFocus(leaf.id)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onFocus(leaf.id)
+        onContextMenu(leaf.id, e.clientX, e.clientY)
+      }}
     >
       <div ref={host} className="term__surface" />
       <button

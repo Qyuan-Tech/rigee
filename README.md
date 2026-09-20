@@ -82,7 +82,8 @@ an app launched from Finder inherits almost none of it.
 | Staging individual hunks and lines, and discarding them | works |
 | Live refresh — the panel updates when git runs in your own terminal | works |
 | HTTP auth prompt in browser tabs | works |
-| Terminals surviving a restart | **no** — closing onestop ends its shells |
+| Restoring tabs, splits and browser pages on next launch | works |
+| Terminals surviving a restart | **no** — the layout returns, the running processes do not |
 
 ## Terminals
 
@@ -93,10 +94,17 @@ They do not outlive the app: quitting onestop ends the shells and whatever they 
 you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
 `screen` works exactly as it would in any other terminal.
 
+Splitting uses a tmux-style prefix: press the prefix, release it, then the action key. Right-click
+a pane for the same commands with their current bindings shown, and change them from the gear in
+the title bar.
+
 | | |
 |---|---|
-| Split beside | `Cmd`/`Ctrl` + `D` |
-| Split below | `Shift` + `Cmd`/`Ctrl` + `D` |
+| Split right | `Ctrl`+`A` then `|` |
+| Split down | `Ctrl`+`A` then `-` |
+| Close pane | `Ctrl`+`A` then `x` |
+| Send a literal `Ctrl`+`A` | `Ctrl`+`A` twice |
+| Split right / down (also) | `Cmd`/`Ctrl` + `D`, `Shift` + `Cmd`/`Ctrl` + `D` |
 | New terminal tab | `Cmd`/`Ctrl` + `T` |
 | Close tab | `Cmd`/`Ctrl` + `W` |
 | Toggle the sidebars | `Cmd`/`Ctrl` + `B`, `Shift` + `Cmd`/`Ctrl` + `G` |
@@ -109,8 +117,9 @@ you need something to survive that, start it under a multiplexer inside a pane �
 | Linux | `~/.config/onestop` |
 | Windows | `%APPDATA%\onestop` |
 
-`workspaces.json` holds your workspaces, open tabs and split layouts. Deleting the directory
-resets the app and loses nothing but layout.
+`workspaces.json` holds your workspaces, open tabs, split layouts and key bindings. It is written
+when things change, every 15 seconds, and on close, so an unexpected quit loses at most the last
+few seconds of layout. Deleting the directory resets the app and loses nothing but layout.
 
 ## Building it yourself
 

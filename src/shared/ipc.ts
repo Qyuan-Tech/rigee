@@ -23,7 +23,8 @@ import type {
   WorkspaceUiState,
   DiffTarget,
   DiffHunkView,
-  SelectionAction
+  SelectionAction,
+  KeyBindings
 } from './types'
 
 /** renderer -> main -> renderer. Every one of these is awaited. */
@@ -44,6 +45,9 @@ export interface IpcRequests {
     activeWorkspaceId: WorkspaceId | null
   }) => void
   'state:saveUi': (args: { workspaceId: WorkspaceId; ui: WorkspaceUiState }) => void
+  /** Persist every workspace's UI in one write, so switching away cannot lose the previous one. */
+  'state:saveAllUi': (args: { ui: Record<WorkspaceId, WorkspaceUiState> }) => void
+  'state:saveKeybindings': (args: { keybindings: KeyBindings }) => void
 
   // --- workspaces ------------------------------------------------------
   /** Opens a native directory picker; returns null if the user cancelled. */
@@ -158,6 +162,8 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'state:load',
   'state:saveWorkspaces',
   'state:saveUi',
+  'state:saveAllUi',
+  'state:saveKeybindings',
   'workspace:pickFolder',
   'workspace:probeFolder',
   'fs:list',

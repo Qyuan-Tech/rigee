@@ -154,3 +154,10 @@ export const AddFolderIcon = (p: Props): React.ReactElement => (
     <path d="M11.5 10v4M9.5 12h4" />
   </Svg>
 )
+
+export const GearIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="2.2" />
+    <path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7 3.5 3.5" />
+  </Svg>
+)

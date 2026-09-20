@@ -250,6 +250,34 @@ export interface RepoStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Key bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal key bindings, tmux-style: a prefix chord, then a single key.
+ *
+ * A prefix rather than plain modifier combos because the shell and whatever runs inside it
+ * already claim almost every Cmd/Ctrl combination, and a two-stroke sequence cannot collide with
+ * them. It also means the defaults are the ones a tmux user's fingers already know.
+ */
+export interface KeyBindings {
+  /** The prefix chord, e.g. "ctrl+a". Matched against modifiers plus one key. */
+  prefix: string
+  /** Pressed after the prefix. Single characters, compared case-sensitively. */
+  splitRight: string
+  splitDown: string
+  closePane: string
+}
+
+export const DEFAULT_KEYBINDINGS: KeyBindings = {
+  prefix: 'ctrl+a',
+  // tmux's own mnemonics: the character looks like the divider it creates.
+  splitRight: '|',
+  splitDown: '-',
+  closePane: 'x'
+}
+
+// ---------------------------------------------------------------------------
 // Layout + persistence
 // ---------------------------------------------------------------------------
 
@@ -275,13 +303,14 @@ export interface WorkspaceUiState {
  * rather than mutating the shape in place.
  */
 export interface PersistedState {
-  version: 1
+  version: 2
   workspaces: Workspace[]
   activeWorkspaceId: WorkspaceId | null
   ui: Record<WorkspaceId, WorkspaceUiState>
+  keybindings: KeyBindings
 }
 
-export const PERSISTED_STATE_VERSION = 1 as const
+export const PERSISTED_STATE_VERSION = 2 as const
 
 export const DEFAULT_PANEL_LAYOUT: PanelLayout = {
   leftWidth: 260,

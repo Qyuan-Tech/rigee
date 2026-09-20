@@ -19,6 +19,7 @@ import {
   setSizes,
   splitLeaf
 } from '../src/renderer/src/paneTree.ts'
+import { chordBytes, formatChord, matchesChord, parseChord } from '../src/renderer/src/keys.ts'
 import type { PaneNode } from '../src/shared/types.ts'
 
 let failures = 0
@@ -130,6 +131,33 @@ console.log('\npane tree')
   check('setSizes normalises',
     resized.kind === 'split' && Math.abs(resized.sizes[0]! - 0.75) < 1e-9,
     resized.kind === 'split' ? JSON.stringify(resized.sizes) : '')
+}
+
+console.log('\nkey chords')
+{
+  const ctrlA = parseChord('ctrl+a')
+  check('ctrl+a parses', ctrlA !== null && ctrlA.ctrl && ctrlA.key === 'a', JSON.stringify(ctrlA))
+  eq('ctrl+a sends 0x01', chordBytes(ctrlA!), String.fromCharCode(1))
+  eq('ctrl+b sends 0x02', chordBytes(parseChord('ctrl+b')!), String.fromCharCode(2))
+
+  const ev = (init: Partial<KeyboardEvent>): KeyboardEvent =>
+    ({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, key: '', ...init }) as KeyboardEvent
+
+  check('ctrl+a matches', matchesChord(ev({ ctrlKey: true, key: 'a' }), ctrlA!))
+  check('plain a does not match', !matchesChord(ev({ key: 'a' }), ctrlA!))
+  check('cmd+a does not match ctrl+a', !matchesChord(ev({ metaKey: true, key: 'a' }), ctrlA!))
+  check('ctrl+shift+a still matches ctrl+a',
+    matchesChord(ev({ ctrlKey: true, shiftKey: true, key: 'A' }), ctrlA!))
+
+  const cmdShiftP = parseChord('cmd+shift+p')
+  check('multi-modifier chord parses',
+    cmdShiftP !== null && cmdShiftP.meta && cmdShiftP.shift && cmdShiftP.key === 'p')
+  check('it requires every modifier',
+    !matchesChord(ev({ metaKey: true, key: 'p' }), cmdShiftP!))
+
+  eq('garbage does not parse', parseChord('++'), null)
+  eq('a chord renders for menus', formatChord('ctrl+a', true), '⌃A')
+  eq('and spells out on other platforms', formatChord('ctrl+a', false), 'Ctrl+A')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

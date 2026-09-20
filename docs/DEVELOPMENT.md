@@ -16,7 +16,9 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
-| `pnpm panes:selftest` | 24 checks on the terminal split tree, pure functions |
+| `pnpm panes:selftest` | 36 checks on the split tree and key chords, pure functions |
+| `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys |
+| `pnpm smoke:persist` | builds tabs and splits, then reads back what was written to disk |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
@@ -87,6 +89,13 @@ focus, and whenever a browser tab is shown or hidden. `pnpm smoke` asserts `shel
 holds an `ElectronAsarIntegrity` SHA256 of app.asar. A `cp -R` copy dies before main runs: no
 window, no stdout, and a lone `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)` on
 stderr. Use `pnpm install:local`, which does this correctly.
+
+**`saveWorkspaces` must not prune the UI map.** It used to drop UI belonging to workspaces absent
+from the list it was given, which silently destroyed the Scratch workspace's tabs on every single
+save — Scratch is synthesised rather than persisted, so it is absent by design. Pruning belongs to
+`saveAllUi`, which receives every live workspace. Smoke modes run against a throwaway userData
+directory for the same reason this was hard to notice: tests that write the developer's real
+state are tests nobody trusts.
 
 **Re-register the bundle with `lsregister` when replacing it.** LaunchServices caches a bundle's
 code identity per path, so installing over an existing app leaves the old registration behind and
