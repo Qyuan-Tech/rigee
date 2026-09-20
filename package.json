@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
-  "description": "Agentic IDE: tmux control-mode terminals, Monaco, Chromium tabs",
+  "description": "Agentic IDE: split terminals, Monaco, Chromium tabs, source control",
   "author": {
     "name": "onestop",
     "email": "dev@onestop.local"

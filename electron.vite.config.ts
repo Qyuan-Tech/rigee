@@ -3,7 +3,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 // Every override in this file is load-bearing and was established by measurement, not taste.
-// See docs/stack.md before changing anything here.
+// See docs/DEVELOPMENT.md before changing anything here.
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -43,7 +43,14 @@ export default defineConfig({
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
     build: {
-      sourcemap: true,
+      // Off, unlike main and preload, and the one place in this file where less is more.
+      // Mapping a 4 MB minified Monaco chunk back over ~1500 sources costs >2 GB of build heap:
+      // it is what made CI die with "Ineffective mark-compacts near heap limit" on a 7 GB runner,
+      // where Node sizes the default old space at ~2 GB. And the maps were never reaching anyone
+      // — electron-builder.yml drops '**/*.map' from the package, so all 18 MB of them were built
+      // and then thrown away. `electron-vite dev` serves unminified sources with full maps, which
+      // is where renderer debugging actually happens.
+      sourcemap: false,
       // electron-vite defaults this to false for all three targets. Measured 645 kB -> 224 kB.
       minify: 'esbuild',
       target: 'chrome152',

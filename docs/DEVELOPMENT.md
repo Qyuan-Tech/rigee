@@ -58,6 +58,16 @@ and parses it during startup — which exactly undoes the lazy import. Listing `
 cost a 3.8 MB preload and took `dom-ready` from 0.83 s to 14.6 s. Monaco and xterm are loaded
 through `src/renderer/src/lazy.ts`; Rollup already gives each its own chunk.
 
+**The renderer builds without sourcemaps, and that is deliberate.** Mapping the 4 MB minified
+Monaco chunk back over its ~1500 sources needs more than 2 GB of build heap. A 16 GB laptop gives
+Node a ~4.3 GB old space and the build squeaks through at 4.1 GB peak RSS; a 7 GB GitHub runner
+gives it ~2 GB, so CI aborted with *"Ineffective mark-compacts near heap limit"* — an error whose
+only clue is a V8 stack trace with no mention of what was being built. The maps were reaching
+nobody in any case: `electron-builder.yml` excludes `**/*.map`, so all 18 MB were generated and
+then discarded at packaging time. `electron-vite dev` still serves unminified sources with full
+maps, which is where renderer debugging happens. Main keeps its sourcemap; it is 66 kB and free.
+The workflow also sets `NODE_OPTIONS=--max-old-space-size=4096` as margin, not as the fix.
+
 **Do not add `@electron/rebuild`.** node-pty is a Node-API addon shipping prebuilds for all six
 targets, so nothing needs rebuilding. Running it anyway produces a host-arch binary in
 `build/Release`, which node-pty's loader prefers over `prebuilds/`, and that poisons
