@@ -1105,3 +1105,55 @@ textarea:focus {
   background: var(--accent-gradient);
   pointer-events: none;
 }
+
+/* ===================================================================== */
+/* Collapsed panel rails                                                  */
+/* ===================================================================== */
+
+/*
+ * A collapsed panel leaves a rail behind rather than vanishing. Hiding it completely made the
+ * keyboard shortcut the only way back, which is a one-way door for anyone who collapsed it by
+ * accident.
+ */
+.rail {
+  flex: 0 0 auto;
+  width: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 6px;
+  background: var(--bg-panel);
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+
+.rail:hover {
+  background: var(--bg-hover);
+}
+
+.rail__grip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 22px;
+  color: var(--fg-faint);
+}
+
+.rail:hover .rail__grip {
+  color: var(--accent);
+}
+
+.rail__label {
+  margin-top: 8px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  writing-mode: vertical-rl;
+  user-select: none;
+}
+
+.rail--right .rail__label {
+  transform: rotate(180deg);
+}

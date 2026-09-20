@@ -19,7 +19,13 @@ import {
   setSizes,
   splitLeaf
 } from '../src/renderer/src/paneTree.ts'
-import { chordBytes, formatChord, matchesChord, parseChord } from '../src/renderer/src/keys.ts'
+import {
+  chordBytes,
+  formatChord,
+  matchesChord,
+  parseChord,
+  resolvePrefixKey
+} from '../src/renderer/src/keys.ts'
 import type { PaneNode } from '../src/shared/types.ts'
 
 let failures = 0
@@ -158,6 +164,55 @@ console.log('\nkey chords')
   eq('garbage does not parse', parseChord('++'), null)
   eq('a chord renders for menus', formatChord('ctrl+a', true), '⌃A')
   eq('and spells out on other platforms', formatChord('ctrl+a', false), 'Ctrl+A')
+}
+
+console.log('\nprefix state machine')
+{
+  const B = { prefix: 'ctrl+a', splitRight: '|', splitDown: '-', closePane: 'x' }
+  const k = (key: string, mods: Partial<KeyboardEvent> = {}) =>
+    ({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, key, ...mods }) as KeyboardEvent
+
+  eq('an ordinary key passes through',
+    resolvePrefixKey(k('a'), B, false).kind, 'passthrough')
+  eq('the prefix arms', resolvePrefixKey(k('a', { ctrlKey: true }), B, false).kind, 'arm')
+
+  // The reported bug: `|` needs Shift, and Shift arrives as its own keydown first. Treating it
+  // as "the key after the prefix" disarmed the machine and made every shifted binding dead.
+  eq('Shift while armed holds, it does not consume the prefix',
+    resolvePrefixKey(k('Shift', { shiftKey: true }), B, true).kind, 'hold')
+  const shifted = resolvePrefixKey(k('|', { shiftKey: true }), B, true)
+  eq('then the shifted key runs its command',
+    shifted.kind === 'command' ? shifted.command : shifted.kind, 'splitRight')
+
+  // Every modifier, since any of them could be in the way of a binding.
+  for (const m of ['Control', 'Alt', 'Meta', 'CapsLock']) {
+    eq(`${m} while armed holds`, resolvePrefixKey(k(m), B, true).kind, 'hold')
+  }
+
+  const down = resolvePrefixKey(k('-'), B, true)
+  eq('unshifted punctuation still works',
+    down.kind === 'command' ? down.command : down.kind, 'splitDown')
+
+  const close = resolvePrefixKey(k('x'), B, true)
+  eq('a letter binding works', close.kind === 'command' ? close.command : close.kind, 'closePane')
+  const closeShifted = resolvePrefixKey(k('X', { shiftKey: true }), B, true)
+  eq('and still works with Shift held',
+    closeShifted.kind === 'command' ? closeShifted.command : closeShifted.kind, 'closePane')
+
+  const literal = resolvePrefixKey(k('a', { ctrlKey: true }), B, true)
+  eq('the prefix twice sends a literal', literal.kind, 'literal')
+  eq('and it is the right byte',
+    literal.kind === 'literal' ? literal.bytes : '', String.fromCharCode(1))
+
+  eq('an unbound key after the prefix is swallowed',
+    resolvePrefixKey(k('q'), B, true).kind, 'swallow')
+
+  // Punctuation must stay exact: `|` and `\\` live on the same physical key.
+  eq('backslash does not trigger the pipe binding',
+    resolvePrefixKey(k('\\'), B, true).kind, 'swallow')
+
+  eq('a broken prefix setting disables the machine rather than trapping keys',
+    resolvePrefixKey(k('a'), { ...B, prefix: '' }, true).kind, 'passthrough')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

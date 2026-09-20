@@ -8,7 +8,7 @@ import { Splitter } from './components/Splitter'
 import { AuthDialog } from './components/AuthDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
-import { GearIcon } from './icons'
+import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
 import { newTerminalTab, sanitizeTabs, useActiveWorkspace, useApp } from './store'
 import {
   SCRATCH_WORKSPACE_ID,
@@ -81,13 +81,15 @@ export function App(): React.ReactElement {
       <TitleBar onSettings={() => setSettingsOpen(true)} />
 
       <div className="body">
-        {leftW > 0 && (
+        {leftW > 0 ? (
           <>
             <div className="pane" style={{ width: leftW }}>
-              <Sidebar />
+              <Sidebar onCollapse={() => setLayout({ leftCollapsed: true })} />
             </div>
             <Splitter orientation="vertical" onDrag={onLeftDrag} value={layout.leftWidth} />
           </>
+        ) : (
+          <Rail side="left" label="Explorer" onExpand={() => setLayout({ leftCollapsed: false })} />
         )}
 
         <div className="center">
@@ -95,19 +97,45 @@ export function App(): React.ReactElement {
           <CenterPane />
         </div>
 
-        {rightW > 0 && (
+        {rightW > 0 ? (
           <>
             <Splitter orientation="vertical" onDrag={onRightDrag} value={layout.rightWidth} />
             <div className="pane" style={{ width: rightW }}>
-              <ScmPanel />
+              <ScmPanel onCollapse={() => setLayout({ rightCollapsed: true })} />
             </div>
           </>
+        ) : (
+          <Rail side="right" label="Source control" onExpand={() => setLayout({ rightCollapsed: false })} />
         )}
       </div>
 
       <StatusBar />
       <AuthDialog />
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+    </div>
+  )
+}
+
+/** What a collapsed panel leaves behind: a strip you can click to bring it back. */
+function Rail({
+  side,
+  label,
+  onExpand
+}: {
+  side: 'left' | 'right'
+  label: string
+  onExpand: () => void
+}): React.ReactElement {
+  const Icon = side === 'left' ? CollapseRightIcon : CollapseLeftIcon
+  return (
+    <div
+      className={`rail rail--${side}`}
+      onClick={onExpand}
+      title={`Show ${label.toLowerCase()}`}
+      role="button"
+    >
+      <span className="rail__grip"><Icon size={13} /></span>
+      <span className="rail__label">{label}</span>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMac, onEvent, rpc } from '../ipc'
-import { chordBytes, formatChord, matchesChord, parseChord } from '../keys'
+import { formatChord, resolvePrefixKey } from '../keys'
 import { bindPane, leaves, neighbourOf, newLeaf, removeLeaf, setSizes, splitLeaf } from '../paneTree'
 import {
   disposeTerminal,
@@ -98,40 +98,51 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   const handleKey = useCallback(
     (leafId: string, e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true
-      const prefix = parseChord(bindings.prefix)
-      if (!prefix) return true
 
-      if (armed.current) {
-        armed.current = false
-        setPrefixArmed(false)
+      const outcome = resolvePrefixKey(e, bindings, armed.current)
+      switch (outcome.kind) {
+        case 'arm':
+          armed.current = true
+          setPrefixArmed(true)
+          return false
 
-        if (matchesChord(e, prefix)) {
-          // Prefix twice: deliver the real control byte.
+        case 'hold':
+          // A modifier on its own. Stay armed: the binding it is modifying has not arrived yet.
+          return false
+
+        case 'literal': {
+          armed.current = false
+          setPrefixArmed(false)
           const handle = getTerminal(paneKey(tab.id, leafId))
           if (handle?.paneId && workspaceId) {
-            window.onestop.writeTerminal(workspaceId, handle.paneId, chordBytes(prefix))
+            window.onestop.writeTerminal(workspaceId, handle.paneId, outcome.bytes)
           }
           return false
         }
-        if (e.key === bindings.splitRight) { split('row'); return false }
-        if (e.key === bindings.splitDown) { split('column'); return false }
-        if (e.key === bindings.closePane) { closeLeaf(leafId); return false }
-        return false
-      }
 
-      if (matchesChord(e, prefix)) {
-        armed.current = true
-        setPrefixArmed(true)
-        return false
-      }
+        case 'command':
+          armed.current = false
+          setPrefixArmed(false)
+          if (outcome.command === 'splitRight') split('row')
+          else if (outcome.command === 'splitDown') split('column')
+          else closeLeaf(leafId)
+          return false
 
-      // Keep the iTerm combos as a second way in, for anyone who reaches for them.
-      const mod = isMac() ? e.metaKey : e.ctrlKey
-      if (mod && e.key.toLowerCase() === 'd') {
-        split(e.shiftKey ? 'column' : 'row')
-        return false
+        case 'swallow':
+          armed.current = false
+          setPrefixArmed(false)
+          return false
+
+        case 'passthrough': {
+          // The iTerm combos stay as a second way in, for anyone who reaches for them.
+          const mod = isMac() ? e.metaKey : e.ctrlKey
+          if (mod && e.key.toLowerCase() === 'd') {
+            split(e.shiftKey ? 'column' : 'row')
+            return false
+          }
+          return true
+        }
       }
-      return true
     },
     [bindings, split, closeLeaf, tab.id, workspaceId]
   )

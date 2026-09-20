@@ -161,3 +161,19 @@ export const GearIcon = (p: Props): React.ReactElement => (
     <path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7 3.5 3.5" />
   </Svg>
 )
+
+export const CollapseLeftIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M13 3v10" />
+    <path d="M9.5 8H3" />
+    <path d="M5.5 5.5 3 8l2.5 2.5" />
+  </Svg>
+)
+
+export const CollapseRightIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M3 3v10" />
+    <path d="M6.5 8H13" />
+    <path d="M10.5 5.5 13 8l-2.5 2.5" />
+  </Svg>
+)

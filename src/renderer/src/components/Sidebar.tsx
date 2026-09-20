@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useState } from 'react'
 import { rpc } from '../ipc'
-import { AddFolderIcon, ChevronIcon, CloseIcon, FileIcon, FolderIcon, PlusIcon, TerminalIcon } from '../icons'
+import {
+  AddFolderIcon,
+  ChevronIcon,
+  CloseIcon,
+  CollapseLeftIcon,
+  FileIcon,
+  FolderIcon,
+  PlusIcon,
+  TerminalIcon
+} from '../icons'
 import { nextTabId, nextWorkspaceId, useActiveWorkspace, useApp } from '../store'
 import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
 
-export function Sidebar(): React.ReactElement {
+export function Sidebar({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <WorkspaceList />
+      <WorkspaceList onCollapse={onCollapse} />
       <FileExplorer />
     </div>
   )
@@ -15,7 +24,7 @@ export function Sidebar(): React.ReactElement {
 
 // ---------------------------------------------------------------------------
 
-function WorkspaceList(): React.ReactElement {
+function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
   const workspaces = useApp((s) => s.workspaces)
   const activeId = useApp((s) => s.activeWorkspaceId)
   const setActive = useApp((s) => s.setActiveWorkspace)
@@ -74,6 +83,9 @@ function WorkspaceList(): React.ReactElement {
         </button>
         <button className="icon-button" title="Add folder to active workspace…" onClick={() => void addFolder()}>
           <AddFolderIcon size={14} />
+        </button>
+        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+          <CollapseLeftIcon size={14} />
         </button>
       </div>
 

@@ -109,6 +109,9 @@ the title bar.
 | Close tab | `Cmd`/`Ctrl` + `W` |
 | Toggle the sidebars | `Cmd`/`Ctrl` + `B`, `Shift` + `Cmd`/`Ctrl` + `G` |
 
+Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
+collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.
+
 ## Where onestop keeps your data
 
 | | |

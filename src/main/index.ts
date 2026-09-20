@@ -392,6 +392,13 @@ async function captureShot(): Promise<void> {
   try {
     // Give the boot sequence and any tab it restores a moment to paint.
     await new Promise((r) => setTimeout(r, 4000))
+    if (process.env.ONESTOP_SHOT_COLLAPSED) {
+      await wc.executeJavaScript(
+        `window.__onestop.store.getState().setLayout({ leftCollapsed: true, rightCollapsed: true })`,
+        true
+      )
+      await new Promise((r) => setTimeout(r, 600))
+    }
     const image = await wc.capturePage()
     const out = process.env.ONESTOP_SHOT ?? '/tmp/onestop-shot.png'
     writeFileSync(out, image.toPNG())

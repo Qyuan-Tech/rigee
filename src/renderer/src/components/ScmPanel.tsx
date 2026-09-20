@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { onEvent, isMac, rpc } from '../ipc'
-import { BranchIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
+import { BranchIcon, CollapseRightIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
 import { nextTabId, useActiveWorkspace, useApp } from '../store'
 import type { DiffTarget, GitFileChange, RepoStatus } from '@shared/types'
 
@@ -19,7 +19,7 @@ const LETTER_COLOR: Record<string, string> = {
 
 type Group = 'conflicts' | 'staged' | 'unstaged' | 'untracked'
 
-export function ScmPanel(): React.ReactElement {
+export function ScmPanel({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
   const workspace = useActiveWorkspace()
   const scm = useApp((s) => s.scm)
   const setRepoStatus = useApp((s) => s.setRepoStatus)
@@ -70,13 +70,13 @@ export function ScmPanel(): React.ReactElement {
     [refresh]
   )
 
-  if (!workspace) return <Panel><div className="muted">No workspace open.</div></Panel>
+  if (!workspace) return <Panel onCollapse={onCollapse}><div className="muted">No workspace open.</div></Panel>
   if (repoRoots.length === 0) {
-    return <Panel><div className="muted">No git repository in this workspace.</div></Panel>
+    return <Panel onCollapse={onCollapse}><div className="muted">No git repository in this workspace.</div></Panel>
   }
 
   return (
-    <Panel>
+    <Panel onCollapse={onCollapse}>
       {repoRoots.map((root) => {
         const status = scm[root]
         return status ? (
@@ -274,11 +274,20 @@ function FileGroup({
   )
 }
 
-function Panel({ children }: { children: React.ReactNode }): React.ReactElement {
+function Panel({
+  children,
+  onCollapse
+}: {
+  children: React.ReactNode
+  onCollapse: () => void
+}): React.ReactElement {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="section-header">
         <span className="section-header__title">Source control</span>
+        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+          <CollapseRightIcon size={14} />
+        </button>
       </div>
       {children}
     </div>
