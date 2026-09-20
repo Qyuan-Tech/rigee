@@ -88,6 +88,12 @@ holds an `ElectronAsarIntegrity` SHA256 of app.asar. A `cp -R` copy dies before 
 window, no stdout, and a lone `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)` on
 stderr. Use `pnpm install:local`, which does this correctly.
 
+**Re-register the bundle with `lsregister` when replacing it.** LaunchServices caches a bundle's
+code identity per path, so installing over an existing app leaves the old registration behind and
+it refuses to launch the new one — `open` reports success, the process dies before main, and
+stderr says only `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)`. `lsregister -u`
+before the copy and `-f` after fixes it; `pnpm install:local` does both.
+
 **Verify installs with `open`, not by running the binary.** Both of the bundle-corruption bugs
 above reproduce only through LaunchServices; invoking
 `onestop.app/Contents/MacOS/onestop` directly works perfectly in each case, which is exactly why

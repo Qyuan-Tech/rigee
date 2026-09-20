@@ -47,10 +47,20 @@ pkill -f "${APP_NAME}.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true
 sleep 2
 
 echo "==> install to ${DEST}"
+# LaunchServices caches a bundle's code identity per path. Replacing an app in place leaves the
+# old registration behind, and it then refuses to launch the new one: `open` returns success, the
+# process dies before main, and the only clue is
+# `codesign_util.cc: task_name_for_pid: (os/kern) failure (5)` on stderr. Running the binary
+# directly still works throughout, which is what makes it so confusing. Unregister first,
+# register again afterwards.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -u "$DEST" 2>/dev/null || true
+
 rm -rf "$DEST"
-ditto "$SRC" "$DEST"            # NOT cp -R
+ditto "$SRC" "$DEST"            # NOT cp -R: plain cp corrupts a signed bundle
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 # NOT codesign --deep.
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$DEST" 2>/dev/null || true
 
 echo "==> verify it boots"
 # Retry once: the copy that was just quit can still be tearing down, and a second instance
