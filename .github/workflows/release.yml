@@ -69,14 +69,25 @@ jobs:
     strategy:
       # One platform failing should not hide whether the others are fine.
       fail-fast: false
+      # Each platform is built on its own OS. Nothing here is compiled — electron-builder
+      # repackages prebuilt Electron binaries and node-pty ships prebuilds for all six targets —
+      # so cross-building looks like it should work, and for Linux from macOS or vice versa it
+      # would. It is the packaging tools that are native, and each one fails differently.
       matrix:
         include:
           - os: ubuntu-latest
-            name: linux-windows
-            # electron-builder repackages prebuilt Electron binaries and node-pty ships prebuilds
-            # for all six targets in one tarball, so nothing is compiled and Linux can emit the
-            # Windows installer too. No wine needed for an unsigned NSIS build.
-            targets: --linux --win
+            name: linux
+            targets: --linux
+          - os: windows-latest
+            name: windows
+            # Must be Windows. Linux got as far as producing all three NSIS installers and then
+            # died in finishBuild with `spawn wine ENOENT`, three times over: `signAndEditExecutable`
+            # stamps the icon, version block and manifest into each finished installer with rcedit,
+            # which is a Windows binary and needs wine everywhere else. Installing wine is the
+            # other way out, but it is a slow and famously brittle dependency to have in a release
+            # pipeline, and turning the flag off would ship an installer with a blank icon and no
+            # version metadata.
+            targets: --win
           - os: macos-latest
             name: macos
             # Must be macOS: dmg creation calls hdiutil and signing calls codesign, and neither
@@ -114,30 +125,50 @@ jobs:
         run: pnpm exec electron-builder ${{ matrix.targets }} --publish never
 
       # A packaged app that throws during module evaluation shows no window and logs nothing, so
-      # only actually booting it catches that. Electron needs a display, so this is best-effort:
-      # if the runner has no xvfb the gate is skipped rather than failing the build for the wrong
-      # reason. It is reported either way so a silent skip cannot be mistaken for a pass.
+      # only actually booting it catches that. It is also the only step that loads node-pty's
+      # native addon out of the unpacked asar, and that unpacking is exactly what differs between
+      # the three platforms.
+      #
+      # The Linux leg is best-effort because Electron needs a display: with no xvfb the gate is
+      # skipped rather than failing the build for the wrong reason. It says so either way, so a
+      # silent skip cannot be mistaken for a pass.
       - name: Boot the packaged app
+        # Git Bash on Windows, so one script covers all three runners.
+        shell: bash
+        # A window that never closes would otherwise hold the job for the full six hours.
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           DIR="release/$(node -p "require('./package.json').version")"
 
-          if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            # Run the arch native to the runner; Rosetta may not be installed.
-            APP="$DIR/mac-arm64/onestop.app"
-            [ -d "$APP" ] || APP="$DIR/mac/onestop.app"
-            echo "booting $APP"
-            ONESTOP_SMOKE=1 "$APP/Contents/MacOS/onestop"
-            exit 0
-          fi
-
-          APP="$DIR/linux-unpacked/onestop"
-          if [ ! -x "$APP" ]; then echo "no linux-unpacked build to boot; skipping"; exit 0; fi
-          if ! command -v xvfb-run >/dev/null; then
-            echo "::warning::xvfb not present on this runner, cannot boot-test the packaged app"
-            exit 0
-          fi
-          ONESTOP_SMOKE=1 xvfb-run -a "$APP" --no-sandbox
+          case "${{ runner.os }}" in
+            macOS)
+              # Boot the arch native to the runner; Rosetta may not be installed.
+              APP="$DIR/mac-arm64/onestop.app"
+              [ -d "$APP" ] || APP="$DIR/mac/onestop.app"
+              BIN="$APP/Contents/MacOS/onestop"
+              [ -x "$BIN" ] || { echo "no macOS build at $APP"; exit 1; }
+              echo "booting $APP"
+              ONESTOP_SMOKE=1 "$BIN"
+              ;;
+            Windows)
+              # x64 only: the arm64 installer is built here but cannot run on an x64 runner.
+              BIN="$DIR/win-unpacked/onestop.exe"
+              [ -f "$BIN" ] || { echo "no Windows build at $BIN"; exit 1; }
+              echo "booting $BIN"
+              ONESTOP_SMOKE=1 "$BIN"
+              ;;
+            Linux)
+              BIN="$DIR/linux-unpacked/onestop"
+              [ -x "$BIN" ] || { echo "no Linux build at $BIN"; exit 1; }
+              if ! command -v xvfb-run >/dev/null; then
+                echo "::warning::xvfb not present on this runner, cannot boot-test the packaged app"
+                exit 0
+              fi
+              echo "booting $BIN"
+              ONESTOP_SMOKE=1 xvfb-run -a "$BIN" --no-sandbox
+              ;;
+          esac
 
       - uses: actions/upload-artifact@v7
         with:

@@ -68,6 +68,14 @@ then discarded at packaging time. `electron-vite dev` still serves unminified so
 maps, which is where renderer debugging happens. Main keeps its sourcemap; it is 66 kB and free.
 The workflow also sets `NODE_OPTIONS=--max-old-space-size=4096` as margin, not as the fix.
 
+**Each platform is packaged on its own runner, and Windows especially.** Nothing in this project
+is compiled at package time, so cross-building looks like it should work — but the *packaging*
+tools are native. Building `--win` on Linux gets all the way through makensis, produces all three
+installers, and then dies in `finishBuild` with `spawn wine ENOENT`: `signAndEditExecutable`
+stamps the icon, version block and manifest into each finished installer using rcedit, a Windows
+binary. Installing wine would work and is brittle; turning the flag off ships an installer with a
+blank icon. macOS is the same story with `hdiutil` and `codesign`.
+
 **Do not add `@electron/rebuild`.** node-pty is a Node-API addon shipping prebuilds for all six
 targets, so nothing needs rebuilding. Running it anyway produces a host-arch binary in
 `build/Release`, which node-pty's loader prefers over `prebuilds/`, and that poisons
