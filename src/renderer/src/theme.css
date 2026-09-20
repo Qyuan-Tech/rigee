@@ -1069,9 +1069,15 @@ textarea:focus {
   text-align: left;
 }
 
-.menu__item:hover {
+.menu__item:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--fg-bright);
+}
+
+/* Greyed rather than hidden, so the strip's menu keeps the same shape as items come and go. */
+.menu__item:disabled {
+  color: var(--fg-faint);
+  cursor: default;
 }
 
 .menu__item span:first-child {

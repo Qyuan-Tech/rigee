@@ -190,14 +190,26 @@ export class BrowserTabs {
     this.views.get(id)?.view.webContents.openDevTools({ mode: 'detach' })
   }
 
+  /**
+   * Tear one view down.
+   *
+   * Every step is guarded, because this also runs on the way out and by then Electron may have
+   * destroyed the window and, with it, every child view. Reaching through a destroyed wrapper
+   * throws *"Object has been destroyed"*, and thrown from `before-quit` that is an uncaught
+   * exception dialog on an app that was quitting perfectly happily.
+   *
+   * The way in is ordinary: close the window on macOS, where the app stays running, then quit.
+   * The views died with the window but this map still has entries for them.
+   */
   destroy(id: string): void {
     const entry = this.views.get(id)
     if (!entry) return
     this.views.delete(id)
-    this.window.contentView.removeChildView(entry.view)
+    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(entry.view)
     const wc = entry.view.webContents
+    if (!wc || wc.isDestroyed()) return
     wc.removeAllListeners()
-    if (!wc.isDestroyed()) wc.close()
+    wc.close()
   }
 
   destroyAll(): void {

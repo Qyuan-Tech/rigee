@@ -103,6 +103,8 @@ function createWindow(): void {
     if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
     else if (process.env.ONESTOP_SMOKE === 'split') void runSplitSmoke()
     else if (process.env.ONESTOP_SMOKE === 'persist') void runPersistSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'tabs') void runTabsSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'quit') void runQuitSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -286,6 +288,143 @@ async function runSplitSmoke(): Promise<void> {
     app.exit(JSON.parse(result).ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:split] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * Regression check for the crash on the way out.
+ *
+ * Close the window on macOS and the app keeps running, but every WebContentsView it owned is
+ * already gone while BrowserTabs still holds entries for them. Quitting then walked that map and
+ * threw *"Object has been destroyed"* out of `before-quit` — a crash dialog on an app that was
+ * leaving anyway, and one that only appears if you close the window before quitting rather than
+ * quitting straight from it.
+ *
+ * Reproduced here by doing precisely that, with the teardown called directly so the check does
+ * not depend on the app actually reaching its quit handlers.
+ */
+async function runQuitSmoke(): Promise<void> {
+  const win = window
+  const tabs = browserTabs
+  if (!win || !tabs) { console.error('[smoke:quit] no window'); app.exit(1); return }
+
+  const bounds = { x: 0, y: 0, width: 400, height: 300 }
+  tabs.create('about:blank', bounds)
+  tabs.create('about:blank', bounds)
+
+  win.destroy()
+  await new Promise((r) => setTimeout(r, 300))
+
+  try {
+    tabs.destroyAll()
+    ptys?.disposeAll()
+  } catch (err) {
+    console.error('[smoke:quit] teardown threw after the window was destroyed:', err)
+    app.exit(1)
+    return
+  }
+  console.log('[smoke:quit] {"ok":true}')
+  app.exit(0)
+}
+
+/**
+ * End-to-end check on the tab strip's context menu.
+ *
+ * The close arithmetic itself is covered by `pnpm panes:selftest`. What only a real window can
+ * show is the wiring: that a right-click on a terminal or a browser tab produces no menu at all,
+ * that one on a file tab does, and that the buttons reach the store. Driven through DOM events
+ * rather than the store so the component is genuinely in the loop.
+ */
+async function runTabsSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, newTerminalTab } = window.__onestop
+        const trail = []
+
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch' })
+        const ws = scratch.id
+        store.getState().setActiveWorkspace(ws)
+
+        const editor = (id) => ({ id, kind: 'editor', title: id, pinned: false,
+          filePath: '/' + id + '.ts', repoId: null, readOnly: false })
+        // about:blank, so the check does not quietly depend on the network.
+        const browser = (id) => ({ id, kind: 'browser', title: id, pinned: false,
+          url: 'about:blank', viewId: '', canGoBack: false, canGoForward: false,
+          loading: false, faviconDataUrl: null })
+
+        const term = newTerminalTab()
+        for (const t of [term, editor('e1'), browser('b1'), editor('e2'), editor('e3')]) {
+          store.getState().openTab(ws, t)
+        }
+        await sleep(600)
+
+        const order = () => (store.getState().tabsByWorkspace[ws] ?? []).map(t => t.id).join(',')
+        const tabEls = () => [...document.querySelectorAll('.tabstrip .tab')]
+        const items = () => [...document.querySelectorAll('.menu .menu__item')]
+        const rightClick = (el) => el.dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 20 }))
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        trail.push('opened: ' + order())
+        if (tabEls().length !== 5) return fail('wrong-tab-count', { n: tabEls().length })
+
+        // Neither a terminal nor a browser tab may offer the menu.
+        rightClick(tabEls()[0])
+        await sleep(150)
+        if (document.querySelector('.menu')) return fail('menu-on-terminal')
+        rightClick(tabEls()[2])
+        await sleep(150)
+        if (document.querySelector('.menu')) return fail('menu-on-browser')
+        trail.push('no menu on terminal or browser')
+
+        // A file tab must, with all four commands.
+        rightClick(tabEls()[1])
+        await sleep(150)
+        const labels = items().map(b => b.textContent + (b.disabled ? '[off]' : ''))
+        trail.push('menu: ' + labels.join(' | '))
+        if (items().length !== 4) return fail('wrong-menu-size', { labels })
+
+        items().find(b => b.textContent.includes('to the Right')).click()
+        await sleep(250)
+        trail.push('after close-right: ' + order())
+        if (order() !== [term.id, 'e1', 'b1'].join(',')) return fail('close-right-wrong')
+        if (document.querySelector('.menu')) return fail('menu-stayed-open')
+
+        store.getState().openTab(ws, editor('e4'))
+        store.getState().openTab(ws, editor('e5'))
+        await sleep(300)
+        const els = tabEls()
+        rightClick(els[els.length - 2])
+        await sleep(150)
+        items().find(b => b.textContent.includes('Other Files')).click()
+        await sleep(250)
+        trail.push('after close-others: ' + order())
+        if (order() !== [term.id, 'b1', 'e4'].join(',')) return fail('close-others-wrong')
+
+        // Selection must never be left pointing at a tab that is gone.
+        const active = store.getState().activeTabByWorkspace[ws]
+        if (!order().split(',').includes(active)) return fail('active-tab-dangling', { active })
+
+        return JSON.stringify({ ok: true, trail, active })
+      })()`,
+      true
+    )) as string
+    console.log('[smoke:tabs]', result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:tabs] threw:', err)
     app.exit(1)
   }
 }

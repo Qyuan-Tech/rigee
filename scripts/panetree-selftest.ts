@@ -1,12 +1,13 @@
 /**
- * Unit tests for the terminal split tree.
+ * Unit tests for the renderer's pure logic: the terminal split tree, key chords and the tab strip.
  *
  *   pnpm panes:selftest
  *
  * Pure functions, no Electron and no filesystem. Worth testing on their own because the failure
  * modes are invisible: a split that nests instead of absorbing, or a removal that leaves a
  * one-child split behind, both still render — they just accumulate wrapper nodes and make the
- * size arithmetic drift.
+ * size arithmetic drift. A bulk tab close that sweeps up a terminal is worse than invisible, it
+ * takes a running process with it.
  */
 
 import {
@@ -26,7 +27,8 @@ import {
   parseChord,
   resolvePrefixKey
 } from '../src/renderer/src/keys.ts'
-import type { PaneNode } from '../src/shared/types.ts'
+import { isFileTab, nextActiveTab, tabsToClose } from '../src/renderer/src/tabs.ts'
+import type { PaneNode, Tab } from '../src/shared/types.ts'
 
 let failures = 0
 let checks = 0
@@ -213,6 +215,72 @@ console.log('\nprefix state machine')
 
   eq('a broken prefix setting disables the machine rather than trapping keys',
     resolvePrefixKey(k('a'), { ...B, prefix: '' }, true).kind, 'passthrough')
+}
+
+console.log('\ntab strip')
+{
+  const editor = (id: string, pinned = false): Tab =>
+    ({ id, kind: 'editor', title: id, pinned, filePath: `/${id}.ts`, repoId: null, readOnly: false })
+  const diff = (id: string): Tab =>
+    ({ id, kind: 'diff', title: id, pinned: false, filePath: `/${id}.ts`, repoId: 'r',
+       against: { kind: 'worktree-vs-index' } })
+  const terminal = (id: string): Tab =>
+    ({ id, kind: 'terminal', title: id, pinned: false,
+       root: { kind: 'leaf', id: `${id}-leaf`, paneId: null }, activeLeafId: `${id}-leaf` })
+  const browser = (id: string): Tab =>
+    ({ id, kind: 'browser', title: id, pinned: false, url: 'https://example.com', viewId: '',
+       canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null })
+
+  check('an editor is a file tab', isFileTab(editor('a')))
+  check('a diff is a file tab', isFileTab(diff('d')))
+  check('a terminal is not', !isFileTab(terminal('t')))
+  check('a browser is not', !isFileTab(browser('b')))
+
+  // The whole point of the feature: terminals and browsers share the strip and must come through
+  // every bulk close untouched. A swept-up terminal takes a running process with it.
+  const mixed = [terminal('t1'), editor('e1'), browser('b1'), editor('e2'), diff('d1'), terminal('t2')]
+
+  eq('close others spares terminals and browsers',
+    tabsToClose(mixed, 'e1', 'others').join(','), 'e2,d1')
+  eq('close to the right spares them too',
+    tabsToClose(mixed, 'e1', 'right').join(','), 'e2,d1')
+  eq('close all means all FILES',
+    tabsToClose(mixed, 'e1', 'all').join(','), 'e1,e2,d1')
+
+  eq('close to the right of the last file tab is empty',
+    tabsToClose(mixed, 'd1', 'right').length, 0)
+  eq('close others excludes the target',
+    tabsToClose(mixed, 'e2', 'others').join(','), 'e1,d1')
+
+  // A terminal between two editors is skipped, not treated as the right-hand boundary.
+  eq('a terminal in the middle does not stop the sweep',
+    tabsToClose([editor('a'), terminal('t'), editor('b')], 'a', 'right').join(','), 'b')
+
+  eq('an unknown tab closes nothing', tabsToClose(mixed, 'nope', 'all').length, 0)
+
+  // Pinned: TabBase says pinned tabs survive "close others", so they must also survive the
+  // narrower sweep, but not an explicit close-all. Matches VSCode.
+  const withPinned = [editor('p', true), editor('x'), editor('y')]
+  eq('a pinned tab survives close others',
+    tabsToClose(withPinned, 'x', 'others').join(','), 'y')
+  eq('and survives close to the right',
+    tabsToClose([editor('a'), editor('p', true), editor('z')], 'a', 'right').join(','), 'z')
+  eq('but close all takes it',
+    tabsToClose(withPinned, 'x', 'all').join(','), 'p,x,y')
+
+  // Selection after a bulk close. Computed once, so it cannot walk through doomed tabs.
+  const ids = (...xs: string[]): Set<string> => new Set(xs)
+  eq('an untouched selection stays put',
+    nextActiveTab(mixed, 't1', ids('e1', 'e2')), 't1')
+  eq('closing the selected tab moves right',
+    nextActiveTab(mixed, 'e1', ids('e1')), 'b1')
+  eq('it skips tabs that are also closing',
+    nextActiveTab(mixed, 'e1', ids('e1', 'b1', 'e2')), 'd1')
+  eq('with nothing to the right it falls back to the left',
+    nextActiveTab(mixed, 't2', ids('t2', 'd1')), 'e2')
+  eq('closing everything leaves no selection',
+    nextActiveTab(mixed, 'e1', ids(...mixed.map((t) => t.id))), null)
+  eq('no selection stays no selection', nextActiveTab(mixed, null, ids('e1')), null)
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { newLeaf } from './paneTree'
+import { nextActiveTab } from './tabs'
 import {
   DEFAULT_KEYBINDINGS,
   DEFAULT_PANEL_LAYOUT,
@@ -50,6 +51,7 @@ interface AppState {
 
   openTab: (workspaceId: WorkspaceId, tab: Tab) => void
   closeTab: (workspaceId: WorkspaceId, tabId: TabId) => void
+  closeTabs: (workspaceId: WorkspaceId, tabIds: readonly TabId[]) => void
   setActiveTab: (workspaceId: WorkspaceId, tabId: TabId | null) => void
   updateTab: (workspaceId: WorkspaceId, tabId: TabId, patch: Partial<Tab>) => void
   reorderTabs: (workspaceId: WorkspaceId, from: number, to: number) => void
@@ -60,7 +62,7 @@ interface AppState {
 }
 
 export const useApp = create<AppState>()(
-  subscribeWithSelector((set) => ({
+  subscribeWithSelector((set, get) => ({
     ready: false,
     workspaces: [],
     activeWorkspaceId: null,
@@ -111,20 +113,25 @@ export const useApp = create<AppState>()(
         }
       }),
 
-    closeTab: (workspaceId, tabId) =>
+    closeTab: (workspaceId, tabId) => get().closeTabs(workspaceId, [tabId]),
+
+    /**
+     * Close a set of tabs in one update, rather than looping over `closeTab`. One write, so the
+     * persistence subscriber and the browser-view reaper each run once, and the selection rule is
+     * applied once over the whole set instead of hopping through tabs that are also about to go.
+     */
+    closeTabs: (workspaceId, tabIds) =>
       set((s) => {
         const tabs = s.tabsByWorkspace[workspaceId] ?? []
-        const idx = tabs.findIndex((t) => t.id === tabId)
-        if (idx < 0) return {}
-        const next = tabs.filter((t) => t.id !== tabId)
-        let active = s.activeTabByWorkspace[workspaceId] ?? null
-        if (active === tabId) {
-          // Activate the neighbour to the right, falling back to the left. Matches VSCode.
-          active = next[idx]?.id ?? next[idx - 1]?.id ?? null
-        }
+        const doomed = new Set(tabIds)
+        const next = tabs.filter((t) => !doomed.has(t.id))
+        if (next.length === tabs.length) return {}
         return {
           tabsByWorkspace: { ...s.tabsByWorkspace, [workspaceId]: next },
-          activeTabByWorkspace: { ...s.activeTabByWorkspace, [workspaceId]: active }
+          activeTabByWorkspace: {
+            ...s.activeTabByWorkspace,
+            [workspaceId]: nextActiveTab(tabs, s.activeTabByWorkspace[workspaceId] ?? null, doomed)
+          }
         }
       }),
 
