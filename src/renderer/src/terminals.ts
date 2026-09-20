@@ -1,24 +1,28 @@
 import { loadXterm } from './lazy'
+import { editorFontSize, monoFamily } from './fonts'
+import { rpc } from './ipc'
+import { useApp } from './store'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
-import { editorFontSize, monoFamily } from './fonts'
 
 /**
  * xterm.js instances, owned outside React.
  *
- * Each terminal gets a detached <div> that persists for the lifetime of its tab. Switching tabs
- * moves that element between parents instead of tearing the Terminal down, so scrollback, cursor
- * position and the WebGL glyph atlas all survive. Putting any of this in the store would mean a
- * React render per output frame.
+ * One instance per split pane, keyed by `<tabId>:<leafId>` — the leaf id from the tab's layout
+ * tree, which exists before a pty does and survives the pty being replaced. Each gets a detached
+ * <div> that lives as long as the pane does, so splitting, switching tabs or re-rendering the
+ * layout re-parents an element rather than tearing the Terminal down: scrollback, cursor and the
+ * WebGL glyph atlas all survive. None of this may go through the store, which would mean a React
+ * render per output frame.
  */
 
 export interface TerminalHandle {
   term: Terminal
   fit: FitAddon
-  /** The element xterm rendered into; re-parented on tab switch. */
+  /** The element xterm rendered into; re-parented as the layout changes. */
   element: HTMLDivElement
   paneId: string | null
-  /** The single live onData subscription; replaced, never stacked, when the effect re-runs. */
+  /** The single live onData subscription; replaced, never stacked. */
   input: { dispose: () => void } | null
   dispose: () => void
 }
@@ -27,16 +31,16 @@ const handles = new Map<string, TerminalHandle>()
 /** Guards against two concurrent mounts racing to create the same terminal. */
 const creating = new Map<string, Promise<TerminalHandle>>()
 
+export const paneKey = (tabId: string, leafId: string): string => `${tabId}:${leafId}`
 
-
-export function getTerminal(tabId: string): TerminalHandle | undefined {
-  return handles.get(tabId)
+export function getTerminal(key: string): TerminalHandle | undefined {
+  return handles.get(key)
 }
 
-export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
-  const existing = handles.get(tabId)
+export async function ensureTerminal(key: string): Promise<TerminalHandle> {
+  const existing = handles.get(key)
   if (existing) return existing
-  const inFlight = creating.get(tabId)
+  const inFlight = creating.get(key)
   if (inFlight) return inFlight
 
   const promise = (async (): Promise<TerminalHandle> => {
@@ -51,13 +55,12 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
       fontFamily: monoFamily(),
       fontSize: editorFontSize(),
       lineHeight: 1.2,
-      // Leave letterSpacing at 0: any non-integer advance makes the WebGL atlas fall back to a
+      // Leave letterSpacing at 0: a non-integer advance makes the WebGL atlas fall back to a
       // slow per-glyph path.
       letterSpacing: 0,
       cursorBlink: true,
       scrollback: 10000,
-      // Same tokens as theme.css and the Monaco theme: the terminal must not look like a
-      // different application pasted into the middle of the window.
+      // Same tokens as theme.css and the Monaco theme.
       theme: {
         background: '#0e1118',
         foreground: '#c8cfdd',
@@ -93,11 +96,11 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
       const webgl = new WebglAddon()
       webgl.onContextLoss(() => {
         webgl.dispose()
-        console.warn(`[terminal ${tabId}] WebGL context lost; falling back to the DOM renderer`)
+        console.warn(`[terminal ${key}] WebGL context lost; falling back to the DOM renderer`)
       })
       term.loadAddon(webgl)
     } catch (err) {
-      console.warn(`[terminal ${tabId}] WebGL unavailable, using the DOM renderer:`, err)
+      console.warn(`[terminal ${key}] WebGL unavailable, using the DOM renderer:`, err)
     }
 
     const handle: TerminalHandle = {
@@ -107,27 +110,48 @@ export async function ensureTerminal(tabId: string): Promise<TerminalHandle> {
       paneId: null,
       input: null,
       dispose: () => {
-        handles.delete(tabId)
+        handles.delete(key)
         handle.input?.dispose()
         term.dispose()
         element.remove()
       }
     }
-    handles.set(tabId, handle)
-    creating.delete(tabId)
+    handles.set(key, handle)
+    creating.delete(key)
     return handle
   })()
 
-  creating.set(tabId, promise)
+  creating.set(key, promise)
   return promise
 }
 
-export function disposeTerminal(tabId: string): void {
-  handles.get(tabId)?.dispose()
+export function disposeTerminal(key: string): void {
+  handles.get(key)?.dispose()
+}
+
+/** Dispose every pane belonging to a tab. Called when the tab closes. */
+export function disposeTab(tabId: string): void {
+  for (const key of [...handles.keys()]) {
+    if (key.startsWith(`${tabId}:`)) disposeTerminal(key)
+  }
+}
+
+/**
+ * Drop terminals whose leaf has left the tree, after a close or a collapse.
+ *
+ * Keyed on the LEAF id, which is what the key encodes — comparing against `handle.paneId` would
+ * compare a layout id with a pty id and silently reap everything.
+ */
+export function reapPanes(tabId: string, liveLeafIds: ReadonlySet<string>): void {
+  const prefix = `${tabId}:`
+  for (const key of [...handles.keys()]) {
+    if (!key.startsWith(prefix)) continue
+    if (!liveLeafIds.has(key.slice(prefix.length))) disposeTerminal(key)
+  }
 }
 
 /** Route a decoded pane frame to whichever terminal is bound to that pane. */
-export function writeToPane(paneId: string, data: Uint8Array): void {
+export function writeToPane(paneId: string, data: string): void {
   for (const handle of handles.values()) {
     if (handle.paneId === paneId) {
       handle.term.write(data)
@@ -135,3 +159,26 @@ export function writeToPane(paneId: string, data: Uint8Array): void {
     }
   }
 }
+
+/**
+ * Reap terminals whose tab has closed.
+ *
+ * Closing a pane is handled by the component, but closing the whole tab is not — the component
+ * unmounts and nothing is left to run the teardown. Subscribing outside React keeps this off the
+ * render path, the same arrangement browserViews.ts uses for native views.
+ */
+useApp.subscribe(
+  (s) => s.tabsByWorkspace,
+  (tabsByWorkspace) => {
+    const live = new Set<string>()
+    for (const tabs of Object.values(tabsByWorkspace)) {
+      for (const t of tabs) live.add(t.id)
+    }
+    for (const [key, handle] of handles) {
+      const tabId = key.slice(0, key.indexOf(':'))
+      if (live.has(tabId)) continue
+      if (handle.paneId) void rpc['terminal:kill']({ paneId: handle.paneId })
+      disposeTerminal(key)
+    }
+  }
+)

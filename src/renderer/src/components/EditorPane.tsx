@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { loadMonaco, MONACO_THEME } from '../lazy'
 import { editorFontSize, monoFamily } from '../fonts'
 import { rpc } from '../ipc'
+import { HunkView } from './HunkView'
 import type { DiffTab, EditorTab } from '@shared/types'
 import type * as Monaco from 'monaco-editor'
 
@@ -70,7 +71,44 @@ export function EditorPane({ tab }: { tab: EditorTab }): React.ReactElement {
   return <div ref={host} style={{ height: '100%', width: '100%' }} />
 }
 
+/**
+ * A diff tab shows the selectable hunk view by default and Monaco's side-by-side on demand.
+ * Reading a change and acting on it want different things: Monaco is better for understanding a
+ * large rewrite, the hunk list is the only one of the two that can stage a single line.
+ */
 export function DiffPane({ tab }: { tab: DiffTab }): React.ReactElement {
+  const [mode, setMode] = useState<'hunks' | 'split'>('hunks')
+  const [nonce, setNonce] = useState(0)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div className="hunks__bar" style={{ gap: 4 }}>
+        <span className="hunks__count" title={tab.filePath}>{tab.filePath}</span>
+        <button
+          className={mode === 'hunks' ? 'btn btn--primary' : 'btn'}
+          onClick={() => setMode('hunks')}
+        >
+          Hunks
+        </button>
+        <button
+          className={mode === 'split' ? 'btn btn--primary' : 'btn'}
+          onClick={() => setMode('split')}
+        >
+          Side by side
+        </button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {mode === 'hunks' ? (
+          <HunkView tab={tab} onApplied={() => setNonce((n) => n + 1)} />
+        ) : (
+          <MonacoDiff tab={tab} key={nonce} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MonacoDiff({ tab }: { tab: DiffTab }): React.ReactElement {
   const host = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
 

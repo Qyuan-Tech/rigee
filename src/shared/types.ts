@@ -6,8 +6,8 @@
  *
  * Identifier conventions:
  *   - Ids we mint ourselves are opaque strings (`ws_1`, `tab_7`, ...).
- *   - Ids that come from tmux keep tmux's own sigils verbatim: sessions `$0`, windows `@1`,
- *     panes `%2`. Never strip the sigil — it is what you pass back to tmux as a -t target.
+ *   - Ids minted in main (pty panes, browser views) are opaque to the renderer; it stores and
+ *     echoes them back, never parses them.
  */
 
 /**
@@ -35,11 +35,6 @@ export type WorkspaceId = string
 export type RepoId = string
 export type TabId = string
 
-/** tmux identifiers, sigil included. */
-export type TmuxSessionId = string
-export type TmuxWindowId = string
-export type TmuxPaneId = string
-
 /** One root folder inside a workspace. A workspace may hold several, VSCode-style. */
 export interface WorkspaceFolder {
   /** Absolute path. */
@@ -61,7 +56,7 @@ export interface WorkspaceFolder {
  * Plenty of terminal work has nothing to do with a repository — an ssh session, a one-off script,
  * poking at a cluster. Forcing the user to invent a workspace first would be friction for no
  * gain, but special-casing "a terminal with no workspace" would fork every code path that keys
- * off a workspace id (tmux sessions, tab persistence, the byte transport). A synthetic workspace
+ * off a workspace id (terminal ports, tab persistence, the byte transport). A synthetic workspace
  * keeps one path and costs nothing: it is rebuilt at boot, never persisted as a folder set, and
  * cannot be removed.
  */
@@ -72,7 +67,6 @@ export function scratchWorkspace(homeDir: string): Workspace {
     id: SCRATCH_WORKSPACE_ID,
     name: 'Scratch',
     folders: [],
-    tmuxSessionName: 'onestop-scratch',
     createdAt: 0,
     lastOpenedAt: 0,
     defaultCwd: homeDir
@@ -83,11 +77,6 @@ export interface Workspace {
   id: WorkspaceId
   name: string
   folders: WorkspaceFolder[]
-  /**
-   * The tmux session this workspace owns. Sessions are named, not id'd, because the name is what
-   * survives a tmux server restart and is what the user sees in their own tmux client.
-   */
-  tmuxSessionName: string
   createdAt: number
   lastOpenedAt: number
   /** Where terminals start when the workspace has no folders. Only set for Scratch. */
@@ -108,12 +97,34 @@ interface TabBase {
   pinned: boolean
 }
 
-/** A view onto one tmux pane. The pane lives in the workspace's tmux session. */
+/**
+ * One terminal tab, which owns a tree of split panes.
+ *
+ * The tree lives in the tab rather than in a multiplexer: we run plain pseudo-terminals, so
+ * nothing else has an opinion about the layout. It persists with the tab, so reopening the app
+ * restores the arrangement even though the processes themselves are gone.
+ */
 export interface TerminalTab extends TabBase {
   kind: 'terminal'
-  windowId: TmuxWindowId | null
-  paneId: TmuxPaneId | null
+  root: PaneNode
+  /** Which leaf takes keystrokes and is the target of a split. */
+  activeLeafId: string
 }
+
+export type PaneNode =
+  | { kind: 'leaf'; id: string; paneId: PtyPaneId | null }
+  | {
+      kind: 'split'
+      id: string
+      /** row = side by side, column = stacked. */
+      direction: 'row' | 'column'
+      children: PaneNode[]
+      /** One fraction per child, summing to 1. */
+      sizes: number[]
+    }
+
+/** Identifier minted by the pty manager in main. */
+export type PtyPaneId = string
 
 export interface EditorTab extends TabBase {
   kind: 'editor'
@@ -157,66 +168,11 @@ export interface BrowserTab extends TabBase {
 export type Tab = TerminalTab | EditorTab | DiffTab | BrowserTab
 
 // ---------------------------------------------------------------------------
-// tmux model (mirrors control-mode state; main owns it, renderer reads it)
+// Terminals
 // ---------------------------------------------------------------------------
 
-export interface TmuxPane {
-  id: TmuxPaneId
-  windowId: TmuxWindowId
-  active: boolean
-  /** Cell geometry as tmux currently has it laid out. */
-  width: number
-  height: number
-  /** Offset within the window's layout, in cells. */
-  left: number
-  top: number
-  title: string
-  currentCommand: string
-  currentPath: string
-  /** True while the pane is in copy-mode/view-mode; keystrokes mean different things then. */
-  inMode: boolean
-  dead: boolean
-}
-
-export interface TmuxWindow {
-  id: TmuxWindowId
-  sessionId: TmuxSessionId
-  index: number
-  name: string
-  active: boolean
-  /** Raw tmux layout string, checksum included. Parsed into a split tree for rendering. */
-  layout: string
-  panes: TmuxPaneId[]
-}
-
-export interface TmuxSession {
-  id: TmuxSessionId
-  name: string
-  attached: boolean
-  windows: TmuxWindowId[]
-}
-
-/** Parsed form of a tmux window_layout string. */
-export type TmuxLayoutNode =
-  | { kind: 'pane'; paneId: TmuxPaneId; x: number; y: number; width: number; height: number }
-  | {
-      kind: 'split'
-      direction: 'horizontal' | 'vertical'
-      x: number
-      y: number
-      width: number
-      height: number
-      children: TmuxLayoutNode[]
-    }
-
-/** Connection state of the single control-mode client per workspace. */
-export type TmuxConnectionState =
-  | { status: 'disconnected' }
-  | { status: 'connecting' }
-  | { status: 'connected'; sessionId: TmuxSessionId }
-  | { status: 'failed'; error: string }
-  /** tmux is not installed, or on Windows WSL2 is missing. */
-  | { status: 'unavailable'; reason: string }
+/** Why a terminal cannot start, when it cannot. */
+export type TerminalError = { kind: 'spawn-failed'; message: string }
 
 // ---------------------------------------------------------------------------
 // Source control
@@ -242,6 +198,28 @@ export interface GitFileChange {
   score: number | null
   /** True for submodule entries; they need different diff handling. */
   isSubmodule: boolean
+}
+
+/** What a partial-selection apply is trying to do; each maps to a different diff and apply. */
+export type SelectionAction = 'stage' | 'unstage' | 'discard'
+
+/** One line of a unified diff, as the hunk view renders and addresses it. */
+export interface DiffLineView {
+  kind: ' ' | '+' | '-'
+  text: string
+  noEol: boolean
+  /** Stable within one diff; what a selection is expressed in. */
+  id: number
+  /** Line numbers for the gutter; null on the side where the line does not exist. */
+  oldNo: number | null
+  newNo: number | null
+}
+
+export interface DiffHunkView {
+  section: string
+  oldStart: number
+  newStart: number
+  lines: DiffLineView[]
 }
 
 /** An in-progress multi-step git operation, which changes what the commit button should do. */

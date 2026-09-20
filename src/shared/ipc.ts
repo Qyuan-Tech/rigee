@@ -15,15 +15,15 @@ import type {
   PersistedState,
   RepoStatus,
   Tab,
-  TmuxConnectionState,
-  TmuxPane,
-  TmuxWindow,
+  PtyPaneId,
   Platform,
   ViewBounds,
   Workspace,
   WorkspaceId,
   WorkspaceUiState,
-  DiffTarget
+  DiffTarget,
+  DiffHunkView,
+  SelectionAction
 } from './types'
 
 /** renderer -> main -> renderer. Every one of these is awaited. */
@@ -32,9 +32,8 @@ export interface IpcRequests {
   'app:getVersions': () => Record<string, string | undefined>
   'app:getPlatformInfo': () => {
     platform: Platform
-    /** Whether a usable tmux was found (through WSL on win32). */
-    tmuxAvailable: boolean
-    tmuxVersion: string | null
+    /** The shell terminals will run, for display in the status bar. */
+    shell: string
     homeDir: string
   }
 
@@ -57,26 +56,20 @@ export interface IpcRequests {
   'fs:readFile': (path: string) => { content: string; truncated: boolean; tooLarge: boolean }
   'fs:writeFile': (args: { path: string; content: string }) => void
 
-  // --- tmux ------------------------------------------------------------
-  /** Starts (or reuses) the control-mode client for a workspace's session. */
-  'tmux:connect': (args: { workspaceId: WorkspaceId; sessionName: string; cwd: string }) => TmuxConnectionState
-  'tmux:disconnect': (args: { workspaceId: WorkspaceId }) => void
-  'tmux:listState': (args: { workspaceId: WorkspaceId }) => {
-    windows: TmuxWindow[]
-    panes: TmuxPane[]
-  }
-  'tmux:newWindow': (args: { workspaceId: WorkspaceId; cwd: string }) => { windowId: string }
-  'tmux:splitPane': (args: {
+  // --- terminals ---------------------------------------------------------
+  /** Start a pty for one pane. The renderer sizes it from its own layout. */
+  'terminal:spawn': (args: {
     workspaceId: WorkspaceId
-    paneId: string
-    direction: 'horizontal' | 'vertical'
-  }) => { paneId: string }
-  'tmux:killPane': (args: { workspaceId: WorkspaceId; paneId: string }) => void
-  'tmux:selectPane': (args: { workspaceId: WorkspaceId; paneId: string }) => void
-  /** Tells tmux the client geometry so it re-lays-out panes. Debounced by the caller. */
-  'tmux:resizeClient': (args: { workspaceId: WorkspaceId; cols: number; rows: number }) => void
-  /** Establishes the MessagePort for this workspace's terminal byte stream. */
+    cwd: string
+    cols: number
+    rows: number
+  }) => { paneId: PtyPaneId }
+  'terminal:resize': (args: { paneId: PtyPaneId; cols: number; rows: number }) => void
+  'terminal:kill': (args: { paneId: PtyPaneId }) => void
+  /** Establish the MessagePort carrying this workspace's terminal bytes, both directions. */
   'terminal:requestPort': (args: { workspaceId: WorkspaceId }) => void
+  /** Kill every pane of a workspace and drop its port. */
+  'terminal:disconnect': (args: { workspaceId: WorkspaceId }) => void
 
   // --- source control --------------------------------------------------
   'scm:status': (args: { repoRoot: string }) => RepoStatus
@@ -91,6 +84,19 @@ export interface IpcRequests {
   'scm:discard': (args: { repoRoot: string; paths: string[] }) => void
   'scm:commit': (args: { repoRoot: string; message: string; amend: boolean }) => { sha: string }
   'scm:watch': (args: { repoRoots: string[] }) => void
+  /** Hunks of one file, for selective staging. `binary` means the hunk UI must be disabled. */
+  'scm:hunks': (args: {
+    repoRoot: string
+    path: string
+    action: SelectionAction
+  }) => { hunks: DiffHunkView[]; binary: boolean }
+  /** Apply only the given line ids. Returns false when the selection produced no patch. */
+  'scm:applySelection': (args: {
+    repoRoot: string
+    path: string
+    lineIds: number[]
+    action: SelectionAction
+  }) => { applied: boolean }
 
   // --- browser tabs ----------------------------------------------------
   'browser:create': (args: { tabId: string; url: string; bounds: ViewBounds }) => { viewId: string }
@@ -104,17 +110,20 @@ export interface IpcRequests {
   'browser:reload': (args: { viewId: string }) => void
   'browser:stop': (args: { viewId: string }) => void
   'browser:openDevTools': (args: { viewId: string }) => void
+  /**
+   * Answer an HTTP 401/407. `username: null` cancels the request, which is what closing the
+   * dialog must do — leaving it unanswered would hang the page forever.
+   */
+  'browser:authResponse': (args: {
+    requestId: string
+    username: string | null
+    password: string
+  }) => void
 }
 
 /** main -> renderer push. Low rate; terminal bytes do NOT go through here. */
 export interface IpcEvents {
-  'tmux:state': {
-    workspaceId: WorkspaceId
-    connection: TmuxConnectionState
-    windows: TmuxWindow[]
-    panes: TmuxPane[]
-  }
-  'tmux:paneExit': { workspaceId: WorkspaceId; paneId: string }
+  'terminal:exit': { workspaceId: WorkspaceId; paneId: PtyPaneId; exitCode: number }
   'scm:status': { status: RepoStatus }
   'browser:state': {
     viewId: string
@@ -128,7 +137,14 @@ export interface IpcEvents {
   /** A page called window.open and we adopted it; the renderer must register a new tab. */
   'browser:tabRequested': { viewId: string; url: string; openerViewId: string }
   /** HTTP 401/407. The renderer shows a prompt and answers with 'browser:authResponse'. */
-  'browser:authRequested': { viewId: string; requestId: string; host: string; realm: string }
+  'browser:authRequested': {
+    viewId: string
+    requestId: string
+    host: string
+    realm: string
+    isProxy: boolean
+    url: string
+  }
   'fs:changed': { paths: string[] }
   'app:error': { scope: string; message: string }
 }
@@ -147,15 +163,11 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'fs:list',
   'fs:readFile',
   'fs:writeFile',
-  'tmux:connect',
-  'tmux:disconnect',
-  'tmux:listState',
-  'tmux:newWindow',
-  'tmux:splitPane',
-  'tmux:killPane',
-  'tmux:selectPane',
-  'tmux:resizeClient',
+  'terminal:spawn',
+  'terminal:resize',
+  'terminal:kill',
   'terminal:requestPort',
+  'terminal:disconnect',
   'scm:status',
   'scm:statusAll',
   'scm:diff',
@@ -164,6 +176,8 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'scm:discard',
   'scm:commit',
   'scm:watch',
+  'scm:hunks',
+  'scm:applySelection',
   'browser:create',
   'browser:destroy',
   'browser:setVisible',
@@ -173,12 +187,12 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'browser:goForward',
   'browser:reload',
   'browser:stop',
-  'browser:openDevTools'
+  'browser:openDevTools',
+  'browser:authResponse'
 ] as const
 
 export const EVENT_CHANNELS: readonly IpcEventChannel[] = [
-  'tmux:state',
-  'tmux:paneExit',
+  'terminal:exit',
   'scm:status',
   'browser:state',
   'browser:tabRequested',
@@ -199,9 +213,9 @@ export interface OnestopBridge {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
   on(channel: string, cb: (payload: unknown) => void): () => void
   /** Terminal byte stream, carried on a MessagePort that never crosses the bridge. */
-  onTerminalData(workspaceId: string, cb: (paneId: string, data: Uint8Array) => void): () => void
+  onTerminalData(workspaceId: string, cb: (paneId: string, data: string) => void): () => void
   writeTerminal(workspaceId: string, paneId: string, data: string): void
 }
 
 /** Re-exported so consumers need only one import. */
-export type { Tab, Workspace, RepoStatus, TmuxPane, TmuxWindow, FileStat, ViewBounds }
+export type { Tab, Workspace, RepoStatus, FileStat, ViewBounds }

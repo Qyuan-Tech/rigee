@@ -8,11 +8,11 @@ import { promisify } from 'node:util'
 import { BrowserTabs } from './browser'
 import { ensureShellPath } from './env'
 import { GitService } from './git/service'
-import type { TmuxClient } from './tmux/client'
-import { TmuxManager } from './tmux/manager'
+import type { ParsedDiff } from './git/patch'
+import { PtyManager } from './pty/manager'
 import { emit, handle } from './ipc'
 import { loadState, saveUi, saveWorkspaces } from './store'
-import type { FileStat, ViewBounds } from '@shared/types'
+import type { DiffHunkView, FileStat, ViewBounds } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -28,7 +28,7 @@ const MAX_EDITABLE_BYTES = 8 * 1024 * 1024
 
 let window: BrowserWindow | null = null
 let browserTabs: BrowserTabs | null = null
-let tmux: TmuxManager | null = null
+let ptys: PtyManager | null = null
 const gitService = new GitService()
 
 const shellWc = (): WebContents | null =>
@@ -67,7 +67,9 @@ function createWindow(): void {
   })
 
   browserTabs = new BrowserTabs(window, shellWc)
-  tmux = new TmuxManager(shellWc)
+  ptys = new PtyManager(shellWc, (workspaceId, paneId, exitCode) =>
+    emit(shellWc(), 'terminal:exit', { workspaceId, paneId, exitCode })
+  )
 
   // The trusted shell never opens windows itself; anything it tries goes to the real browser.
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -128,6 +130,30 @@ function createWindow(): void {
  * one, otherwise the shell itself.
  */
 /**
+ * Attach gutter line numbers to a parsed diff. The counters advance per side: a '-' line exists
+ * only in the old file, a '+' only in the new, context in both.
+ */
+function withLineNumbers(parsed: ParsedDiff): DiffHunkView[] {
+  return parsed.hunks.map((h) => {
+    let oldNo = h.oldStart
+    let newNo = h.newStart
+    return {
+      section: h.section,
+      oldStart: h.oldStart,
+      newStart: h.newStart,
+      lines: h.lines.map((l) => ({
+        kind: l.kind,
+        text: l.text,
+        noEol: l.noEol,
+        id: l.id,
+        oldNo: l.kind === '+' ? null : oldNo++,
+        newNo: l.kind === '-' ? null : newNo++
+      }))
+    }
+  })
+}
+
+/**
  * Render the shell to a PNG at ONESTOP_SHOT (default /tmp/onestop-shot.png). For looking at the
  * interface while working on it — capturePage grabs exactly the shell's own surface, so it needs
  * no screen recording permission and cannot catch anything else on the desktop.
@@ -180,7 +206,7 @@ async function runSmokeTest(): Promise<void> {
           bridgeKeys: bridge ? Object.keys(window.onestop) : [],
           rootChildren: root ? root.children.length : -1,
           elements: document.querySelectorAll('*').length,
-          tmux: platform,
+          platform,
           text: (document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120)
         })
       })()`,
@@ -190,9 +216,9 @@ async function runSmokeTest(): Promise<void> {
     const parsed = JSON.parse(report) as {
       bridge: boolean
       rootChildren: number
-      tmux: { tmuxAvailable?: boolean } | null
+      platform: { shell?: string } | null
     }
-    const ok = parsed.bridge && parsed.rootChildren > 0 && parsed.tmux?.tmuxAvailable === true
+    const ok = parsed.bridge && parsed.rootChildren > 0 && typeof parsed.platform?.shell === 'string'
     app.exit(ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke] failed:', err)
@@ -213,7 +239,7 @@ async function runTerminalSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, getTerminal, nextTabId } = window.__onestop
+        const { store, getTerminal, paneKey, newTerminalTab } = window.__onestop
         const trail = []
 
         // The shell boots asynchronously (state load + platform probe) after did-finish-load.
@@ -226,22 +252,21 @@ async function runTerminalSmoke(): Promise<void> {
         if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch-workspace', trail })
         store.getState().setActiveWorkspace(scratch.id)
 
-        const tabId = nextTabId()
-        store.getState().openTab(scratch.id, {
-          id: tabId, kind: 'terminal', title: 'e2e', pinned: false, windowId: null, paneId: null
-        })
+        const tab = newTerminalTab()
+        store.getState().openTab(scratch.id, tab)
+        const leafId = tab.activeLeafId
         trail.push('tab opened')
 
-        // Wait for the pane to be created and bound to the xterm instance.
+        // Wait for the pty to be spawned and bound to the xterm instance.
         let handle = null
         for (let i = 0; i < 120; i++) {
           await sleep(250)
-          handle = getTerminal(tabId)
+          handle = getTerminal(paneKey(tab.id, leafId))
           if (handle && handle.paneId) break
         }
         if (!handle) return JSON.stringify({ ok: false, stage: 'no-xterm-instance', trail })
-        if (!handle.paneId) return JSON.stringify({ ok: false, stage: 'pane-never-bound', trail })
-        trail.push('pane ' + handle.paneId)
+        if (!handle.paneId) return JSON.stringify({ ok: false, stage: 'pty-never-bound', trail })
+        trail.push('pty ' + handle.paneId)
 
         const read = () => {
           const b = handle.term.buffer.active
@@ -250,30 +275,19 @@ async function runTerminalSmoke(): Promise<void> {
           return out
         }
 
-        // Did anything arrive from tmux at all? A shell prompt should have rendered by now.
-        await sleep(800)
-        const beforeLen = read().trim().length
-        trail.push('output before typing: ' + beforeLen + ' chars')
+        await sleep(900)
+        trail.push('output before typing: ' + read().trim().length + ' chars')
 
-        // Where the keyboard actually lands. xterm renders into its own textarea, and if that
-        // is not focused — or if the onData subscription was lost — keystrokes go nowhere even
-        // though the transport underneath is perfectly healthy.
         const active = document.activeElement
         const focused = !!(active && handle.element.contains(active))
         trail.push('focus inside terminal: ' + focused + ' (' + (active ? active.tagName.toLowerCase() : 'none') + ')')
 
         let onDataFired = 0
         const probe = handle.term.onData(() => { onDataFired++ })
-
-        // term.input() drives the same path a real keypress does: it fires onData, which is what
-        // the component subscribes to. Writing straight to the port would skip exactly the wiring
-        // that was reported broken.
         handle.term.input('echo ONESTOP-E2E-$((6*7))' + String.fromCharCode(13), true)
         probe.dispose()
         trail.push('onData fired ' + onDataFired + 'x')
-        if (onDataFired !== 1) {
-          return JSON.stringify({ ok: false, stage: 'onData-not-1', trail })
-        }
+        if (onDataFired !== 1) return JSON.stringify({ ok: false, stage: 'onData-not-1', trail })
 
         for (let i = 0; i < 40; i++) {
           await sleep(250)
@@ -312,7 +326,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
   browserTabs?.destroyAll()
-  tmux?.disposeAll()
+  ptys?.disposeAll()
   gitService.dispose()
 })
 
@@ -324,19 +338,39 @@ app.on('before-quit', () => {
  * Signature is 5 args here. (WebContents' own 'login' takes 4 — dropping
  * authenticationResponseDetails there is a silent footgun that binds `callback` to authInfo.)
  */
-app.on('login', (event, webContents, _details, authInfo, callback) => {
+/**
+ * Outstanding HTTP auth challenges, keyed by the id handed to the renderer. The callback must be
+ * invoked exactly once: calling it with no arguments cancels the request, and never calling it
+ * leaves the page loading forever.
+ */
+const pendingAuth = new Map<string, (username?: string, password?: string) => void>()
+let authSeq = 0
+
+/** A dialog nobody answers must not pin the request open indefinitely. */
+const AUTH_TIMEOUT_MS = 2 * 60 * 1000
+
+app.on('login', (event, webContents, details, authInfo, callback) => {
   const viewId = webContents ? browserTabs?.idFor(webContents) ?? null : null
   if (!viewId) return // not one of our browser tabs; let Electron's default (cancel) apply
   event.preventDefault()
-  // TODO: prompt in the renderer via 'browser:authRequested' and resolve through an
-  // 'browser:authResponse' request. Until that UI exists, cancel rather than hang the page.
+
+  const requestId = `auth${++authSeq}`
+  pendingAuth.set(requestId, callback)
   emit(shellWc(), 'browser:authRequested', {
     viewId,
-    requestId: `${Date.now()}`,
-    host: authInfo.host,
-    realm: authInfo.realm
+    requestId,
+    host: authInfo.host || authInfo.realm || 'the server',
+    realm: authInfo.realm,
+    isProxy: authInfo.isProxy,
+    url: details.url
   })
-  callback()
+
+  setTimeout(() => {
+    const cb = pendingAuth.get(requestId)
+    if (!cb) return
+    pendingAuth.delete(requestId)
+    cb()
+  }, AUTH_TIMEOUT_MS).unref()
 })
 
 // ---------------------------------------------------------------------------
@@ -349,20 +383,12 @@ function registerHandlers(): void {
 
   handle('app:getPlatformInfo', async () => {
     await ensureShellPath()
-    let tmuxVersion: string | null = null
-    try {
-      const { stdout } =
-        process.platform === 'win32'
-          ? await execFileAsync('wsl.exe', ['--', 'tmux', '-V'])
-          : await execFileAsync('tmux', ['-V'])
-      tmuxVersion = stdout.trim()
-    } catch {
-      tmuxVersion = null
-    }
     return {
       platform: process.platform,
-      tmuxAvailable: tmuxVersion !== null,
-      tmuxVersion,
+      shell:
+        process.platform === 'win32'
+          ? (process.env.COMSPEC ?? 'powershell.exe')
+          : (process.env.SHELL ?? '/bin/bash'),
       homeDir: homedir()
     }
   })
@@ -445,52 +471,33 @@ function registerHandlers(): void {
   handle('browser:reload', ({ viewId }) => { browserTabs?.reload(viewId) })
   handle('browser:stop', ({ viewId }) => { browserTabs?.stop(viewId) })
   handle('browser:openDevTools', ({ viewId }) => { browserTabs?.openDevTools(viewId) })
+  handle('browser:authResponse', ({ requestId, username, password }) => {
+    const cb = pendingAuth.get(requestId)
+    if (!cb) return // already timed out, or answered twice
+    pendingAuth.delete(requestId)
+    if (username === null) cb()
+    else cb(username, password)
+  })
 
-  registerTmuxHandlers()
+  registerTerminalHandlers()
   registerScmHandlers()
 }
 
-function registerTmuxHandlers(): void {
-  const mgr = (): TmuxManager => {
-    if (!tmux) throw new Error('window not ready')
-    return tmux
-  }
-  const requireClient = (workspaceId: string): TmuxClient => {
-    const c = mgr().client(workspaceId)
-    if (!c) throw new Error(`no tmux session for workspace ${workspaceId}`)
-    return c
+function registerTerminalHandlers(): void {
+  const mgr = (): PtyManager => {
+    if (!ptys) throw new Error('window not ready')
+    return ptys
   }
 
-  handle('tmux:connect', async ({ workspaceId, sessionName, cwd }) => {
-    // A packaged app starts with a minimal PATH, so tmux must be findable before we spawn it.
+  handle('terminal:spawn', async ({ workspaceId, cwd, cols, rows }) => {
+    // A packaged app starts with a minimal PATH, so the shell must be findable before we spawn.
     await ensureShellPath()
-    // Initial geometry is a placeholder; the renderer sends the real size via tmux:resizeClient
-    // as soon as the xterm instance has measured itself.
-    return mgr().connect(workspaceId, sessionName, cwd, 120, 30)
+    return mgr().spawn({ workspaceId, cwd, cols, rows })
   })
-  handle('tmux:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
-  handle('tmux:listState', ({ workspaceId }) => mgr().listState(workspaceId))
-
-  handle('tmux:newWindow', async ({ workspaceId, cwd }) => ({
-    windowId: await requireClient(workspaceId).newWindow(cwd)
-  }))
-  handle('tmux:splitPane', async ({ workspaceId, paneId, direction }) => ({
-    paneId: await requireClient(workspaceId).splitPane(paneId, direction)
-  }))
-  handle('tmux:killPane', async ({ workspaceId, paneId }) => {
-    await requireClient(workspaceId).killPane(paneId)
-  })
-  handle('tmux:selectPane', async ({ workspaceId, paneId }) => {
-    await requireClient(workspaceId).selectPane(paneId)
-  })
-  handle('tmux:resizeClient', ({ workspaceId, cols, rows }) => {
-    // The renderer addresses the active window; per-window overrides keep tabs independently
-    // sized instead of all following one client geometry.
-    const client = mgr().client(workspaceId)
-    const windowId = mgr().listState(workspaceId).windows.find((w) => w.active)?.id
-    if (client && windowId) client.resizeWindow(windowId, cols, rows)
-  })
+  handle('terminal:resize', ({ paneId, cols, rows }) => { mgr().resize(paneId, cols, rows) })
+  handle('terminal:kill', ({ paneId }) => { mgr().kill(paneId) })
   handle('terminal:requestPort', ({ workspaceId }) => { mgr().establishPort(workspaceId) })
+  handle('terminal:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
 }
 
 function registerScmHandlers(): void {
@@ -501,6 +508,13 @@ function registerScmHandlers(): void {
   handle('scm:unstage', ({ repoRoot, paths }) => gitService.unstage(repoRoot, paths))
   handle('scm:discard', ({ repoRoot, paths }) => gitService.discard(repoRoot, paths))
   handle('scm:commit', ({ repoRoot, message, amend }) => gitService.commit(repoRoot, message, amend))
+  handle('scm:hunks', async ({ repoRoot, path, action }) => {
+    const parsed = await gitService.hunks(repoRoot, path, action)
+    return { hunks: withLineNumbers(parsed), binary: parsed.binary }
+  })
+  handle('scm:applySelection', ({ repoRoot, path, lineIds, action }) =>
+    gitService.applySelection(repoRoot, path, lineIds, action)
+  )
   handle('scm:watch', ({ repoRoots }) =>
     gitService.watch(repoRoots, (status) => emit(shellWc(), 'scm:status', { status }))
   )

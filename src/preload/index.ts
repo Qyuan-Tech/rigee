@@ -19,12 +19,12 @@ const EVENT_ALLOW: ReadonlySet<string> = new Set<string>(EVENT_CHANNELS)
 // renderer-registered sinks through an ordinary (clonable) callback.
 // ---------------------------------------------------------------------------
 
-type TerminalSink = (paneId: string, data: Uint8Array) => void
+type TerminalSink = (paneId: string, data: string) => void
 
 const ports = new Map<string, MessagePort>()
 const sinks = new Map<string, Set<TerminalSink>>()
 /** Frames that arrived before the renderer registered a sink for that workspace. */
-const pending = new Map<string, Array<[string, Uint8Array]>>()
+const pending = new Map<string, Array<[string, string]>>()
 
 ipcRenderer.on('terminal:port', (e: IpcRendererEvent, meta: { workspaceId: string }) => {
   const port = e.ports[0]
@@ -36,7 +36,7 @@ ipcRenderer.on('terminal:port', (e: IpcRendererEvent, meta: { workspaceId: strin
 
   port.onmessage = (ev: MessageEvent): void => {
     // Wire format is [paneId, bytes]; main already decoded tmux's octal escaping.
-    const frame = ev.data as { paneId: string; data: Uint8Array }
+    const frame = ev.data as { paneId: string; data: string }
     const set = sinks.get(workspaceId)
     if (!set || set.size === 0) {
       let q = pending.get(workspaceId)

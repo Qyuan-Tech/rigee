@@ -40,7 +40,6 @@ function WorkspaceList(): React.ReactElement {
       id: nextWorkspaceId(),
       name,
       folders: [{ path, name, isGitRepo: probe.isGitRepo, repoRoot: probe.repoRoot }],
-      tmuxSessionName: name.replace(/[^\w.-]/g, '-'),
       createdAt: Date.now(),
       lastOpenedAt: Date.now()
     }

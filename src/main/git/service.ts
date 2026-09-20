@@ -3,8 +3,9 @@ import { join } from 'node:path'
 import { BlobReader, looksBinary } from './blobs'
 import { git, gitText } from './exec'
 import { readStatus, resolveRepoPaths, type RepoPaths } from './status'
+import { buildSelectionPatch, parseUnifiedDiff, type ParsedDiff } from './patch'
 import { ScmWatchers } from './watcher'
-import type { DiffTarget, RepoStatus } from '@shared/types'
+import type { DiffTarget, RepoStatus, SelectionAction } from '@shared/types'
 
 /**
  * The source control service: one entry per repository, each holding its resolved paths and a
@@ -113,6 +114,93 @@ export class GitService {
   }
 
   /**
+   * The hunks of one file, for selective staging.
+   *
+   * `-U3` and no `--unidiff-zero`: with zero context `git apply` has nothing to verify against
+   * and will happily misapply. `--no-ext-diff` keeps the user's diff.external out of it,
+   * `--no-color` survives color.ui=always, and `--no-renames` gets an add/delete pair rather
+   * than a rename record that cannot be applied line by line.
+   */
+  async hunks(repoRoot: string, path: string, action: SelectionAction): Promise<ParsedDiff> {
+    const { paths } = await this.repo(repoRoot)
+
+    // `git diff` is empty for an untracked file, so there is nothing to select. Marking it
+    // intent-to-add makes git produce a `new file mode` hunk and per-line staging works; it does
+    // not stage any content.
+    if (action === 'stage') {
+      const st = await readStatus(paths)
+      if (st.untracked.some((f) => f.path === path)) {
+        await git(paths.root, ['add', '-N', '--', path])
+      }
+    }
+
+    const args = [
+      'diff',
+      ...(action === 'unstage' ? ['--cached'] : []),
+      '--no-color',
+      '--no-ext-diff',
+      '-U3',
+      '--src-prefix=a/',
+      '--dst-prefix=b/',
+      '--no-renames',
+      '--text',
+      '--',
+      path
+    ]
+    const res = await git(paths.root, args)
+    if (res.code !== 0) throw new Error(res.stderr.trim() || 'git diff failed')
+    return parseUnifiedDiff(res.stdout.toString('utf8'))
+  }
+
+  /**
+   * Apply just the selected lines.
+   *
+   *   stage    diff worktree-vs-index, apply forward onto the index
+   *   unstage  diff index-vs-HEAD,     apply reversed onto the index
+   *   discard  diff worktree-vs-index, apply reversed onto the worktree
+   *
+   * The patch goes in on stdin rather than via a file in the worktree: under core.autocrlf a
+   * written patch file gets line-ending warnings and then shows up as untracked in the next
+   * status. `--whitespace=nowarn` stops the user's apply.whitespace=fix from rewriting it, and
+   * git apply is atomic per invocation, so a failure leaves nothing half-applied.
+   */
+  async applySelection(
+    repoRoot: string,
+    path: string,
+    selectedIds: number[],
+    action: SelectionAction
+  ): Promise<{ applied: boolean }> {
+    if (selectedIds.length === 0) return { applied: false }
+    const { paths } = await this.repo(repoRoot)
+
+    const parsed = await this.hunks(repoRoot, path, action)
+    if (parsed.binary) throw new Error('cannot stage part of a binary file')
+
+    const reverse = action !== 'stage'
+    const patch = buildSelectionPatch(parsed, new Set(selectedIds), reverse)
+    if (patch === null) return { applied: false }
+
+    const args = [
+      'apply',
+      ...(action === 'discard' ? [] : ['--cached']),
+      ...(reverse ? ['--reverse'] : []),
+      '--whitespace=nowarn',
+      '--recount',
+      '-'
+    ]
+    const res = await git(paths.root, args, { stdin: patch })
+    if (res.code !== 0) {
+      const detail = res.stderr.trim()
+      throw new Error(
+        /patch failed|does not apply/.test(detail)
+          ? `${detail}\nThe file changed on disk. Refresh and try again.`
+          : detail || 'git apply failed'
+      )
+    }
+    return { applied: true }
+  }
+
+  /**
    * `-A` rather than a bare `add`: it is the only form that stages a deletion as well as a
    * modification, so one code path covers every row in the panel.
    */
@@ -193,6 +281,14 @@ export class GitService {
         const { paths } = await this.repo(root)
         resolved.push(paths.root)
         await this.watchers.watch(paths)
+
+        // Read and publish once at subscribe time, which both hands the caller the authoritative
+        // current state and seeds the comparison key. Without the seed the very first filesystem
+        // event always emits, even when nothing changed — and one is guaranteed, because our own
+        // `git status` lets git write back its refreshed index.
+        const status = await readStatus(paths)
+        this.lastStatusKey.set(paths.root, statusKey(status))
+        onStatus(status)
       } catch (err) {
         console.warn(`[git] cannot watch ${root}: ${String(err)}`)
       }

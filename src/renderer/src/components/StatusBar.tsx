@@ -6,12 +6,10 @@ import { useActiveWorkspace, useApp } from '../store'
 export function StatusBar(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const scm = useApp((s) => s.scm)
-  const [tmux, setTmux] = useState<{ ok: boolean; label: string } | null>(null)
+  const [shell, setShell] = useState<string | null>(null)
 
   useEffect(() => {
-    void rpc['app:getPlatformInfo']().then((info) =>
-      setTmux({ ok: info.tmuxAvailable, label: info.tmuxVersion ?? 'tmux not found' })
-    )
+    void rpc['app:getPlatformInfo']().then((info) => setShell(info.shell))
   }, [])
 
   const repo = workspace?.folders.find((f) => f.repoRoot)?.repoRoot
@@ -37,9 +35,7 @@ export function StatusBar(): React.ReactElement {
 
       <span className="statusbar__item" style={{ marginLeft: 'auto' }}>
         <TerminalIcon size={12} />
-        <span style={{ color: tmux && !tmux.ok ? 'var(--git-deleted)' : undefined }}>
-          {tmux?.label ?? '…'}
-        </span>
+        <span>{shell ? shell.split('/').pop() : '…'}</span>
       </span>
     </div>
   )

@@ -4,11 +4,12 @@ One window for the whole loop: terminals, code, diffs and the web.
 
 If you write code mostly by directing AI agents, your attention is probably split across a
 terminal multiplexer, an editor you use to read diffs, and a browser full of docs. onestop puts
-those three in one window without pretending any of them is something it isn't — the terminal is
-real tmux, the editor is the real VS Code editor, and the browser is real Chromium.
+those three in one window without pretending any of them is something it isn't — the editor is
+the real VS Code editor, the browser is real Chromium, and the terminal is a real pseudo-terminal
+running your own shell.
 
-> **Status: early but usable.** Terminals, editor, browser tabs and source control all work.
-> Hunk-level staging and the tmux split UI do not yet. See
+> **Status: early but usable.** Terminals with splits, the editor, browser tabs and source
+> control — including staging individual lines — all work. See
 > [What works today](#what-works-today).
 
 ## What it looks like
@@ -20,7 +21,7 @@ real tmux, the editor is the real VS Code editor, and the browser is real Chromi
 │  ▸ api         │                                          │  Message…        │
 │  ▸ infra       │                                          │                  │
 │                │                                          │  STAGED      2   │
-│  EXPLORER      │         tmux pane / Monaco editor        │   index.ts    M  │
+│  EXPLORER      │        terminal / Monaco editor          │   index.ts    M  │
 │  ▾ src         │              / Chromium                  │   util.ts     A  │
 │    ▾ main      │                                          │                  │
 │      index.ts  │                                          │  CHANGES     1   │
@@ -30,9 +31,9 @@ real tmux, the editor is the real VS Code editor, and the browser is real Chromi
 ```
 
 - **Left** — workspaces and a file tree. A workspace is a named set of folders, like a VS Code
-  multi-root workspace. Each one owns its own tmux session.
-- **Centre** — tabs. A tab is a tmux pane, a file in Monaco, a diff, or a Chromium page. Mix them
-  freely and drag to reorder.
+  multi-root workspace.
+- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, a diff, or a Chromium
+  page. Mix them freely and drag to reorder.
 - **Right** — source control, aware of every git repo in the workspace at once.
 
 ## Install
@@ -59,16 +60,12 @@ Builds are currently **unsigned**, so every OS will object the first time:
 
 ### Requirements
 
-**tmux** must be installed for terminal tabs. Everything else works without it. onestop finds it
-even when launched from Finder, where an app inherits almost no PATH.
+None. Terminals run your login shell directly — `$SHELL` on macOS and Linux, PowerShell on
+Windows — so there is nothing to install and no WSL requirement. The status bar shows which shell
+is in use.
 
-```bash
-brew install tmux        # macOS
-sudo apt install tmux    # Debian/Ubuntu
-```
-
-On **Windows**, terminals run through WSL2, so install WSL and then install tmux inside your
-distribution. The status bar tells you which tmux was detected, or that none was.
+onestop recovers your real `PATH` at startup, so Homebrew, nvm, asdf and friends work even though
+an app launched from Finder inherits almost none of it.
 
 ## What works today
 
@@ -78,23 +75,31 @@ distribution. The status bar tells you which tmux was detected, or that none was
 | File explorer — lazy-loaded tree | works |
 | Editor — Monaco, syntax highlighting, view state kept per tab | works |
 | Browser tabs — navigation, persistent logins, DevTools, `target=_blank` opens a tab | works |
-| Terminals — real tmux via control mode, one session per workspace | works |
+| Terminals — one pseudo-terminal per pane, running your login shell | works |
+| Split panes — Cmd/Ctrl+D beside, Shift+Cmd/Ctrl+D below, draggable dividers | works |
 | Scratch workspace — terminals without setting anything up | works |
 | Source control — status, diff, stage, unstage, discard, commit, amend | works |
+| Staging individual hunks and lines, and discarding them | works |
 | Live refresh — the panel updates when git runs in your own terminal | works |
-| Staging a hunk or a line range | **not implemented** — whole files only |
-| Split panes, tmux window/tab mapping in the UI | partial — panes exist, the split UI does not |
-| HTTP auth prompt in browser tabs | **not implemented** — auth requests are cancelled |
+| HTTP auth prompt in browser tabs | works |
+| Terminals surviving a restart | **no** — closing onestop ends its shells |
 
-## Your tmux is safe
+## Terminals
 
-onestop never touches your default tmux server. Each workspace gets a private socket under the
-app's data directory, so `tmux ls` in your own terminal keeps showing exactly what it showed
-before, and nothing onestop does can kill your sessions.
+Each pane is its own pseudo-terminal running your login shell, and each terminal tab holds a tree
+of panes you can split and resize.
 
-Terminal tabs attach in tmux **control mode**, which means the session is a genuine tmux session:
-it survives closing the app, and you can attach to it from a normal terminal with
-`tmux -S <socket> attach`.
+They do not outlive the app: quitting onestop ends the shells and whatever they were running. If
+you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
+`screen` works exactly as it would in any other terminal.
+
+| | |
+|---|---|
+| Split beside | `Cmd`/`Ctrl` + `D` |
+| Split below | `Shift` + `Cmd`/`Ctrl` + `D` |
+| New terminal tab | `Cmd`/`Ctrl` + `T` |
+| Close tab | `Cmd`/`Ctrl` + `W` |
+| Toggle the sidebars | `Cmd`/`Ctrl` + `B`, `Shift` + `Cmd`/`Ctrl` + `G` |
 
 ## Where onestop keeps your data
 
@@ -104,8 +109,8 @@ it survives closing the app, and you can attach to it from a normal terminal wit
 | Linux | `~/.config/onestop` |
 | Windows | `%APPDATA%\onestop` |
 
-`workspaces.json` holds your workspaces and open tabs. `tmux/` holds the per-workspace sockets.
-Deleting the directory resets the app and loses nothing but layout.
+`workspaces.json` holds your workspaces, open tabs and split layouts. Deleting the directory
+resets the app and loses nothing but layout.
 
 ## Building it yourself
 

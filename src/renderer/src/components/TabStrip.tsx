@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { CloseIcon, DiffIcon, FileIcon, GlobeIcon, TerminalIcon } from '../icons'
-import { nextTabId, useActiveWorkspace, useApp, useTabs } from '../store'
+import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useTabs } from '../store'
 import type { Tab } from '@shared/types'
 
 function TabIcon({ kind }: { kind: Tab['kind'] }): React.ReactElement {
@@ -31,10 +31,7 @@ export function TabStrip(): React.ReactElement {
 
   const addTerminal = useCallback(() => {
     if (!workspace) return
-    openTab(workspace.id, {
-      id: nextTabId(), kind: 'terminal', title: 'terminal', pinned: false,
-      windowId: null, paneId: null
-    })
+    openTab(workspace.id, newTerminalTab())
   }, [openTab, workspace])
 
   const addBrowser = useCallback(() => {
@@ -99,6 +96,6 @@ function tabTooltip(tab: Tab): string {
     case 'browser':
       return tab.url
     case 'terminal':
-      return tab.paneId ? `tmux pane ${tab.paneId}` : 'terminal'
+      return 'terminal'
   }
 }

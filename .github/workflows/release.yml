@@ -14,7 +14,7 @@ env:
   ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
 
 jobs:
-  # Gate the builds. A broken typecheck or a regressed tmux parser should never reach a release.
+  # Gate the builds. A broken typecheck or a regressed patch builder must never ship.
   check:
     runs-on: [csg-ubuntu-latest]
     steps:
@@ -29,16 +29,15 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      # The tmux self-test drives a real tmux server (on a private socket).
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm run typecheck
 
-      - name: tmux control-mode self-test
-        run: pnpm run tmux:selftest
+      - name: Source control self-test
+        run: pnpm run git:selftest
+
+      - name: Split-tree self-test
+        run: pnpm run panes:selftest
 
       - name: Build renderer, main and preload
         run: pnpm exec electron-vite build

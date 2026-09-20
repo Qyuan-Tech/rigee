@@ -5,8 +5,9 @@ import { CenterPane } from './components/CenterPane'
 import { ScmPanel } from './components/ScmPanel'
 import { StatusBar } from './components/StatusBar'
 import { Splitter } from './components/Splitter'
+import { AuthDialog } from './components/AuthDialog'
 import { isMac, rpc } from './ipc'
-import { nextTabId, useActiveWorkspace, useApp } from './store'
+import { newTerminalTab, sanitizeTabs, useActiveWorkspace, useApp } from './store'
 import { SCRATCH_WORKSPACE_ID, scratchWorkspace, type PersistedState } from '@shared/types'
 
 export function App(): React.ReactElement {
@@ -31,9 +32,15 @@ export function App(): React.ReactElement {
       store.setActiveWorkspace(state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID)
 
       for (const [wsId, ui] of Object.entries(state.ui)) {
+        // Tabs on disk may predate the current shape; repair or drop them rather than render one.
+        const tabs = sanitizeTabs(ui.tabs)
+        const ids = new Set(tabs.map((t) => t.id))
         useApp.setState((s) => ({
-          tabsByWorkspace: { ...s.tabsByWorkspace, [wsId]: ui.tabs },
-          activeTabByWorkspace: { ...s.activeTabByWorkspace, [wsId]: ui.activeTabId }
+          tabsByWorkspace: { ...s.tabsByWorkspace, [wsId]: tabs },
+          activeTabByWorkspace: {
+            ...s.activeTabByWorkspace,
+            [wsId]: ui.activeTabId && ids.has(ui.activeTabId) ? ui.activeTabId : (tabs[0]?.id ?? null)
+          }
         }))
       }
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
@@ -90,6 +97,7 @@ export function App(): React.ReactElement {
       </div>
 
       <StatusBar />
+      <AuthDialog />
     </div>
   )
 }
@@ -131,10 +139,7 @@ function useShortcuts(): void {
 
       if (e.key === 't') {
         e.preventDefault()
-        s.openTab(ws, {
-          id: nextTabId(), kind: 'terminal', title: 'terminal', pinned: false,
-          windowId: null, paneId: null
-        })
+        s.openTab(ws, newTerminalTab())
       } else if (e.key === 'w') {
         e.preventDefault()
         const active = s.activeTabByWorkspace[ws]

@@ -1,8 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
-import { useApp, nextTabId } from './store'
-import { getTerminal } from './terminals'
+import { useApp, newTerminalTab } from './store'
+import { getTerminal, paneKey } from './terminals'
 import { applyFonts } from './fonts'
 import './theme.css'
 
@@ -13,10 +13,15 @@ import './theme.css'
  */
 declare global {
   interface Window {
-    __onestop: { store: typeof useApp; getTerminal: typeof getTerminal; nextTabId: typeof nextTabId }
+    __onestop: {
+      store: typeof useApp
+      getTerminal: typeof getTerminal
+      paneKey: typeof paneKey
+      newTerminalTab: typeof newTerminalTab
+    }
   }
 }
-window.__onestop = { store: useApp, getTerminal, nextTabId }
+window.__onestop = { store: useApp, getTerminal, paneKey, newTerminalTab }
 
 // Before render: Monaco and xterm read these at construction time.
 applyFonts()

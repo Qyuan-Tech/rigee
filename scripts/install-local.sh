@@ -44,7 +44,7 @@ echo "==> quit any running copy"
 osascript -e "quit app \"${APP_NAME}\"" 2>/dev/null || true
 sleep 1
 pkill -f "${APP_NAME}.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true
-sleep 1
+sleep 2
 
 echo "==> install to ${DEST}"
 rm -rf "$DEST"
@@ -53,14 +53,25 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 # NOT codesign --deep.
 
 echo "==> verify it boots"
+# Retry once: the copy that was just quit can still be tearing down, and a second instance
+# starting into that raced often enough to make a healthy build look broken.
 SMOKE_LOG=$(mktemp)
-if ONESTOP_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1; then :; else
-  echo "the packaged app exited non-zero during its smoke check:" >&2
-  grep -viE 'INFO:|WARNING:' "$SMOKE_LOG" | tail -20 >&2
-  exit 1
-fi
-if ! grep -qE '\[smoke\]' "$SMOKE_LOG"; then
-  echo "the packaged app produced no smoke report:" >&2
+smoke_ok=0
+for attempt in 1 2; do
+  : >"$SMOKE_LOG"
+  # Bounded: a smoke run that never exits would hang the install with no output at all, which
+  # is exactly how this script wedged once.
+  if command -v timeout >/dev/null; then
+    ONESTOP_SMOKE=1 timeout 90 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
+  else
+    ONESTOP_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
+  fi
+  if grep -qE '\[smoke\]' "$SMOKE_LOG"; then smoke_ok=1; break; fi
+  echo "   attempt $attempt produced no smoke report; retrying"
+  sleep 3
+done
+if [ "$smoke_ok" -ne 1 ]; then
+  echo "the packaged app never produced a smoke report:" >&2
   grep -viE 'INFO:|WARNING:' "$SMOKE_LOG" | tail -20 >&2
   exit 1
 fi

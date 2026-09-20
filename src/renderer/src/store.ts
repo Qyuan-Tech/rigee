@@ -1,11 +1,13 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
+import { newLeaf } from './paneTree'
 import {
   DEFAULT_PANEL_LAYOUT,
   type PanelLayout,
   type RepoStatus,
   type Tab,
   type TabId,
+  type PaneNode,
   type Workspace,
   type WorkspaceId
 } from '@shared/types'
@@ -179,6 +181,82 @@ export const useActiveTab = (): Tab | null =>
 
 /** Stable identity so the selector above cannot cause an infinite render loop. */
 const EMPTY_TABS: Tab[] = []
+
+/**
+ * Repair tabs coming back from disk.
+ *
+ * Persisted UI state outlives the shape of the code that wrote it — a terminal tab saved before
+ * splits existed has no `root`, and rendering it throws on the first property access. Anything
+ * that cannot be repaired is dropped: losing a restored tab is a nuisance, a shell that will not
+ * render is a broken window.
+ *
+ * Pane ids are always cleared. The processes they referred to died with the previous run.
+ */
+export function sanitizeTabs(tabs: unknown): Tab[] {
+  if (!Array.isArray(tabs)) return []
+  const out: Tab[] = []
+  for (const raw of tabs) {
+    const tab = raw as Partial<Tab> & Record<string, unknown>
+    if (!tab || typeof tab.id !== 'string' || typeof tab.kind !== 'string') continue
+
+    if (tab.kind === 'terminal') {
+      const root = isPaneNode(tab.root) ? clearPaneIds(tab.root) : newLeaf()
+      const ids = new Set(leafIds(root))
+      out.push({
+        id: tab.id,
+        kind: 'terminal',
+        title: typeof tab.title === 'string' ? tab.title : 'terminal',
+        pinned: tab.pinned === true,
+        root,
+        activeLeafId:
+          typeof tab.activeLeafId === 'string' && ids.has(tab.activeLeafId)
+            ? tab.activeLeafId
+            : ([...ids][0] ?? '')
+      })
+      continue
+    }
+
+    if (tab.kind === 'editor' && typeof tab.filePath === 'string') { out.push(tab as Tab); continue }
+    if (tab.kind === 'diff' && typeof tab.filePath === 'string' && tab.against) {
+      out.push(tab as Tab); continue
+    }
+    if (tab.kind === 'browser' && typeof tab.url === 'string') {
+      // The native view is gone; it is recreated on first activation.
+      out.push({ ...(tab as Extract<Tab, { kind: 'browser' }>), viewId: '', loading: false })
+    }
+  }
+  return out
+}
+
+function isPaneNode(v: unknown): v is PaneNode {
+  if (!v || typeof v !== 'object') return false
+  const n = v as PaneNode
+  if (n.kind === 'leaf') return typeof n.id === 'string'
+  if (n.kind === 'split') return Array.isArray(n.children) && n.children.every(isPaneNode)
+  return false
+}
+
+function clearPaneIds(node: PaneNode): PaneNode {
+  if (node.kind === 'leaf') return { ...node, paneId: null }
+  return { ...node, children: node.children.map(clearPaneIds) }
+}
+
+function leafIds(node: PaneNode): string[] {
+  return node.kind === 'leaf' ? [node.id] : node.children.flatMap(leafIds)
+}
+
+/** A fresh terminal tab: one pane, not yet bound to a pty. */
+export function newTerminalTab(): Tab {
+  const leaf = newLeaf()
+  return {
+    id: nextTabId(),
+    kind: 'terminal',
+    title: 'terminal',
+    pinned: false,
+    root: leaf,
+    activeLeafId: leaf.id
+  }
+}
 
 let tabSeq = 0
 export const nextTabId = (): TabId => `tab_${++tabSeq}_${Date.now().toString(36)}`

@@ -223,11 +223,22 @@ async function liveTests(): Promise<void> {
     await svc.watch([DIR], (s2) => {
       seen.push(`${s2.unstaged.length}u/${s2.staged.length}s/${s2.untracked.length}?`)
     })
+    eq('watch() publishes the current status once, at subscribe time', seen.length, 1)
 
-    // Settle, then confirm the watcher is quiet when nothing happens. This is the feedback-loop
-    // check: git's fsmonitor cookie files are created and deleted by every status we run
-    // ourselves, so watching them would refresh forever.
-    await sleep(900)
+    // Wait for the watcher to go genuinely quiet before measuring. The `reset --hard` above is
+    // still generating events, and a fixed sleep raced them: the first push landed just after the
+    // counter was cleared and looked like idle chatter.
+    let settled = 0
+    for (let i = 0; i < 40; i++) {
+      const before = seen.length
+      await sleep(200)
+      settled = seen.length === before ? settled + 1 : 0
+      if (settled >= 3) break
+    }
+
+    // Now the real check, which is about a feedback loop: git's fsmonitor cookie files are
+    // created and deleted by every status we run ourselves, and we deliberately let git write
+    // back its refreshed index, so a naive watcher refreshes forever.
     seen.length = 0
     await svc.status(DIR)
     await sleep(900)
@@ -250,6 +261,91 @@ async function liveTests(): Promise<void> {
     await sleep(1500)
     check('200 writes collapse into a handful of refreshes', seen.length > 0 && seen.length <= 4,
       `${seen.length} refreshes`)
+    // --- selective staging ----------------------------------------------
+    g('reset', '-q', '--hard', 'HEAD')
+
+    /** Stage/unstage/discard specific lines, addressed by their text. */
+    const selectByText = async (
+      file: string,
+      action: 'stage' | 'unstage' | 'discard',
+      wanted: string[]
+    ): Promise<void> => {
+      const { hunks } = { hunks: (await svc.hunks(DIR, file, action)).hunks }
+      const ids: number[] = []
+      for (const h of hunks) {
+        for (const l of h.lines) {
+          if (l.kind !== ' ' && wanted.includes(`${l.kind}${l.text}`)) ids.push(l.id)
+        }
+      }
+      if (ids.length !== wanted.length) {
+        throw new Error(`wanted ${JSON.stringify(wanted)}, matched ${ids.length} lines`)
+      }
+      await svc.applySelection(DIR, file, ids, action)
+    }
+
+    const indexOf = (file: string): string => g('show', `:0:${file}`)
+
+    // One of two deletions.
+    writeFileSync(join(DIR, 'multi.txt'), 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n')
+    g('add', '-A'); g('commit', '-qm', 'multi')
+    writeFileSync(join(DIR, 'multi.txt'), 'l1\nl2\nl4\nl5\nl6\nl7\nl8\nl9\n')
+    await selectByText('multi.txt', 'stage', ['-l3'])
+    eq('staging one of two deletions leaves the other',
+      indexOf('multi.txt'), 'l1\nl2\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // Unstage a single line without touching the worktree.
+    writeFileSync(join(DIR, 'multi.txt'), 'X1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nX9\nl10\n')
+    await svc.stage(DIR, ['multi.txt'])
+    await selectByText('multi.txt', 'unstage', ['-l1', '+X1'])
+    eq('unstaging one line leaves the other staged',
+      indexOf('multi.txt'), 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nX9\nl10\n')
+    eq('unstage did not touch the worktree',
+      readFileSync(join(DIR, 'multi.txt'), 'utf8'), 'X1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nX9\nl10\n')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // Discard one modification from the worktree, keeping the rest.
+    writeFileSync(join(DIR, 'multi.txt'), 'Y1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nY9\nl10\n')
+    await selectByText('multi.txt', 'discard', ['-l1', '+Y1'])
+    eq('discarding one change keeps the other',
+      readFileSync(join(DIR, 'multi.txt'), 'utf8'),
+      'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nY9\nl10\n')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // No newline at EOF, on both sides. The marker belongs to the line above it and must follow
+    // that line even when a '-' gets demoted to context.
+    writeFileSync(join(DIR, 'noeol.txt'), 'a\nb\nc')
+    g('add', '-A'); g('commit', '-qm', 'noeol')
+    writeFileSync(join(DIR, 'noeol.txt'), 'A\nb\nC')
+    await selectByText('noeol.txt', 'stage', ['-a', '+A'])
+    eq('no-newline marker survives a partial stage', indexOf('noeol.txt'), 'A\nb\nc')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // The marker sitting on a dropped '+' must disappear with it.
+    writeFileSync(join(DIR, 'noeol2.txt'), 'p\nq\nr\n')
+    g('add', '-A'); g('commit', '-qm', 'noeol2')
+    writeFileSync(join(DIR, 'noeol2.txt'), 'P\nq\nR')
+    await selectByText('noeol2.txt', 'stage', ['-p', '+P'])
+    eq('dropped + takes its no-newline marker with it', indexOf('noeol2.txt'), 'P\nq\nr\n')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // CRLF is content: splitting the diff on /\r?\n/ would strip it and the patch would not apply.
+    writeFileSync(join(DIR, 'crlf.txt'), 'c1\r\nc2\r\nc3\r\n')
+    g('add', '-A'); g('commit', '-qm', 'crlf')
+    writeFileSync(join(DIR, 'crlf.txt'), 'c1\r\nC2\r\nc3\r\n')
+    await selectByText('crlf.txt', 'stage', ['-c2\r', '+C2\r'])
+    eq('CRLF round-trips byte-exact', indexOf('crlf.txt'), 'c1\r\nC2\r\nc3\r\n')
+    g('reset', '-q', '--hard', 'HEAD')
+
+    // A brand-new file has no `git diff` at all until it is intent-to-add; hunks() does that.
+    writeFileSync(join(DIR, 'fresh.txt'), 'line1\nline2\nline3\n')
+    await selectByText('fresh.txt', 'stage', ['+line2'])
+    eq('a single line of an untracked file can be staged', indexOf('fresh.txt'), 'line2\n')
+    st = await svc.status(DIR)
+    check('untracked file becomes partly staged', st.staged.some((f) => f.path === 'fresh.txt'),
+      JSON.stringify(st.staged.map((f) => f.path)))
+    g('reset', '-q', 'HEAD'); rmSync(join(DIR, 'fresh.txt'), { force: true })
+
   } finally {
     svc.dispose()
     rmSync(DIR, { recursive: true, force: true })

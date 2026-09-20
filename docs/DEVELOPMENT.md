@@ -15,8 +15,8 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm typecheck` | `tsc -b` over the three project references |
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
-| `pnpm tmux:selftest` | 26 checks against a real tmux server on a private socket |
-| `pnpm git:selftest` | 48 checks against the git binary and a fixture repo |
+| `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
+| `pnpm panes:selftest` | 24 checks on the terminal split tree, pure functions |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
@@ -28,12 +28,13 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 src/
   shared/      types + the IPC contract; imported by all three targets
   main/        Electron main
-    tmux/      control-mode client: parser, layout grammar, session manager
+    pty/       pseudo-terminals, one per split pane
+    git/       status parsing, blobs, selective patching, filesystem watching
     browser.ts WebContentsView tab manager
     store.ts   atomic JSON persistence
   preload/     the contextBridge surface (compiled to CJS — see below)
   renderer/    React shell
-scripts/       tmux-selftest.ts
+scripts/       self-tests and the local installer
 ```
 
 Three tsconfig projects, because the three targets genuinely differ: `tsconfig.node.json` (main,
@@ -118,51 +119,49 @@ same process keeps returning the pre-add blob for `:0:<path>`. Since the user's 
 a likely place to run `git add`, the reader accepts object ids only and callers resolve specs
 through `rev-parse` first.
 
-## The tmux client
+## Terminals
 
-`src/main/tmux/` speaks tmux control mode over a pipe. No pty is involved: `-C` (never `-CC`,
-which calls `tcgetattr(stdin)` and exits when stdin is not a tty) needs no terminal, which is also
-what lets Windows pipe through `wsl.exe` without ConPTY.
+`src/main/pty/manager.ts` runs one pseudo-terminal per pane through node-pty. This replaced a tmux
+control-mode client, which is worth knowing because the git history is full of it: tmux bought
+session persistence — shells that outlive the app and can be re-attached from outside it — at the
+cost of an intricate protocol sitting between us and every keystroke. Plain ptys mean the split
+layout is ours (`src/renderer/src/paneTree.ts`) rather than a mirror of tmux's, and Windows needs
+no WSL. Anyone who wants a multiplexer can type `tmux` in a pane.
 
-Four protocol rules the code depends on, all verified against tmux 3.6a:
+Two things about the data path:
 
-1. **Attach with `-f pause-after=N`, always.** Without it tmux kills the client once the head of
-   the output queue is 300 s old, and every terminal in the app dies with it.
-2. **Only guard blocks with `flags == 1` answer your commands.** Config parsing and hooks emit
-   blocks too, sharing one server-global counter, so a queue that pops on every `%begin`
-   desynchronises permanently.
-3. **A block closes only on a terminator byte-identical to its own `%begin` triple.** In-band
-   command output is not escaped, so a pane displaying the text `%end 1 2 3` will close a naive
-   parser's block early and feed raw escape sequences into the notification dispatcher.
-4. **`%layout-change` is the only signal that panes came or went.** There is no `%pane-add` or
-   `%pane-close`; the layout tree is diffed instead.
+- **Bytes do not go over ipcMain.** A build or an agent streaming output is thousands of writes a
+  second, each one a structured-clone hop through the single ipcRenderer queue. Every workspace
+  gets a MessagePort instead, with output coalesced on a 6 ms tick and keystrokes travelling back
+  the same way so typing never queues behind anything else.
+- **xterm instances never enter the store.** They live in a module map keyed by
+  `<tabId>:<leafId>`, so re-rendering the layout re-parents a DOM node instead of recreating a
+  terminal, and output cannot trigger a React render. The key is the *leaf* id, not the pty id:
+  the leaf exists before a pty does and survives it being replaced.
 
-Also: never issue `run-shell`, `if-shell` or `display-popup` on the control stream. Their output is
-printed later with no framing at all, so a payload containing `%exit` is indistinguishable from a
-real notification. Shell out from the main process instead.
+Backpressure keeps the tail, not the head. A pane that outruns the renderer has its pending buffer
+truncated to the most recent bytes — a terminal's value is in what just happened, and the
+alternative is unbounded memory.
 
-### Running the self-test
+## Selective staging
 
-```bash
-pnpm tmux:selftest
-```
+`src/main/git/patch.ts` rewrites a unified diff so `git apply` stages, unstages or discards only
+the lines the user picked. The whole trick is in one rule: for a change the user did *not* select,
+work out which side of it exists in the image the patch will be applied onto, and turn that side
+into context. Forward onto the index, an unselected `-` becomes context and an unselected `+` is
+dropped; reversed, the opposite.
 
-It starts a real tmux server **on a private socket** and exercises the parser, the layout grammar,
-both write paths and their 64-byte boundary, splits, and capture-pane.
+Three details that each cost a test to find:
 
-> Every tmux command in this repo and its tests is pinned to a private socket with `-S`. A bare
-> `tmux kill-server` during development once destroyed fourteen live sessions belonging to the
-> person working on it. If you add tmux code, carry the flag — including on cleanup commands at
-> the end of a shell one-liner, which is exactly where it got forgotten.
+- `\ No newline at end of file` belongs to the line **above** it and must be re-emitted after that
+  line whatever it becomes — including a `-` demoted to context.
+- Split the diff on `\n` only. A CR is content, and `/\r?\n/` silently strips it so the patch will
+  not apply to a CRLF file.
+- Keep `-U3` and never pass `--unidiff-zero`. Zero context leaves `git apply` nothing to verify
+  against, and it misapplies quietly rather than failing.
 
-Two failures the self-test hit early on were the test's fault, not the client's, and are worth
-knowing before you write more terminal tests:
-
-- In canonical mode, `VEOF` (Ctrl-D) only flushes the current line buffer. It signals end-of-file
-  solely on an **empty** line, so one Ctrl-D after a payload with no trailing newline hands the
-  bytes over but leaves the reader running.
-- `MAX_CANON` caps a cooked-mode line at 1024 bytes on macOS. A 4 KiB single line simply cannot be
-  delivered to a reader that has not put the tty in raw mode.
+`git diff` is empty for an untracked file, so `hunks()` marks one intent-to-add first; that yields
+a `new file mode` hunk and per-line staging then works.
 
 ## Releases
 
@@ -172,13 +171,16 @@ Tag and push:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-`.github/workflows/release.yml` typechecks, runs the tmux self-test against a real tmux on the
-runner, builds every platform, and attaches the installers to a GitHub release. `workflow_dispatch`
-runs the same thing without publishing.
+`.github/workflows/release.yml` typechecks, runs the self-tests, builds, and attaches the
+installers to a GitHub release. `workflow_dispatch` runs the same thing without publishing.
 
-macOS artifacts are built on `macos-latest` rather than `ubuntu-latest`, because `dmg` needs
-`hdiutil` and signing needs `codesign` — neither exists on Linux. Linux and Windows artifacts do
-both come off `ubuntu-latest`.
+It runs on the `csg-ubuntu-latest` self-hosted runner. There are no GitHub-hosted runners
+available to this repository: a workflow containing no `uses:` at all — one `echo` — failed in
+four seconds with no step logs, which is what a job that never started looks like.
+
+There is no macOS job, because `dmg` needs `hdiutil` and signing needs `codesign` and neither
+exists off macOS. Build Mac artifacts locally with `pnpm install:local`; the commented-out matrix
+entry says how to add a runner back.
 
 ### Signing
 
