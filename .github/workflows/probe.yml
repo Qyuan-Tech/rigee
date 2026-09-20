@@ -11,7 +11,7 @@ on:
 
 jobs:
   hello:
-    runs-on: [csg-ubuntu-latest]
+    runs-on: ubuntu-latest
     steps:
       - run: |
           echo "runner reached"

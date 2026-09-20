@@ -189,13 +189,15 @@ git tag v0.1.0 && git push origin v0.1.0
 `.github/workflows/release.yml` typechecks, runs the self-tests, builds, and attaches the
 installers to a GitHub release. `workflow_dispatch` runs the same thing without publishing.
 
-It runs on the `csg-ubuntu-latest` self-hosted runner. There are no GitHub-hosted runners
-available to this repository: a workflow containing no `uses:` at all — one `echo` — failed in
-four seconds with no step logs, which is what a job that never started looks like.
+Linux and Windows artifacts both come off `ubuntu-latest` — electron-builder repackages prebuilt
+Electron binaries and node-pty ships prebuilds for all six targets, so nothing is compiled and no
+wine is needed for an unsigned NSIS build. macOS needs its own `macos-latest` job because `dmg`
+creation calls `hdiutil` and signing calls `codesign`.
 
-There is no macOS job, because `dmg` needs `hdiutil` and signing needs `codesign` and neither
-exists off macOS. Build Mac artifacts locally with `pnpm install:local`; the commented-out matrix
-entry says how to add a runner back.
+If every job starts failing in a few seconds with no step logs and logs that 404, that is not the
+YAML: it is a job that never started, meaning no runner was available to the repository. A
+workflow containing no `uses:` at all is the quickest way to tell the two apart — see
+`.github/workflows/probe.yml`.
 
 ### Signing
 
