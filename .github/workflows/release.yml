@@ -197,9 +197,15 @@ jobs:
       - run: ls -lhR artifacts
 
       # `gh` is preinstalled on every runner, so the release needs no third-party action either.
+      #
+      # GH_REPO is not optional here. This job deliberately skips actions/checkout — it only needs
+      # the artifacts, not the source — and without a checkout `gh` has no git remote to infer the
+      # repository from, so every subcommand dies with "fatal: not a git repository". Setting it
+      # is cheaper than cloning the repo just to tell gh its own name.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           NOTES=$(mktemp)
