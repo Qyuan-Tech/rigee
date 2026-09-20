@@ -19,18 +19,34 @@ env:
   # so the next dependency that grows does not put us back at the cliff edge.
   NODE_OPTIONS: --max-old-space-size=4096
 
+# Every `uses:` below is the current major of a first-party action, and every one of them
+# declares `runs.using: node24`. The Node 20 runtime is deprecated and the runner was already
+# force-upgrading these to Node 24 while warning about it, so this only makes explicit what was
+# happening anyway.
+#
+# The version numbers disagree because each action's major track moves independently and the
+# node24 cutover landed at a different point on each: v5 for checkout, setup-node and cache, but
+# v6 for upload-artifact and v7 for download-artifact. Bumping everything to "v5" would have
+# fixed three of the five and left the other two on Node 20.
+#
+# All of them require Actions Runner >= 2.327.1. That is automatic on GitHub-hosted runners but
+# not on self-hosted ones — if this workflow ever moves back to a company runner label, check the
+# agent version before assuming the failure is in the build.
 jobs:
   # Gate the builds. A broken typecheck or a regressed patch builder must never ship.
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No pnpm/action-setup: third-party actions are frequently blocked by enterprise Actions
       # policy, and corepack ships with Node and reads `packageManager` from package.json.
+      # This must stay ABOVE setup-node: `cache: pnpm` shells out to `pnpm store path` to find
+      # what to cache, and without pnpm on PATH the step dies with "Unable to locate executable
+      # file: pnpm".
       - run: corepack enable
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -68,19 +84,22 @@ jobs:
             targets: --mac
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No pnpm/action-setup: third-party actions are frequently blocked by enterprise Actions
       # policy, and corepack ships with Node and reads `packageManager` from package.json.
+      # This must stay ABOVE setup-node: `cache: pnpm` shells out to `pnpm store path` to find
+      # what to cache, and without pnpm on PATH the step dies with "Unable to locate executable
+      # file: pnpm".
       - run: corepack enable
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
 
       - name: Cache Electron downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.ELECTRON_CACHE }}
           key: electron-${{ matrix.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -120,7 +139,7 @@ jobs:
           fi
           ONESTOP_SMOKE=1 xvfb-run -a "$APP" --no-sandbox
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.name }}
           retention-days: 7
@@ -138,7 +157,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: installers-*
           merge-multiple: true
