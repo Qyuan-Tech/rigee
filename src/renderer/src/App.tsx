@@ -61,6 +61,7 @@ export function App(): React.ReactElement {
 
   useShortcuts()
   usePersistence()
+  useScratchTerminal()
 
   const onLeftDrag = useCallback(
     (dx: number, startWidth: number) => setLayout({ leftWidth: clamp(startWidth + dx, 180, 560) }),
@@ -216,6 +217,35 @@ function useShortcuts(): void {
  */
 const SAVE_DEBOUNCE_MS = 400
 const SAVE_INTERVAL_MS = 15_000
+
+/**
+ * Arriving at an empty Scratch opens a terminal.
+ *
+ * Scratch is the workspace with no folders: somewhere to run a shell and pick the directory
+ * yourself, without opening a project first. Switching to it and being shown "Nothing open" is
+ * the wrong answer to that — the switch had happened, it just did not look like it had.
+ *
+ * Keyed on ARRIVING rather than on the tab count being zero. Reacting to emptiness would respawn
+ * a terminal the instant the user deliberately closed the last one, which is worse than the
+ * problem it solves. Gated on `ready` so it cannot race the restore from disk and leave a stray
+ * terminal beside the persisted ones.
+ */
+function useScratchTerminal(): void {
+  const ready = useApp((s) => s.ready)
+  const activeId = useApp((s) => s.activeWorkspaceId)
+  const seen = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!ready) return
+    const arrived = seen.current !== activeId
+    seen.current = activeId
+    if (!arrived || activeId !== SCRATCH_WORKSPACE_ID) return
+
+    const s = useApp.getState()
+    if ((s.tabsByWorkspace[SCRATCH_WORKSPACE_ID] ?? []).length > 0) return
+    s.openTab(SCRATCH_WORKSPACE_ID, newTerminalTab())
+  }, [ready, activeId])
+}
 
 function usePersistence(): void {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)

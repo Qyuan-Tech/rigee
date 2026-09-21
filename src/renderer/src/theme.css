@@ -9,46 +9,61 @@
  * The accent runs cyan -> indigo -> violet, the same ramp as the app icon.
  */
 :root {
-  /* --- surfaces, darkest to lightest --- */
-  --bg-deep: #0a0d13; /* window behind everything */
-  --bg: #0e1118; /* editor / terminal / main content */
-  --bg-panel: #0b0e15; /* side panels, title bar, status bar */
-  --bg-raised: #151a24; /* inputs, hovered rows */
-  --bg-hover: #161b26;
-  --bg-active: #1b2130;
-  --bg-selected: #1d2434;
+  /*
+   * --- surfaces, darkest to lightest ---
+   *
+   * These are deliberately NOT near-black. The first cut ran the content surface at #0e1118,
+   * which is L* 5 — a hair off pure black — with body text at 12:1 and bright text at 17:1
+   * against it. That combination is what makes light glyphs bloom into their own background and
+   * makes a long session tiring; it reads as crisp for a minute and as glare after an hour.
+   *
+   * The content surface is now L* 14, in the same band as VS Code Dark+ (11.8), Catppuccin Mocha
+   * (12.0) and One Dark (17.9), with body text at 9.7:1 and bright at 13:1 — comfortably past
+   * WCAG AA and well short of maximum. Contrast is a budget, not a score to maximise.
+   *
+   * Ratios in the comments are against --bg and were measured, not estimated.
+   */
+  --bg-deep: #1a1c25; /* window behind everything */
+  --bg: #20232e; /* editor / terminal / main content — L* 13.9 */
+  --bg-panel: #1d1f29; /* side panels, title bar, status bar */
+  --bg-raised: #282c39; /* inputs, hovered rows */
+  --bg-hover: #2d313f;
+  --bg-active: #353a4b;
+  --bg-selected: #3a3f52;
 
   /* --- text --- */
-  --fg: #c8cfdd;
-  --fg-bright: #f0f4fa;
-  --fg-muted: #6e7889;
-  --fg-faint: #4a5263;
+  --fg: #c6ccdb; /* 9.7:1 */
+  --fg-bright: #e7ebf5; /* 13.1:1 */
+  --fg-muted: #9199ae; /* 5.5:1 — AA for body text, so secondary text stays readable */
+  --fg-faint: #7c8499; /* 4.2:1 */
 
   /* --- lines --- */
-  --border: #1a1f2b;
-  --border-strong: #252c3a;
+  --border: #2b2f3d;
+  --border-strong: #3a3f52;
 
   /* --- accent ramp, matching the icon --- */
-  --accent-cyan: #22d3ee;
-  --accent: #7c8cff;
-  --accent-violet: #c084fc;
-  --accent-hover: #8f9dff;
-  --accent-dim: #7c8cff26;
+  --accent-cyan: #4dd8ef;
+  --accent: #8b9aff;
+  --accent-violet: #c49bfb;
+  --accent-hover: #9dabff;
+  --accent-dim: #8b9aff2e;
+  /* The icon's exact ramp. Kept as-is while the solid accents above were lightened for the
+     new surfaces: this one is brand, not UI, and must keep matching build/icon.*. */
   --accent-gradient: linear-gradient(135deg, #22d3ee 0%, #818cf8 52%, #c084fc 100%);
 
   /* --- git status --- */
-  --git-modified: #e2b344;
-  --git-added: #6dc48a;
-  --git-deleted: #e06c75;
-  --git-untracked: #6dc48a;
-  --git-conflict: #e06c75;
-  --git-ignored: #5a6272;
+  --git-modified: #e3bb5e;
+  --git-added: #7fce97;
+  --git-deleted: #e8848c;
+  --git-untracked: #7fce97;
+  --git-conflict: #e8848c;
+  --git-ignored: #6b7287;
 
   /* --- metrics --- */
-  --titlebar-h: 38px;
-  --tabstrip-h: 36px;
-  --statusbar-h: 24px;
-  --row-h: 24px;
+  --titlebar-h: 40px;
+  --tabstrip-h: 38px;
+  --statusbar-h: 26px;
+  --row-h: 27px;
 
   --r-sm: 4px;
   --r-md: 6px;
@@ -64,7 +79,7 @@
   /* Replaced at boot by src/fonts.ts with the exact VS Code stack for this platform. */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, Ubuntu, sans-serif;
   --font-mono: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace;
-  --font-ui-size: 13px;
+  --font-ui-size: 14px;
 }
 
 * {
@@ -82,7 +97,7 @@ body,
 body {
   background: var(--bg-deep);
   color: var(--fg);
-  font: var(--font-ui-size) / 1.45 var(--font-ui);
+  font: var(--font-ui-size) / 1.55 var(--font-ui);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   /* The shell is chrome; text selection is opt-in per component. */
@@ -185,7 +200,7 @@ textarea:focus {
   height: 13px;
   border-radius: 3px;
   background: var(--accent-gradient);
-  box-shadow: 0 0 10px #7c8cff4d;
+  box-shadow: 0 0 10px #8b9aff4d;
 }
 
 .titlebar__context {
@@ -476,13 +491,13 @@ textarea:focus {
 .btn--primary {
   background: var(--accent);
   border-color: transparent;
-  color: #0b0e15;
+  color: #1a1c25;
   font-weight: 600;
 }
 
 .btn--primary:hover:not(:disabled) {
   background: var(--accent-hover);
-  color: #0b0e15;
+  color: #1a1c25;
 }
 
 .btn--block {
@@ -656,7 +671,7 @@ textarea:focus {
   place-items: center;
   padding: 24px;
   text-align: center;
-  background: #0e1118e6;
+  background: #1a1c25e6;
   font-family: var(--font-mono);
   font-size: 12px;
   /* Never swallow clicks: if this renders over a usable terminal, eating pointer events would
@@ -1107,7 +1122,7 @@ textarea:focus {
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.4px;
-  color: #0b0e15;
+  color: #1a1c25;
   background: var(--accent-gradient);
   pointer-events: none;
 }

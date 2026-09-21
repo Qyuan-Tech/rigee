@@ -54,7 +54,9 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
       allowProposedApi: true,
       fontFamily: monoFamily(),
       fontSize: editorFontSize(),
-      lineHeight: 1.2,
+      // Looser than xterm's 1.0 default: rows of dense monospace with no gap between them are
+      // markedly harder to scan, and a terminal is mostly scanning.
+      lineHeight: 1.35,
       // Leave letterSpacing at 0: a non-integer advance makes the WebGL atlas fall back to a
       // slow per-glyph path.
       letterSpacing: 0,
@@ -62,27 +64,29 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
       scrollback: 10000,
       // Same tokens as theme.css and the Monaco theme.
       theme: {
-        background: '#0e1118',
-        foreground: '#c8cfdd',
-        cursor: '#7c8cff',
-        cursorAccent: '#0e1118',
-        selectionBackground: '#7c8cff40',
-        black: '#0b0e15',
-        red: '#e06c75',
-        green: '#6dc48a',
-        yellow: '#e2b344',
-        blue: '#7c8cff',
-        magenta: '#c084fc',
-        cyan: '#22d3ee',
-        white: '#c8cfdd',
-        brightBlack: '#4a5263',
-        brightRed: '#f08a92',
-        brightGreen: '#8fd6a0',
-        brightYellow: '#f0cb6b',
-        brightBlue: '#9aa6ff',
-        brightMagenta: '#d3a6fd',
-        brightCyan: '#5ce0f5',
-        brightWhite: '#f0f4fa'
+        background: '#20232e',
+        foreground: '#c6ccdb',
+        cursor: '#8b9aff',
+        cursorAccent: '#20232e',
+        // Opaque enough to find at a glance on the lighter surface. A selection you have to hunt
+        // for is a selection people assume did not happen.
+        selectionBackground: '#8b9aff59',
+        black: '#2b2f3d',
+        red: '#e8848c',
+        green: '#7fce97',
+        yellow: '#e3bb5e',
+        blue: '#8b9aff',
+        magenta: '#c49bfb',
+        cyan: '#4dd8ef',
+        white: '#c6ccdb',
+        brightBlack: '#7c8499',
+        brightRed: '#f09aa1',
+        brightGreen: '#96dcab',
+        brightYellow: '#efcd7e',
+        brightBlue: '#a3afff',
+        brightMagenta: '#d5b2fc',
+        brightCyan: '#74e3f5',
+        brightWhite: '#e7ebf5'
       }
     })
 
@@ -148,6 +152,33 @@ export function reapPanes(tabId: string, liveLeafIds: ReadonlySet<string>): void
     if (!key.startsWith(prefix)) continue
     if (!liveLeafIds.has(key.slice(prefix.length))) disposeTerminal(key)
   }
+}
+
+/** Whether this pane currently has a selection, for enabling a Copy menu item. */
+export function paneSelection(key: string): string {
+  return getTerminal(key)?.term.getSelection() ?? ''
+}
+
+/**
+ * Copy the pane's selection. Returns false when there was nothing selected, so a key handler can
+ * decide whether to swallow the keystroke or let it through.
+ */
+export function copyPane(key: string): boolean {
+  const text = paneSelection(key)
+  if (!text) return false
+  void navigator.clipboard.writeText(text)
+  return true
+}
+
+export async function pastePane(key: string): Promise<void> {
+  const handle = getTerminal(key)
+  if (!handle) return
+  const text = await navigator.clipboard.readText()
+  if (!text) return
+  // term.paste, not writeTerminal: paste() applies bracketed-paste framing when the program has
+  // asked for it. Without that a multi-line paste arrives at a shell as a sequence of Enters and
+  // runs itself line by line, which is how a paste into a prompt turns into an accident.
+  handle.term.paste(text)
 }
 
 /** Route a decoded pane frame to whichever terminal is bound to that pane. */

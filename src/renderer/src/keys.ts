@@ -82,6 +82,39 @@ export function formatChord(spec: string, isMac: boolean): string {
 
 
 // ---------------------------------------------------------------------------
+// Clipboard
+// ---------------------------------------------------------------------------
+
+export type ClipboardAction = 'copy' | 'paste' | null
+
+/**
+ * Which clipboard action a keystroke means inside a terminal.
+ *
+ * A terminal cannot use the plain Ctrl+C / Ctrl+V that every other app uses: Ctrl+C is SIGINT and
+ * Ctrl+V is the "quote the next character literally" prefix, and stealing either would break the
+ * shell. So the conventions diverge by platform — macOS keeps Cmd, everywhere else adds Shift,
+ * which is what GNOME Terminal, Konsole, Windows Terminal and VS Code's terminal all settled on.
+ *
+ * xterm.js binds none of this itself. It exposes `getSelection()` and `paste()` and leaves the
+ * policy to the host, so without this the selection is visible and completely unreachable.
+ */
+export function clipboardAction(
+  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
+  isMac: boolean
+): ClipboardAction {
+  const key = e.key.toLowerCase()
+  if (key !== 'c' && key !== 'v') return null
+
+  if (isMac) {
+    // Cmd, and not Ctrl — Ctrl+C must still reach the shell as SIGINT.
+    if (!e.metaKey || e.ctrlKey || e.altKey) return null
+  } else if (!e.ctrlKey || !e.shiftKey || e.metaKey || e.altKey) {
+    return null
+  }
+  return key === 'c' ? 'copy' : 'paste'
+}
+
+// ---------------------------------------------------------------------------
 // Prefix state machine
 // ---------------------------------------------------------------------------
 

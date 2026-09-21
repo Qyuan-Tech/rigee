@@ -22,6 +22,7 @@ import {
 } from '../src/renderer/src/paneTree.ts'
 import {
   chordBytes,
+  clipboardAction,
   formatChord,
   matchesChord,
   parseChord,
@@ -215,6 +216,31 @@ console.log('\nprefix state machine')
 
   eq('a broken prefix setting disables the machine rather than trapping keys',
     resolvePrefixKey(k('a'), { ...B, prefix: '' }, true).kind, 'passthrough')
+}
+
+console.log('\nterminal clipboard')
+{
+  const k = (key: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent =>
+    ({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, key, ...mods }) as KeyboardEvent
+
+  eq('mac: cmd+c copies', clipboardAction(k('c', { metaKey: true }), true), 'copy')
+  eq('mac: cmd+v pastes', clipboardAction(k('v', { metaKey: true }), true), 'paste')
+
+  // The whole reason these bindings are not the usual ones. Stealing either would break the
+  // shell: one would stop interrupting, the other would stop quoting.
+  eq('ctrl+c stays SIGINT on mac', clipboardAction(k('c', { ctrlKey: true }), true), null)
+  eq('ctrl+c stays SIGINT elsewhere', clipboardAction(k('c', { ctrlKey: true }), false), null)
+  eq('ctrl+v stays literal-quote elsewhere', clipboardAction(k('v', { ctrlKey: true }), false), null)
+
+  eq('linux/win: ctrl+shift+c copies',
+    clipboardAction(k('C', { ctrlKey: true, shiftKey: true }), false), 'copy')
+  eq('linux/win: ctrl+shift+v pastes',
+    clipboardAction(k('V', { ctrlKey: true, shiftKey: true }), false), 'paste')
+
+  eq('cmd+c does nothing off mac', clipboardAction(k('c', { metaKey: true }), false), null)
+  eq('a bare c is just a c', clipboardAction(k('c'), true), null)
+  eq('other keys are not clipboard keys', clipboardAction(k('x', { metaKey: true }), true), null)
+  eq('extra modifiers disqualify', clipboardAction(k('c', { metaKey: true, altKey: true }), true), null)
 }
 
 console.log('\ntab strip')

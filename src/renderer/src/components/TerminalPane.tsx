@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMac, onEvent, rpc } from '../ipc'
-import { formatChord, resolvePrefixKey } from '../keys'
+import { clipboardAction, formatChord, resolvePrefixKey } from '../keys'
 import { bindPane, leaves, neighbourOf, newLeaf, removeLeaf, setSizes, splitLeaf } from '../paneTree'
 import {
+  copyPane,
   disposeTerminal,
   ensureTerminal,
   getTerminal,
   paneKey,
+  paneSelection,
+  pastePane,
   reapPanes,
   writeToPane
 } from '../terminals'
@@ -134,6 +137,18 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
           return false
 
         case 'passthrough': {
+          const clip = clipboardAction(e, isMac())
+          if (clip === 'copy') {
+            // Nothing selected: let it through rather than swallow. On macOS an empty Cmd+C
+            // should stay inert, not become a key that mysteriously does nothing.
+            if (!copyPane(paneKey(tab.id, leafId))) return true
+            return false
+          }
+          if (clip === 'paste') {
+            void pastePane(paneKey(tab.id, leafId))
+            return false
+          }
+
           // The iTerm combos stay as a second way in, for anyone who reaches for them.
           const mod = isMac() ? e.metaKey : e.ctrlKey
           if (mod && e.key.toLowerCase() === 'd') {
@@ -195,6 +210,9 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
           x={menu.x}
           y={menu.y}
           bindings={bindings}
+          selection={paneSelection(paneKey(tab.id, menu.leafId))}
+          onCopy={() => { copyPane(paneKey(tab.id, menu.leafId)); setMenu(null) }}
+          onPaste={() => { const k = paneKey(tab.id, menu.leafId); setMenu(null); void pastePane(k) }}
           onSplitRight={() => { setMenu(null); split('row') }}
           onSplitDown={() => { setMenu(null); split('column') }}
           onClose={() => { const id = menu.leafId; setMenu(null); closeLeaf(id) }}
@@ -210,6 +228,9 @@ function PaneMenu({
   x,
   y,
   bindings,
+  selection,
+  onCopy,
+  onPaste,
   onSplitRight,
   onSplitDown,
   onClose
@@ -217,12 +238,17 @@ function PaneMenu({
   x: number
   y: number
   bindings: { prefix: string; splitRight: string; splitDown: string; closePane: string }
+  selection: string
+  onCopy: () => void
+  onPaste: () => void
   onSplitRight: () => void
   onSplitDown: () => void
   onClose: () => void
 }): React.ReactElement {
   const hint = (key: string): string =>
     `${formatChord(bindings.prefix, isMac())} ${key}`
+  // The shortcut a terminal can spare: Ctrl+C and Ctrl+V are SIGINT and literal-quote.
+  const clip = isMac() ? { copy: '⌘C', paste: '⌘V' } : { copy: 'Ctrl+Shift+C', paste: 'Ctrl+Shift+V' }
 
   return (
     <div
@@ -230,6 +256,15 @@ function PaneMenu({
       style={{ left: x, top: y }}
       onMouseDown={(e) => e.stopPropagation()}
     >
+      <button className="menu__item" disabled={!selection} onClick={onCopy}>
+        <span>Copy</span>
+        <span className="menu__hint">{clip.copy}</span>
+      </button>
+      <button className="menu__item" onClick={onPaste}>
+        <span>Paste</span>
+        <span className="menu__hint">{clip.paste}</span>
+      </button>
+      <div className="menu__sep" />
       <button className="menu__item" onClick={onSplitRight}>
         <span>Split right</span>
         <span className="menu__hint">{hint(bindings.splitRight)}</span>

@@ -216,6 +216,11 @@ export class BrowserTabs {
     for (const id of [...this.views.keys()]) this.destroy(id)
   }
 
+  /** Which views are currently composited over the shell. For diagnostics and the smoke tests. */
+  visibleIds(): string[] {
+    return [...this.views.values()].filter((e) => e.visible).map((e) => e.id)
+  }
+
   /** Resolve a view id from a WebContents, for routing app-level events like 'login'. */
   idFor(wc: WebContents): string | null {
     for (const [id, entry] of this.views) {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, type WebContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -69,7 +69,8 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 560,
     show: false,
-    backgroundColor: '#1e1e1e',
+    // Matches --bg-deep, so the window does not flash a different shade before the renderer paints.
+    backgroundColor: '#1a1c25',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirnameESM, '../preload/index.cjs'), // .cjs, never .mjs — see vite config
@@ -105,6 +106,8 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'persist') void runPersistSmoke()
     else if (process.env.ONESTOP_SMOKE === 'tabs') void runTabsSmoke()
     else if (process.env.ONESTOP_SMOKE === 'quit') void runQuitSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'copy') void runCopySmoke()
+    else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -293,6 +296,192 @@ async function runSplitSmoke(): Promise<void> {
 }
 
 /**
+ * End-to-end check that Scratch stays reachable once real workspaces exist.
+ *
+ * Scratch is the workspace with no folders — somewhere to open a terminal and decide the directory
+ * yourself — so being able to get back to it after opening a project is the whole point of it.
+ */
+async function runScratchSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, newTerminalTab } = window.__onestop
+        const trail = []
+        const st = () => store.getState()
+
+        for (let i = 0; i < 60; i++) {
+          if (st().ready && st().workspaces.some(w => w.id === '__scratch__')) break
+          await sleep(250)
+        }
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        trail.push('workspaces at boot: ' + st().workspaces.map(w => w.id).join(','))
+        if (!st().workspaces.some(w => w.id === '__scratch__')) return fail('no-scratch-at-boot')
+
+        // Open a real workspace, the way picking a folder would.
+        store.getState().addWorkspace({
+          id: 'ws-probe', name: 'probe', folders: [{ path: '/tmp', name: 'tmp', isGitRepo: false, repoRoot: null }],
+          createdAt: Date.now(), lastOpenedAt: Date.now()
+        })
+        await sleep(400)
+        trail.push('after addWorkspace active=' + st().activeWorkspaceId)
+        trail.push('workspaces now: ' + st().workspaces.map(w => w.id).join(','))
+
+        const rows = [...document.querySelectorAll('.row--clickable')]
+        trail.push('sidebar rows: ' + rows.map(r => (r.querySelector('.row__label')||{}).textContent).join(' | '))
+        const scratchRow = rows.find(r => ((r.querySelector('.row__label')||{}).textContent || '') === 'Scratch')
+        if (!scratchRow) return fail('scratch-row-not-rendered')
+
+        scratchRow.click()
+        await sleep(500)
+        trail.push('after clicking Scratch active=' + st().activeWorkspaceId)
+        if (st().activeWorkspaceId !== '__scratch__') return fail('click-did-not-switch')
+
+        trail.push('row marked selected: ' + scratchRow.className.includes('row--selected'))
+        trail.push('centre shows: ' + JSON.stringify(
+          (document.querySelector('.tabstrip')?.textContent || '').slice(0, 40)))
+
+        // And a terminal must actually open there.
+        store.getState().openTab('__scratch__', newTerminalTab())
+        await sleep(1500)
+        const tabs = st().tabsByWorkspace['__scratch__'] ?? []
+        trail.push('scratch tabs: ' + tabs.length)
+        const panes = document.querySelectorAll('.term__pane').length
+        trail.push('rendered terminal panes: ' + panes)
+        if (panes < 1) return fail('no-terminal-in-scratch')
+
+        // The case where "nothing happened" would be literally true: a browser tab in the other
+        // workspace is a native view composited OVER the whole page, so if leaving the workspace
+        // does not hide it the screen simply does not change.
+        store.getState().setActiveWorkspace('ws-probe')
+        store.getState().openTab('ws-probe', {
+          id: 'scratch-probe-browser', kind: 'browser', title: 'probe', pinned: false,
+          url: 'about:blank', viewId: '', canGoBack: false, canGoForward: false,
+          loading: false, faviconDataUrl: null
+        })
+        await sleep(1800)
+        trail.push('browser tab open in ws-probe')
+        scratchRow.click()
+        await sleep(800)
+        trail.push('back on scratch, active=' + st().activeWorkspaceId)
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
+    // Asked in main, because only main knows what is actually composited over the window.
+    const stillVisible = browserTabs?.visibleIds() ?? []
+    const ok = info.ok && stillVisible.length === 0
+    console.log('[smoke:scratch]', JSON.stringify({
+      ...info,
+      ok,
+      browserViewsStillVisibleOnScratch: stillVisible
+    }))
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:scratch] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * End-to-end check that a terminal selection can be copied and the clipboard pasted back.
+ *
+ * xterm.js deliberately ships no copy or paste bindings — it hands you `getSelection()` and
+ * `paste()` and leaves the policy to the host — so this is entirely our own wiring and worth
+ * holding down. Driven through a real keydown on xterm's textarea, which is where
+ * attachCustomKeyEventHandler actually runs, and read back through the OS clipboard rather than
+ * anything we control.
+ */
+async function runCopySmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  // This is the user's clipboard, not ours. Put it back. Electron 44 models the clipboard on
+  // the W3C API, so every call here is async — in older versions these were plain strings.
+  const saved = await clipboard.readText()
+  try {
+    const marker = `COPYTEST-${Date.now()}`
+    await clipboard.writeText('')
+
+    const setup = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
+
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return JSON.stringify({ ok: false, stage: 'no-scratch' })
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const tab = newTerminalTab()
+        store.getState().openTab(scratch.id, tab)
+
+        let handle = null
+        for (let i = 0; i < 60; i++) {
+          await sleep(250)
+          const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+          if (t) handle = getTerminal(paneKey(tab.id, t.activeLeafId))
+          if (handle) break
+        }
+        if (!handle) return JSON.stringify({ ok: false, stage: 'no-terminal' })
+
+        // Straight into the buffer: this exercises selection and copy, not the shell.
+        handle.term.write('${marker}\\r\\n')
+        await sleep(400)
+        handle.term.selectAll()
+        const selected = handle.term.getSelection()
+        if (!selected.includes('${marker}')) {
+          return JSON.stringify({ ok: false, stage: 'nothing-selected', selected: selected.slice(0, 80) })
+        }
+
+        const isMac = navigator.platform.toLowerCase().includes('mac')
+        const ev = isMac
+          ? { key: 'c', code: 'KeyC', metaKey: true }
+          : { key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true }
+        handle.term.textarea.dispatchEvent(
+          new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...ev }))
+        await sleep(50)
+        return JSON.stringify({ ok: true, selectedChars: selected.length,
+          combo: isMac ? 'cmd+c' : 'ctrl+shift+c' })
+      })()`,
+      true
+    )) as string
+
+    let ok = false
+    let copied = ''
+    if ((JSON.parse(setup) as { ok: boolean }).ok) {
+      // Give the async clipboard write a moment to land.
+      for (let i = 0; i < 40; i++) {
+        copied = await clipboard.readText()
+        if (copied.includes(marker)) break
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      ok = copied.includes(marker)
+    }
+
+    // Before app.exit, which does not run `finally`.
+    await clipboard.writeText(saved)
+    console.log('[smoke:copy]', JSON.stringify({
+      ok, setup: JSON.parse(setup), clipboard: copied.trim().slice(0, 60)
+    }))
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    await clipboard.writeText(saved)
+    console.error('[smoke:copy] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
  * Regression check for the crash on the way out.
  *
  * Close the window on macOS and the app keeps running, but every WebContentsView it owned is
@@ -362,6 +551,12 @@ async function runTabsSmoke(): Promise<void> {
         const browser = (id) => ({ id, kind: 'browser', title: id, pinned: false,
           url: 'about:blank', viewId: '', canGoBack: false, canGoForward: false,
           loading: false, faviconDataUrl: null })
+
+        // Start from empty. Arriving at Scratch opens a terminal on its own now, so the fixture
+        // below would otherwise be counting someone else's tab.
+        const already = (store.getState().tabsByWorkspace[ws] ?? []).map(t => t.id)
+        if (already.length) store.getState().closeTabs(ws, already)
+        await sleep(400)
 
         const term = newTerminalTab()
         for (const t of [term, editor('e1'), browser('b1'), editor('e2'), editor('e3')]) {
