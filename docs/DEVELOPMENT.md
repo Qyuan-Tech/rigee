@@ -68,6 +68,21 @@ then discarded at packaging time. `electron-vite dev` still serves unminified so
 maps, which is where renderer debugging happens. Main keeps its sourcemap; it is 66 kB and free.
 The workflow also sets `NODE_OPTIONS=--max-old-space-size=4096` as margin, not as the fix.
 
+**`ELECTRON_RUN_AS_NODE` turns the app into a Node REPL.** Electron reads it before a line of our
+code runs: with it set, the app binary *is* a Node interpreter, and given no script it drops into
+a REPL. So `pnpm install:local` fails at "verify it boots" with
+
+```
+the packaged app never produced a smoke report:
+Welcome to Node.js v24.21.0.
+```
+
+which looks like a broken build and is not. It leaks easily — anything that shells out to Electron
+as Node can leave it in the environment, and it then survives for the life of that shell.
+`install-local.sh` unsets it and says so, and the `smoke:*` scripts run under `env -u`. `dev` and
+`preview` deliberately do not, because `env -u` is POSIX-only and those two still have to work on
+Windows.
+
 **Each platform is packaged on its own runner, and Windows especially.** Nothing in this project
 is compiled at package time, so cross-building looks like it should work — but the *packaging*
 tools are native. Building `--win` on Linux gets all the way through makensis, produces all three

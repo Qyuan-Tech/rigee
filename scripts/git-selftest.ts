@@ -1,17 +1,38 @@
 /**
  * Integration self-test for the source control service, against a real git binary and a fixture
- * repository built from scratch in /tmp.
+ * repository built from scratch in a temporary directory.
  *
  *   pnpm git:selftest
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  symlinkSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { GitService } from '../src/main/git/service.ts'
 import { parsePorcelainV2 } from '../src/main/git/status.ts'
 
-const DIR = '/tmp/onestop-git-selftest'
+/**
+ * A private directory per run, NOT a fixed path.
+ *
+ * This used to be `/tmp/onestop-git-selftest`. `liveTests` wipes and recreates that path on the
+ * way in, so two overlapping runs — a second terminal, another agent, a watch loop — have one of
+ * them delete the other's repo from under it mid-test. What that looks like is
+ *
+ *     FAIL live tests threw — fatal: Unable to create '.../.git/index.lock': File exists.
+ *
+ * which reads like a stale lock waiting to be cleaned up by hand, not like a test that cannot be
+ * run twice at once. Since this is the job gating every release, it is worth the one call to
+ * mkdtemp to make the question never come up.
+ */
+const DIR = mkdtempSync(join(tmpdir(), 'onestop-git-selftest-'))
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -363,6 +384,9 @@ async function main(): Promise<void> {
     failures++
     console.log('  FAIL live tests threw —', err instanceof Error ? err.message : err)
   }
+  // liveTests cleans up its own fixture; this catches the paths that never reach its `finally`,
+  // so a failed run leaves nothing behind in tmp either.
+  rmSync(DIR, { recursive: true, force: true })
   console.log(`\n${checks - failures}/${checks} checks passed`)
   process.exit(failures === 0 ? 0 : 1)
 }

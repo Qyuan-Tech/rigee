@@ -23,6 +23,16 @@ cd "$(dirname "$0")/.."
 
 [ "$(uname)" = "Darwin" ] || { echo "macOS only; use pnpm pack:linux / pack:win elsewhere" >&2; exit 1; }
 
+# Electron reads ELECTRON_RUN_AS_NODE before a line of our code runs: with it set, the app binary
+# IS a Node interpreter, and given no script to run it drops into a REPL. The install then fails
+# at "verify it boots" with a Node banner where the smoke report should be — which looks like the
+# app is broken and is not. The variable leaks easily, since anything that shells out to Electron
+# as Node can leave it behind, so drop it rather than trusting whatever launched this.
+if [ -n "${ELECTRON_RUN_AS_NODE:-}" ]; then
+  echo "==> ignoring ELECTRON_RUN_AS_NODE=${ELECTRON_RUN_AS_NODE} inherited from the environment"
+  unset ELECTRON_RUN_AS_NODE
+fi
+
 ARCH_FLAG="--x64"
 [ "$(uname -m)" = "arm64" ] && ARCH_FLAG="--arm64"
 
