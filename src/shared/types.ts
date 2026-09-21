@@ -81,6 +81,14 @@ export interface Workspace {
   lastOpenedAt: number
   /** Where terminals start when the workspace has no folders. Only set for Scratch. */
   defaultCwd?: string
+  /**
+   * The `.code-workspace` file this workspace was opened from, when it came from one.
+   *
+   * Absent for a workspace that is just a folder — which is the majority, and is exactly VS Code's
+   * distinction between a folder and a saved multi-root workspace. Its presence is what makes
+   * "Save Workspace As" an overwrite rather than a new file.
+   */
+  filePath?: string | null
 }
 
 // ---------------------------------------------------------------------------

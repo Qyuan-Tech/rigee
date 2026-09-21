@@ -19,6 +19,7 @@ import type {
   Platform,
   ViewBounds,
   Workspace,
+  WorkspaceFolder,
   WorkspaceId,
   WorkspaceUiState,
   DiffTarget,
@@ -54,6 +55,35 @@ export interface IpcRequests {
   'workspace:pickFolder': () => string | null
   /** Resolves whether a path is a git work tree and where its root is. */
   'workspace:probeFolder': (path: string) => { isGitRepo: boolean; repoRoot: string | null }
+  /** Picks a `.code-workspace` file to open; null if cancelled. */
+  'workspace:pickWorkspaceFile': () => string | null
+  /**
+   * Read a `.code-workspace` file and resolve every folder it names, relative paths included.
+   * Rejects with a message naming the file if it cannot be parsed.
+   */
+  'workspace:readWorkspaceFile': (path: string) => {
+    name: string
+    folders: WorkspaceFolder[]
+  }
+  /**
+   * Prompt for a location and write a `.code-workspace` file holding these folders. Returns the
+   * path written, or null if the user cancelled.
+   */
+  'workspace:saveWorkspaceFile': (args: {
+    suggestedName: string
+    folders: { path: string; name: string }[]
+  }) => string | null
+
+  // --- clipboard -------------------------------------------------------
+  /**
+   * Terminal copy and paste go through main, not `navigator.clipboard`.
+   *
+   * The web API requires the document to hold focus and rejects otherwise, which turns copy into
+   * something that works almost always and fails without a word the rest of the time. The main
+   * process clipboard has no such condition.
+   */
+  'clipboard:write': (args: { text: string }) => void
+  'clipboard:read': () => string
 
   // --- filesystem ------------------------------------------------------
   'fs:list': (dir: string) => FileStat[]
@@ -166,6 +196,11 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'state:saveKeybindings',
   'workspace:pickFolder',
   'workspace:probeFolder',
+  'workspace:pickWorkspaceFile',
+  'workspace:readWorkspaceFile',
+  'workspace:saveWorkspaceFile',
+  'clipboard:write',
+  'clipboard:read',
   'fs:list',
   'fs:readFile',
   'fs:writeFile',
@@ -221,6 +256,8 @@ export interface OnestopBridge {
   /** Terminal byte stream, carried on a MessagePort that never crosses the bridge. */
   onTerminalData(workspaceId: string, cb: (paneId: string, data: string) => void): () => void
   writeTerminal(workspaceId: string, paneId: string, data: string): void
+  /** Filesystem path of a dropped File. Empty string when it has none (a synthesised File). */
+  pathForFile(file: File): string
 }
 
 /** Re-exported so consumers need only one import. */

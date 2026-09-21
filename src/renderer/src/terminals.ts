@@ -166,14 +166,14 @@ export function paneSelection(key: string): string {
 export function copyPane(key: string): boolean {
   const text = paneSelection(key)
   if (!text) return false
-  void navigator.clipboard.writeText(text)
+  void rpc['clipboard:write']({ text })
   return true
 }
 
 export async function pastePane(key: string): Promise<void> {
   const handle = getTerminal(key)
   if (!handle) return
-  const text = await navigator.clipboard.readText()
+  const text = await rpc['clipboard:read']()
   if (!text) return
   // term.paste, not writeTerminal: paste() applies bracketed-paste framing when the program has
   // asked for it. Without that a multi-line paste arrives at a shell as a sequence of Enters and

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import { REQUEST_CHANNELS, EVENT_CHANNELS, type OnestopBridge } from '@shared/ipc'
 import type { Platform } from '@shared/types'
 
@@ -82,6 +82,22 @@ const api: OnestopBridge = {
       const s = sinks.get(workspaceId)
       s?.delete(cb)
       if (s && s.size === 0) sinks.delete(workspaceId)
+    }
+  },
+
+  /**
+   * The filesystem path of a dropped File.
+   *
+   * Electron removed the non-standard `File.path` property, so a drag-and-drop of folders from
+   * Finder or Explorer now yields File objects with no way to find them on disk. webUtils is the
+   * replacement and it only exists in the isolated world, which is why this has to be here rather
+   * than in the renderer.
+   */
+  pathForFile(file: File): string {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
     }
   },
 

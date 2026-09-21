@@ -10,6 +10,7 @@ import { ensureShellPath } from './env'
 import { GitService } from './git/service'
 import type { ParsedDiff } from './git/patch'
 import { PtyManager } from './pty/manager'
+import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
 import { loadState, saveAllUi, saveKeybindings, saveUi, saveWorkspaces } from './store'
 import type { DiffHunkView, FileStat, ViewBounds } from '@shared/types'
@@ -1024,6 +1025,51 @@ function registerHandlers(): void {
       return { isGitRepo: false, repoRoot: null }
     }
   })
+
+  handle('workspace:pickWorkspaceFile', async () => {
+    if (!window) return null
+    const res = await dialog.showOpenDialog(window, {
+      properties: ['openFile'],
+      filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+      message: 'Open a workspace file'
+    })
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]!
+  })
+
+  handle('workspace:readWorkspaceFile', async (path) => {
+    const parsed = parseWorkspaceFile(readFileSync(path, 'utf8'), path)
+    // Probing is per folder and each one is a git spawn, so do them together rather than in
+    // series: a workspace file with a dozen repos is the case this exists for.
+    const folders = await Promise.all(
+      parsed.folders.map(async (f) => {
+        let isGitRepo = false
+        let repoRoot: string | null = null
+        try {
+          const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: f.path })
+          isGitRepo = true
+          repoRoot = stdout.trim()
+        } catch { /* not a repo, or the folder is missing; it still shows in the explorer */ }
+        return { path: f.path, name: f.name ?? basename(f.path), isGitRepo, repoRoot }
+      })
+    )
+    return { name: parsed.name, folders }
+  })
+
+  handle('workspace:saveWorkspaceFile', async ({ suggestedName, folders }) => {
+    if (!window) return null
+    const res = await dialog.showSaveDialog(window, {
+      defaultPath: `${suggestedName}.code-workspace`,
+      filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+      message: 'Save workspace as'
+    })
+    if (res.canceled || !res.filePath) return null
+    writeFileSync(res.filePath, serializeWorkspaceFile(folders, res.filePath), 'utf8')
+    return res.filePath
+  })
+
+  // --- clipboard ---------------------------------------------------------
+  handle('clipboard:write', ({ text }) => clipboard.writeText(text))
+  handle('clipboard:read', () => clipboard.readText())
 
   // --- filesystem --------------------------------------------------------
   handle('fs:list', (dir) => {

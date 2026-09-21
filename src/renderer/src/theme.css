@@ -1178,3 +1178,33 @@ textarea:focus {
 .rail--right .rail__label {
   transform: rotate(180deg);
 }
+
+/* ===================================================================== */
+/* Explorer drop target and the inline workspace menu                     */
+/* ===================================================================== */
+
+.explorer__body {
+  flex: 1;
+  overflow: auto;
+  padding-bottom: 10px;
+  border: 1px dashed transparent;
+  border-radius: var(--r-sm);
+  margin: 0 4px;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+/* Dropping folders here is how a multi-root workspace gets collected, so the target has to be
+   visible the moment a drag enters it — otherwise it reads as "this does not accept drops". */
+.explorer__body--dropping {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* The workspace menu hangs off the section header rather than the pointer, so it is positioned
+   in flow instead of fixed like the pane and tab menus. */
+.menu--inline {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  z-index: 60;
+}

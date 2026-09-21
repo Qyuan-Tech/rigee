@@ -1,5 +1,6 @@
 /**
- * Unit tests for the renderer's pure logic: the terminal split tree, key chords and the tab strip.
+ * Unit tests for the pure logic on both sides of the process boundary: the terminal split tree,
+ * key chords, the tab strip and .code-workspace parsing.
  *
  *   pnpm panes:selftest
  *
@@ -29,6 +30,7 @@ import {
   resolvePrefixKey
 } from '../src/renderer/src/keys.ts'
 import { isFileTab, nextActiveTab, tabsToClose } from '../src/renderer/src/tabs.ts'
+import { parseWorkspaceFile, serializeWorkspaceFile } from '../src/main/workspaceFile.ts'
 import type { PaneNode, Tab } from '../src/shared/types.ts'
 
 let failures = 0
@@ -216,6 +218,68 @@ console.log('\nprefix state machine')
 
   eq('a broken prefix setting disables the machine rather than trapping keys',
     resolvePrefixKey(k('a'), { ...B, prefix: '' }, true).kind, 'passthrough')
+}
+
+console.log('\n.code-workspace files')
+{
+  const file = '/projects/group/jira-migrate.code-workspace'
+
+  const basic = parseWorkspaceFile(
+    JSON.stringify({ folders: [{ path: 'repo-a' }, { path: '/elsewhere/repo-b', name: 'B' }] }),
+    file
+  )
+  eq('the workspace is named after the file', basic.name, 'jira-migrate')
+  eq('relative paths resolve against the file', basic.folders[0]?.path, '/projects/group/repo-a')
+  eq('absolute paths are left alone', basic.folders[1]?.path, '/elsewhere/repo-b')
+  eq('an explicit name is kept', basic.folders[1]?.name, 'B')
+  eq('no name means no name', basic.folders[0]?.name, undefined)
+
+  eq('.. resolves rather than being pasted together',
+    parseWorkspaceFile('{"folders":[{"path":"../sibling"}]}', file).folders[0]?.path,
+    '/projects/sibling')
+
+  eq('duplicate folders collapse',
+    parseWorkspaceFile('{"folders":[{"path":"a"},{"path":"a"},{"path":"./a"}]}', file).folders.length, 1)
+  eq('entries without a usable path are skipped',
+    parseWorkspaceFile('{"folders":[{"name":"x"},{"path":""},{"path":"ok"}]}', file).folders.length, 1)
+
+  // VS Code writes plain JSON but reads JSONC, and these files get hand-edited.
+  const commented = parseWorkspaceFile(`{
+    // the api, checked out from gerrit
+    "folders": [
+      { "path": "api" }, /* inline */
+      { "path": "web" },
+    ],
+    "settings": {}
+  }`, file)
+  eq('comments and a trailing comma are tolerated', commented.folders.length, 2)
+
+  // The hard case for any comment stripper: these are not comments.
+  const slashes = parseWorkspaceFile(
+    '{"folders":[{"path":"/srv//double","name":"a // b"}]}', file)
+  eq('a // inside a string is not a comment', slashes.folders[0]?.name, 'a // b')
+  eq('and neither is one in a path', slashes.folders[0]?.path, '/srv/double')
+  eq('an escaped quote does not end the string',
+    parseWorkspaceFile('{"folders":[{"path":"p","name":"say \\"hi\\" // x"}]}', file).folders[0]?.name,
+    'say "hi" // x')
+
+  let threw = ''
+  try { parseWorkspaceFile('{ not json', file) } catch (e) { threw = (e as Error).message }
+  check('bad JSON throws with the file named', threw.includes('jira-migrate.code-workspace'), threw)
+  threw = ''
+  try { parseWorkspaceFile('{"settings":{}}', file) } catch (e) { threw = (e as Error).message }
+  check('a file with no folders array is rejected', threw.includes('folders'), threw)
+
+  // Round trip: folders under the file's directory are written relative, so the file stays
+  // portable when it is committed beside the repos it groups.
+  const written = serializeWorkspaceFile(
+    [{ path: '/projects/group/api' }, { path: '/elsewhere/web', name: 'Web' }], file)
+  check('nearby folders are written relative', written.includes('"path": "api"'), written)
+  check('distant folders stay absolute', written.includes('"path": "/elsewhere/web"'), written)
+  check('a custom name survives', written.includes('"name": "Web"'), written)
+  eq('what is written parses back to the same paths',
+    parseWorkspaceFile(written, file).folders.map((f) => f.path).join(','),
+    '/projects/group/api,/elsewhere/web')
 }
 
 console.log('\nterminal clipboard')
