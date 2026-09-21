@@ -219,9 +219,22 @@ jobs:
           EOT
           TAG='${{ github.ref_name }}'
 
-          # An empty directory would make the glob below expand to a literal `artifacts/*` and gh
-          # would complain about a missing file. Say what is actually wrong instead.
-          [ -n "$(ls -A artifacts 2>/dev/null)" ] || { echo "no artifacts to publish" >&2; exit 1; }
+          # Collect the files by walking, NOT with `artifacts/*`.
+          #
+          # merge-multiple drops each artifact's own contents into this directory, but it does not
+          # flatten what is inside them, and what is inside them is a version directory: the
+          # upload globs are `release/*/*.dmg`, so the root upload-artifact strips is `release`,
+          # the `*` being a wildcard rather than a literal. `artifacts/*` therefore matched one
+          # directory and handed it to gh, which failed with
+          #
+          #     read artifacts/0.0.1-alpha.1: is a directory
+          #
+          # Walking for regular files gives the right answer whatever the nesting turns out to be.
+          ASSETS=()
+          while IFS= read -r f; do ASSETS+=("$f"); done < <(find artifacts -type f | sort)
+          [ "${#ASSETS[@]}" -gt 0 ] || { echo "no artifacts to publish" >&2; exit 1; }
+          printf 'publishing %d assets:\n' "${#ASSETS[@]}"
+          printf '  %s\n' "${ASSETS[@]}"
 
           # Idempotent, because `gh release create` is not: it refuses outright with "a release
           # with the same tag name already exists", so a job that got this far and then failed —
@@ -230,7 +243,7 @@ jobs:
           # set of assets from the first attempt replaceable rather than a conflict.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists; uploading assets over it"
-            gh release upload "$TAG" artifacts/* --clobber
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
             PRERELEASE=""
             case "$TAG" in *-*) PRERELEASE="--prerelease";; esac
@@ -239,5 +252,5 @@ jobs:
               --notes-file "$NOTES" \
               --generate-notes \
               $PRERELEASE \
-              artifacts/*
+              "${ASSETS[@]}"
           fi
