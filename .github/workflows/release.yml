@@ -217,11 +217,27 @@ jobs:
           - **Windows** — SmartScreen: *More info → Run anyway*
           - **Linux** — `chmod +x` the AppImage
           EOT
-          PRERELEASE=""
-          case "${{ github.ref_name }}" in *-*) PRERELEASE="--prerelease";; esac
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --notes-file "$NOTES" \
-            --generate-notes \
-            $PRERELEASE \
-            artifacts/*
+          TAG='${{ github.ref_name }}'
+
+          # An empty directory would make the glob below expand to a literal `artifacts/*` and gh
+          # would complain about a missing file. Say what is actually wrong instead.
+          [ -n "$(ls -A artifacts 2>/dev/null)" ] || { echo "no artifacts to publish" >&2; exit 1; }
+
+          # Idempotent, because `gh release create` is not: it refuses outright with "a release
+          # with the same tag name already exists", so a job that got this far and then failed —
+          # or a tag push that raced a manual dispatch of the same ref — could never be re-run.
+          # Uploading over an existing release is the recovery path, and --clobber makes a partial
+          # set of assets from the first attempt replaceable rather than a conflict.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; uploading assets over it"
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            PRERELEASE=""
+            case "$TAG" in *-*) PRERELEASE="--prerelease";; esac
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$NOTES" \
+              --generate-notes \
+              $PRERELEASE \
+              artifacts/*
+          fi
