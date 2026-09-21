@@ -109,6 +109,7 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'quit') void runQuitSmoke()
     else if (process.env.ONESTOP_SMOKE === 'copy') void runCopySmoke()
     else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'scroll') void runScrollSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -292,6 +293,121 @@ async function runSplitSmoke(): Promise<void> {
     app.exit(JSON.parse(result).ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:split] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * Both side panels stay inside the window once they are full, and the explorer collapses.
+ *
+ * Written while chasing "source control has no scrollbar". It turned out both panels always did
+ * scroll — the thumb was 8% white and simply invisible — so what this guards is the surrounding
+ * claim rather than the one reported: that the panes remain clipped to the window and that their
+ * scroll containers really are scroll containers. Worth keeping, because a short list looks
+ * correct under any layout and only a full one can tell the difference. Hence ONESTOP_SMOKE_REPO.
+ *
+ * Note it asserts on the CONTAINERS, not the rows. Rows below the fold legitimately have bottoms
+ * past the window — that is what scrolling is — and an assertion on row geometry would only hold
+ * while the panel was broken.
+ */
+async function runScrollSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const repo = process.env.ONESTOP_SMOKE_REPO
+  if (!repo) { console.error('[smoke:scroll] set ONESTOP_SMOKE_REPO'); app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store } = window.__onestop
+        const trail = []
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 60; i++) {
+          if (store.getState().ready) break
+          await sleep(250)
+        }
+        store.getState().addWorkspace({
+          id: 'ws-scroll', name: 'scroll', createdAt: Date.now(), lastOpenedAt: Date.now(),
+          folders: [{ path: ${JSON.stringify(repo)}, name: 'scroll',
+                      isGitRepo: true, repoRoot: ${JSON.stringify(repo)} }]
+        })
+        // Long enough for the status read and the explorer's first directory listing.
+        await sleep(4000)
+
+        const bottom = (el) => Math.round(el.getBoundingClientRect().bottom)
+        const lastRowBottom = (root) => {
+          const rows = [...root.querySelectorAll('.row')]
+          return rows.length ? bottom(rows[rows.length - 1]) : 0
+        }
+        const panes = document.querySelectorAll('.pane')
+        const [left, right] = [panes[0], panes[1]]
+        const shell = document.querySelector('.shell')
+        const limit = bottom(shell)
+
+        trail.push('window bottom: ' + limit)
+        // Kept as measurements: on the broken layout the PANE bottoms matched these, which is
+        // how the bug was identified in the first place.
+        trail.push('explorer last row bottom: ' + lastRowBottom(left) + ' (pane ' + bottom(left) + ')')
+        trail.push('scm last row bottom: ' + lastRowBottom(right) + ' (pane ' + bottom(right) + ')')
+
+        // Find whatever element actually contains the rows, old shape or new.
+        const containerOf = (root) => {
+          const rows = [...root.querySelectorAll('.row')]
+          if (!rows.length) return null
+          let el = rows[rows.length - 1].parentElement
+          while (el && el !== root) {
+            const st = getComputedStyle(el)
+            if (st.overflowY === 'auto' || st.overflowY === 'scroll') return el
+            el = el.parentElement
+          }
+          return null
+        }
+        const scm = containerOf(right)
+        const exp = containerOf(left)
+        trail.push('scm container: ' + (scm ? scm.className || scm.tagName : 'NONE — nothing clips the list'))
+        trail.push('exp container: ' + (exp ? exp.className || exp.tagName : 'NONE — nothing clips the list'))
+        if (!scm) return fail('source-control-has-no-scroll-container')
+        if (!exp) return fail('explorer-has-no-scroll-container')
+        trail.push('scm rows ' + scm.querySelectorAll('.row').length +
+          ', scrollHeight/clientHeight ' + scm.scrollHeight + '/' + scm.clientHeight)
+        trail.push('explorer rows ' + exp.querySelectorAll('.row').length +
+          ', scrollHeight/clientHeight ' + exp.scrollHeight + '/' + exp.clientHeight)
+
+        // A fixture that does not overflow would make every assertion below vacuous.
+        if (scm.scrollHeight <= scm.clientHeight + 2) return fail('scm-fixture-too-small')
+        if (exp.scrollHeight <= exp.clientHeight + 2) return fail('explorer-fixture-too-small')
+
+        if (getComputedStyle(scm).overflowY !== 'auto') return fail('scm-does-not-scroll')
+        if (getComputedStyle(exp).overflowY !== 'auto') return fail('explorer-does-not-scroll')
+        // The panes and their scroll containers must fit. Individual ROWS legitimately extend
+        // past the fold once scrolling works — that is what a scroll container is — so asserting
+        // on row geometry would only be correct while the bug was present.
+        if (bottom(left) > limit + 2) return fail('left-pane-runs-past-the-window')
+        if (bottom(right) > limit + 2) return fail('right-pane-runs-past-the-window')
+        if (bottom(exp) > limit + 2) return fail('explorer-body-runs-past-the-window')
+        if (bottom(scm) > limit + 2) return fail('scm-body-runs-past-the-window')
+
+        // Collapse all closes the roots and everything under them.
+        const before = exp.querySelectorAll('.row').length
+        const btn = [...document.querySelectorAll('.section-header .icon-button')]
+          .find(b => b.title === 'Collapse all folders')
+        if (!btn) return fail('no-collapse-all-button')
+        btn.click()
+        await sleep(400)
+        const after = exp.querySelectorAll('.row').length
+        trail.push('explorer rows before/after collapse: ' + before + '/' + after)
+        if (after !== 1) return fail('collapse-all-should-leave-only-the-root', { before, after })
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    console.log('[smoke:scroll]', result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:scroll] threw:', err)
     app.exit(1)
   }
 }

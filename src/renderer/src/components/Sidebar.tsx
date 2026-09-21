@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { rpc } from '../ipc'
 import {
   ChevronIcon,
+  CollapseAllIcon,
   CloseIcon,
   CollapseLeftIcon,
   FileIcon,
@@ -277,6 +278,15 @@ function OpenMenu({
 function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const [dropping, setDropping] = useState(false)
+  /*
+   * Collapse-all is a counter, not a boolean.
+   *
+   * Each DirNode owns whether it is open, which is what keeps expanding a big tree from
+   * re-rendering the sidebar. A shared "collapsed" flag would fight that ownership — the node
+   * could never be reopened while the flag was set. A counter is a broadcast instead: nodes close
+   * when it changes and are free to reopen afterwards.
+   */
+  const [collapseSignal, setCollapseSignal] = useState(0)
 
   /**
    * Dropping folders here collects them, which is the input side of "Save Workspace As".
@@ -348,6 +358,14 @@ function FileExplorer(): React.ReactElement {
     >
       <div className="section-header">
         <span className="section-header__title">Explorer</span>
+        <button
+          className="icon-button"
+          title="Collapse all folders"
+          disabled={!workspace || workspace.folders.length === 0}
+          onClick={() => setCollapseSignal((n) => n + 1)}
+        >
+          <CollapseAllIcon size={14} />
+        </button>
       </div>
       <div className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}>
         {!workspace && <div className="muted">Open a workspace to browse files.</div>}
@@ -357,7 +375,8 @@ function FileExplorer(): React.ReactElement {
           </div>
         )}
         {workspace?.folders.map((f) => (
-          <DirNode key={f.path} path={f.path} name={f.name} depth={0} defaultOpen />
+          <DirNode key={f.path} path={f.path} name={f.name} depth={0} defaultOpen
+            collapseSignal={collapseSignal} />
         ))}
       </div>
     </div>
@@ -369,16 +388,30 @@ interface DirNodeProps {
   name: string
   depth: number
   defaultOpen?: boolean
+  /** Bumped by "collapse all"; every node closes when it changes. */
+  collapseSignal: number
 }
 
 /**
  * Lazily loaded directory node. Children are fetched on first expand and kept afterwards, so
  * collapsing and re-expanding a large directory costs nothing.
  */
-function DirNode({ path, name, depth, defaultOpen = false }: DirNodeProps): React.ReactElement {
+function DirNode({
+  path,
+  name,
+  depth,
+  defaultOpen = false,
+  collapseSignal
+}: DirNodeProps): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen)
   const [children, setChildren] = useState<FileStat[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Skip the first run: mounting is not a collapse request, and a root folder opens by default.
+  const firstSignal = useRef(collapseSignal)
+  useEffect(() => {
+    if (collapseSignal !== firstSignal.current) setOpen(false)
+  }, [collapseSignal])
 
   useEffect(() => {
     if (!open || children !== null) return
@@ -409,7 +442,8 @@ function DirNode({ path, name, depth, defaultOpen = false }: DirNodeProps): Reac
       {open &&
         children?.map((c) =>
           c.isDir ? (
-            <DirNode key={c.path} path={c.path} name={c.name} depth={depth + 1} />
+            <DirNode key={c.path} path={c.path} name={c.name} depth={depth + 1}
+              collapseSignal={collapseSignal} />
           ) : (
             <FileNode key={c.path} stat={c} depth={depth + 1} />
           )

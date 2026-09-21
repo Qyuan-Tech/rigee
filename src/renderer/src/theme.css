@@ -148,15 +148,28 @@ textarea:focus {
   height: 11px;
 }
 
+/*
+ * Visible at rest, not just on hover.
+ *
+ * This was #ffffff14 — 8% white — which is a scrollbar you cannot see. The panels scrolled
+ * perfectly well; there was simply nothing on screen to say so, or to show how far down a long
+ * list you were. macOS hides its own overlay scrollbars until you scroll, so an app that styles
+ * them has to supply the affordance itself.
+ */
 ::-webkit-scrollbar-thumb {
-  background: #ffffff14;
+  background: #ffffff33;
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #ffffff2b;
+  background: #ffffff59;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: #ffffff80;
   background-clip: padding-box;
 }
 
@@ -1208,3 +1221,4 @@ textarea:focus {
   right: 8px;
   z-index: 60;
 }
+
