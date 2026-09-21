@@ -40,28 +40,47 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     })
   }, [])
 
+  const openAsWorkspace = useCallback(
+    async (path: string) => {
+      const probe = await rpc['workspace:probeFolder'](path)
+      const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path
+      add({
+        id: nextWorkspaceId(),
+        name,
+        folders: [{ path, name, isGitRepo: probe.isGitRepo, repoRoot: probe.repoRoot }],
+        createdAt: Date.now(),
+        lastOpenedAt: Date.now()
+      } satisfies Workspace)
+      persist()
+    },
+    [add, persist]
+  )
+
   const createWorkspace = useCallback(async () => {
     const path = await rpc['workspace:pickFolder']()
-    if (!path) return
-    const probe = await rpc['workspace:probeFolder'](path)
-    const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path
-    const ws: Workspace = {
-      id: nextWorkspaceId(),
-      name,
-      folders: [{ path, name, isGitRepo: probe.isGitRepo, repoRoot: probe.repoRoot }],
-      createdAt: Date.now(),
-      lastOpenedAt: Date.now()
-    }
-    add(ws)
-    persist()
-  }, [add, persist])
+    if (path) await openAsWorkspace(path)
+  }, [openAsWorkspace])
 
   const addFolder = useCallback(async () => {
     const s = useApp.getState()
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
-    if (!ws) return
     const path = await rpc['workspace:pickFolder']()
     if (!path) return
+
+    /*
+     * Opening a folder from Scratch makes a workspace; it does not add a folder to Scratch.
+     *
+     * Scratch is the workspace with no folders by definition, and it is synthesised at boot
+     * rather than persisted — `persist()` filters it out on every save. So a folder added here
+     * used to appear in the explorer, never appear as a workspace beside Scratch, and be silently
+     * gone on the next launch, taking the only record of it with it. There is no reading of
+     * "open this repo" that this satisfies.
+     */
+    if (!ws || ws.id === SCRATCH_WORKSPACE_ID) {
+      await openAsWorkspace(path)
+      return
+    }
+
     if (ws.folders.some((f) => f.path === path)) return
     const probe = await rpc['workspace:probeFolder'](path)
     const folder: WorkspaceFolder = {
@@ -72,7 +91,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     }
     s.setWorkspaces(s.workspaces.map((w) => (w.id === ws.id ? { ...w, folders: [...w.folders, folder] } : w)))
     persist()
-  }, [persist])
+  }, [openAsWorkspace, persist])
 
   return (
     <div style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)' }}>
@@ -81,7 +100,15 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         <button className="icon-button" title="New workspace from folder…" onClick={() => void createWorkspace()}>
           <PlusIcon size={14} />
         </button>
-        <button className="icon-button" title="Add folder to active workspace…" onClick={() => void addFolder()}>
+        <button
+          className="icon-button"
+          title={
+            activeId === SCRATCH_WORKSPACE_ID
+              ? 'Open a folder as a workspace…'
+              : 'Add a folder to this workspace…'
+          }
+          onClick={() => void addFolder()}
+        >
           <AddFolderIcon size={14} />
         </button>
         <button className="icon-button" title="Collapse panel" onClick={onCollapse}>

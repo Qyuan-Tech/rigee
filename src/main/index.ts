@@ -319,6 +319,9 @@ async function runScratchSmoke(): Promise<void> {
         const fail = (stage, extra) =>
           JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
 
+        const editorTab = (id) => ({ id, kind: 'editor', title: id, pinned: false,
+          filePath: '/' + id + '.ts', repoId: null, readOnly: false })
+
         trail.push('workspaces at boot: ' + st().workspaces.map(w => w.id).join(','))
         if (!st().workspaces.some(w => w.id === '__scratch__')) return fail('no-scratch-at-boot')
 
@@ -354,6 +357,22 @@ async function runScratchSmoke(): Promise<void> {
         trail.push('rendered terminal panes: ' + panes)
         if (panes < 1) return fail('no-terminal-in-scratch')
 
+        // Switching workspaces must actually change what the centre shows. Asserted on the
+        // rendered tab strip rather than on store state, because "the middle does not change"
+        // is a claim about pixels, not about a variable.
+        store.getState().setActiveWorkspace('ws-probe')
+        store.getState().openTab('ws-probe', editorTab('probe-only-file'))
+        await sleep(600)
+        const onProbe = (document.querySelector('.tabstrip')?.textContent || '')
+        scratchRow.click()
+        await sleep(600)
+        const onScratch = (document.querySelector('.tabstrip')?.textContent || '')
+        trail.push('tabstrip on ws-probe: ' + JSON.stringify(onProbe.slice(0, 50)))
+        trail.push('tabstrip on scratch:  ' + JSON.stringify(onScratch.slice(0, 50)))
+        if (onProbe === onScratch) return fail('centre-did-not-change-between-workspaces')
+        if (!onProbe.includes('probe-only-file')) return fail('other-workspace-tabs-not-shown')
+        if (onScratch.includes('probe-only-file')) return fail('scratch-shows-other-workspace-tabs')
+
         // The case where "nothing happened" would be literally true: a browser tab in the other
         // workspace is a native view composited OVER the whole page, so if leaving the workspace
         // does not hide it the screen simply does not change.
@@ -376,7 +395,18 @@ async function runScratchSmoke(): Promise<void> {
     const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
     // Asked in main, because only main knows what is actually composited over the window.
     const stillVisible = browserTabs?.visibleIds() ?? []
-    const ok = info.ok && stillVisible.length === 0
+
+    // And the workspace must still be on disk. A workspace that vanishes across a restart looks
+    // exactly like "clicking workspaces does nothing": there is nothing left to click.
+    await new Promise((r) => setTimeout(r, 2500))
+    const file = join(app.getPath('userData'), 'workspaces.json')
+    let persistedIds: string[] = []
+    try {
+      persistedIds = (JSON.parse(readFileSync(file, 'utf8')) as { workspaces?: { id: string }[] })
+        .workspaces?.map((w) => w.id) ?? []
+    } catch { /* reported as an empty list below */ }
+
+    const ok = info.ok && stillVisible.length === 0 && persistedIds.includes('ws-probe')
     console.log('[smoke:scratch]', JSON.stringify({
       ...info,
       ok,
