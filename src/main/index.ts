@@ -108,6 +108,7 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'tabs') void runTabsSmoke()
     else if (process.env.ONESTOP_SMOKE === 'quit') void runQuitSmoke()
     else if (process.env.ONESTOP_SMOKE === 'copy') void runCopySmoke()
+    else if (process.env.ONESTOP_SMOKE === 'mouse') void runMouseSmoke()
     else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
     else if (process.env.ONESTOP_SMOKE === 'scroll') void runScrollSmoke()
     else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
@@ -638,6 +639,90 @@ async function runScratchSmoke(): Promise<void> {
     app.exit(ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:scratch] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * Output stays reachable while a program owns the mouse.
+ *
+ * Run claude, vim, htop or tmux and it turns on mouse reporting; from then on xterm hands every
+ * drag to the program rather than selecting with it. Correct — the program asked for the mouse —
+ * but it also means nothing on screen can be selected, and a terminal whose output cannot be
+ * copied is not much of a terminal.
+ *
+ * WHAT THIS DOES NOT COVER: the Option-drag itself. Synthetic MouseEvents do not drive xterm's
+ * selection service here — a plain drag with no mouse reporting at all selects nothing either, so
+ * the harness, not the feature, is what fails. Rather than assert something that would pass
+ * whatever the setting was, this checks the three things it genuinely can: that writing the real
+ * DECSET sequences puts the terminal into mouse-reporting mode, that the live Terminal really
+ * carries macOptionClickForcesSelection, and that Select All still works once a program holds the
+ * mouse — that last being the menu's escape hatch and the part with no modifier to remember.
+ * Option-drag was confirmed by hand.
+ */
+async function runMouseSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
+        const trail = []
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        let scratch = null
+        for (let i = 0; i < 60; i++) {
+          scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+          if (scratch && store.getState().ready) break
+          await sleep(250)
+        }
+        if (!scratch) return fail('no-scratch')
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const tab = newTerminalTab()
+        store.getState().openTab(scratch.id, tab)
+        let handle = null
+        for (let i = 0; i < 60; i++) {
+          await sleep(250)
+          const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+          if (t) handle = getTerminal(paneKey(tab.id, t.activeLeafId))
+          if (handle) break
+        }
+        if (!handle) return fail('no-terminal')
+        const term = handle.term
+
+        term.write('SELECTME-ABCDEFGHIJ-0123456789\\r\\n')
+        await sleep(500)
+
+        // The scenario: exactly what a full-screen program sends — button+drag tracking, SGR.
+        term.write('\\x1b[?1002h\\x1b[?1006h')
+        await sleep(400)
+        trail.push('mouseTrackingMode: ' + term.modes.mouseTrackingMode)
+        if (term.modes.mouseTrackingMode === 'none') return fail('mouse-reporting-did-not-engage')
+
+        // The setting has to be on the live Terminal, not merely in the source.
+        trail.push('macOptionClickForcesSelection: ' + term.options.macOptionClickForcesSelection)
+        if (term.options.macOptionClickForcesSelection !== true) {
+          return fail('option-drag-selection-not-enabled')
+        }
+
+        // Select All works regardless of what the program did with the mouse.
+        term.clearSelection()
+        await sleep(60)
+        term.selectAll()
+        if (!term.getSelection().includes('SELECTME')) return fail('select-all-does-not-work')
+        trail.push('select all works')
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    console.log('[smoke:mouse]', result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:mouse] threw:', err)
     app.exit(1)
   }
 }

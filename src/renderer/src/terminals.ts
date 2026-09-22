@@ -62,6 +62,20 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
       letterSpacing: 0,
       cursorBlink: true,
       scrollback: 10000,
+      /*
+       * Option-drag selects even while a program owns the mouse.
+       *
+       * A full-screen program — claude, vim, htop, tmux — turns on mouse reporting, and from then
+       * on xterm hands every drag to the program instead of selecting with it. That is correct:
+       * the program asked for the mouse. But it also means the output on screen cannot be
+       * selected at all, which is the one thing a terminal must never take away.
+       *
+       * xterm defaults this to false and every terminal people actually use sets the equivalent:
+       * Option in iTerm2 and Terminal.app, Shift elsewhere. Shift is already xterm's default on
+       * the other platforms, so this line is the macOS half of the same behaviour. It affects
+       * clicks only — Option as Meta for keybindings is `macOptionIsMeta`, untouched.
+       */
+      macOptionClickForcesSelection: true,
       // Same tokens as theme.css and the Monaco theme.
       theme: {
         background: '#20232e',
@@ -152,6 +166,11 @@ export function reapPanes(tabId: string, liveLeafIds: ReadonlySet<string>): void
     if (!key.startsWith(prefix)) continue
     if (!liveLeafIds.has(key.slice(prefix.length))) disposeTerminal(key)
   }
+}
+
+/** Select the whole scrollback. The way out when a program has taken the mouse. */
+export function selectAllInPane(key: string): void {
+  getTerminal(key)?.term.selectAll()
 }
 
 /** Whether this pane currently has a selection, for enabling a Copy menu item. */

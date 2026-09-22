@@ -10,6 +10,7 @@ import {
   paneKey,
   paneSelection,
   pastePane,
+  selectAllInPane,
   reapPanes,
   writeToPane
 } from '../terminals'
@@ -212,6 +213,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
           bindings={bindings}
           selection={paneSelection(paneKey(tab.id, menu.leafId))}
           onCopy={() => { copyPane(paneKey(tab.id, menu.leafId)); setMenu(null) }}
+          onSelectAll={() => { selectAllInPane(paneKey(tab.id, menu.leafId)); setMenu(null) }}
           onPaste={() => { const k = paneKey(tab.id, menu.leafId); setMenu(null); void pastePane(k) }}
           onSplitRight={() => { setMenu(null); split('row') }}
           onSplitDown={() => { setMenu(null); split('column') }}
@@ -230,6 +232,7 @@ function PaneMenu({
   bindings,
   selection,
   onCopy,
+  onSelectAll,
   onPaste,
   onSplitRight,
   onSplitDown,
@@ -240,6 +243,7 @@ function PaneMenu({
   bindings: { prefix: string; splitRight: string; splitDown: string; closePane: string }
   selection: string
   onCopy: () => void
+  onSelectAll: () => void
   onPaste: () => void
   onSplitRight: () => void
   onSplitDown: () => void
@@ -263,6 +267,11 @@ function PaneMenu({
       <button className="menu__item" onClick={onPaste}>
         <span>Paste</span>
         <span className="menu__hint">{clip.paste}</span>
+      </button>
+      {/* Reachable no matter what the running program has done with the mouse. */}
+      <button className="menu__item" onClick={onSelectAll}>
+        <span>Select All</span>
+        <span className="menu__hint">{isMac() ? '⌥ drag' : 'shift drag'}</span>
       </button>
       <div className="menu__sep" />
       <button className="menu__item" onClick={onSplitRight}>
