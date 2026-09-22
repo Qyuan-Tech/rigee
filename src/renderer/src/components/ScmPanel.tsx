@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { onEvent, isMac, rpc } from '../ipc'
-import { BranchIcon, CollapseRightIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
+import { BranchIcon, ChevronIcon, CollapseRightIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
 import { nextTabId, useActiveWorkspace, useApp } from '../store'
 import type { DiffTarget, GitFileChange, RepoStatus } from '@shared/types'
 
@@ -75,12 +75,26 @@ export function ScmPanel({ onCollapse }: { onCollapse: () => void }): React.Reac
     return <Panel onCollapse={onCollapse}><div className="muted">No git repository in this workspace.</div></Panel>
   }
 
+  const multi = repoRoots.length > 1
+
+  /*
+   * One repo and many repos need different layouts, and trying to serve both with one was the bug.
+   *
+   * Every section used to be `flex: 1` in the panel's column. That is right for a single repo —
+   * the branch line and commit box stay pinned while the file list scrolls under them — and
+   * catastrophic for ten, where each section is handed a tenth of the height, roughly 80px, for
+   * content that needs about 200. They do not scroll, they crush into each other.
+   *
+   * So: one repo keeps the pinned layout. Several stack at their natural height inside a single
+   * panel scroller, each collapsible, and a repo with no changes starts collapsed so ten repos
+   * read as a list of ten names rather than ten commit boxes.
+   */
   return (
-    <Panel onCollapse={onCollapse}>
+    <Panel onCollapse={onCollapse} scroll={multi}>
       {repoRoots.map((root) => {
         const status = scm[root]
         return status ? (
-          <RepoSection key={root} status={status} multi={repoRoots.length > 1} busy={busy} act={act} />
+          <RepoSection key={root} status={status} multi={multi} busy={busy} act={act} />
         ) : (
           <div className="muted" key={root}>reading {root.split('/').pop()}…</div>
         )
@@ -119,12 +133,22 @@ function RepoSection({
 
   const allUnstaged = [...status.unstaged, ...status.untracked].map((f) => f.path)
 
+  // A clean repo among many is noise; one with changes is the reason you opened the panel.
+  const [open, setOpen] = useState(!multi || total > 0)
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
+    <div className={multi ? 'scm__repo' : 'scm__repo scm__repo--only'}>
+      {multi && (
+        <button className="scm__repo-header" onClick={() => setOpen((o) => !o)}>
+          <ChevronIcon size={12} open={open} />
+          <span className="scm__repo-name">{status.name}</span>
+          <span className="scm__repo-branch">{status.branch ?? status.detachedAt ?? ''}</span>
+          {total > 0 && <span className="badge">{total}</span>}
+        </button>
+      )}
+      {(!multi || open) && (
+        <>
       <div className="scm__head">
-        {multi && (
-          <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginBottom: 6 }}>{status.name}</div>
-        )}
 
         <div className="scm__branch">
           <span className="scm__branch-name">
@@ -175,7 +199,7 @@ function RepoSection({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 8 }}>
+      <div className={multi ? 'scm__files' : 'scm__files scm__files--scroll'}>
         {total === 0 && <div className="muted">Working tree clean.</div>}
         <FileGroup title="Merge changes" group="conflicts" files={status.conflicts} root={root}
           busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
@@ -186,6 +210,8 @@ function RepoSection({
         <FileGroup title="Untracked" group="untracked" files={status.untracked} root={root}
           busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -276,10 +302,13 @@ function FileGroup({
 
 function Panel({
   children,
-  onCollapse
+  onCollapse,
+  scroll = false
 }: {
   children: React.ReactNode
   onCollapse: () => void
+  /** True when several repo sections stack and the panel itself has to scroll them. */
+  scroll?: boolean
 }): React.ReactElement {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -289,7 +318,7 @@ function Panel({
           <CollapseRightIcon size={14} />
         </button>
       </div>
-      {children}
+      <div className={scroll ? 'scm__body scm__body--scroll' : 'scm__body'}>{children}</div>
     </div>
   )
 }

@@ -1222,3 +1222,85 @@ textarea:focus {
   z-index: 60;
 }
 
+
+/* ===================================================================== */
+/* Source control: one repo versus many                                   */
+/* ===================================================================== */
+
+/*
+ * The panel body. With a single repo it is a plain flex column and the repo section inside owns
+ * the scrolling, which keeps the branch line and commit box pinned above a long file list. With
+ * several repos the sections stack at their natural heights and the body scrolls them — there is
+ * no sane way to pin ten commit boxes, and giving each an equal share of the height crushes them.
+ */
+.scm__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.scm__body--scroll {
+  display: block;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* Only child: take the height and let the file list inside do the scrolling. */
+.scm__repo--only {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.scm__repo {
+  border-bottom: 1px solid var(--border);
+}
+
+/* Sticky, so you can still see which repo you are looking at halfway down its files. */
+.scm__repo-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--row-h);
+  padding: 0 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  text-align: left;
+}
+
+.scm__repo-header:hover {
+  background: var(--bg-hover);
+}
+
+.scm__repo-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.scm__repo-branch {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm__files {
+  padding-bottom: 8px;
+}
+
+.scm__files--scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

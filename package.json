@@ -43,7 +43,8 @@
     "smoke:quit": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=quit electron .",
     "smoke:copy": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=copy electron .",
     "smoke:scratch": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=scratch electron .",
-    "smoke:scroll": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=scroll electron ."
+    "smoke:scroll": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=scroll electron .",
+    "smoke:multirepo": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=multirepo electron ."
   },
   "dependencies": {
     "@parcel/watcher": "2.6.0",

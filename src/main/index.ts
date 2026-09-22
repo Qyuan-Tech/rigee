@@ -110,6 +110,7 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'copy') void runCopySmoke()
     else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
     else if (process.env.ONESTOP_SMOKE === 'scroll') void runScrollSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
@@ -293,6 +294,111 @@ async function runSplitSmoke(): Promise<void> {
     app.exit(JSON.parse(result).ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:split] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * Ten repos in one workspace must read as ten repos, not ten crushed commit boxes.
+ *
+ * Every repo section used to be `flex: 1` in the panel's column, so N repos each received 1/N of
+ * the height — around 80px for content needing 200 — and they overlapped instead of stacking.
+ * Nothing overflows and nothing throws; the sections just silently squash, which is why the
+ * assertion here is on the RENDERED HEIGHT of each section rather than on the panel's geometry.
+ *
+ * Point ONESTOP_SMOKE_MULTIREPO at a directory of git repos.
+ */
+async function runMultiRepoSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = process.env.ONESTOP_SMOKE_MULTIREPO
+  if (!dir) { console.error('[smoke:multirepo] set ONESTOP_SMOKE_MULTIREPO'); app.exit(1); return }
+  const repos = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => join(dir, e.name))
+    .sort()
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store } = window.__onestop
+        const trail = []
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 60; i++) { if (store.getState().ready) break; await sleep(250) }
+        const repos = ${JSON.stringify(repos)}
+        store.getState().addWorkspace({
+          id: 'ws-multi', name: 'multi', createdAt: Date.now(), lastOpenedAt: Date.now(),
+          folders: repos.map(p => ({ path: p, name: p.split('/').pop(),
+                                     isGitRepo: true, repoRoot: p }))
+        })
+        await sleep(6000)
+
+        // The parent of a scm__head element is the section root in either shape, old or new,
+        // so the measurement below is comparable across the change. (No backticks in here: this
+        // whole block is inside a template literal and one would end it.)
+        let sections = [...document.querySelectorAll('.scm__repo')]
+        if (sections.length === 0) {
+          sections = [...document.querySelectorAll('.scm__head')].map(h => h.parentElement)
+          trail.push('using the pre-change structure')
+        }
+        trail.push('repo sections rendered: ' + sections.length + ' of ' + repos.length)
+        if (sections.length !== repos.length) return fail('not-every-repo-rendered')
+
+        // Measure first, assert after, so a run against the old shape still reports numbers.
+        const heights = sections.map(el => Math.round(el.getBoundingClientRect().height))
+        trail.push('section heights: ' + heights.join(','))
+        const rects = sections.map(el => el.getBoundingClientRect())
+
+        // A section too short to hold a branch line and a commit box has been crushed. 60px is
+        // well under the ~200 they need and well over a collapsed header.
+        const MIN = 60
+        const crushed = heights.filter(h => h < MIN)
+        trail.push('sections under ' + MIN + 'px: ' + crushed.length)
+
+        const headers = [...document.querySelectorAll('.scm__repo-header')]
+        trail.push('collapsible headers: ' + headers.length)
+        if (headers.length !== repos.length) return fail('missing-repo-headers', { heights })
+
+        // With headers present, "short" means collapsed on purpose rather than squashed.
+        const headerH = Math.round(headers[0].getBoundingClientRect().height)
+        if (heights.some(h => h < headerH - 1)) return fail('sections-crushed', { heights, headerH })
+
+        // Overlap: each section must start at or below the previous one's bottom.
+        for (let i = 1; i < rects.length; i++) {
+          if (rects[i].top < rects[i - 1].bottom - 1) {
+            return fail('sections-overlap', { i, prevBottom: rects[i-1].bottom, top: rects[i].top })
+          }
+        }
+
+        // Dirty repos open, clean ones collapsed: ten repos should read as a list.
+        const open = sections.filter(el => el.querySelector('.scm__head')).length
+        trail.push('expanded sections: ' + open)
+        if (open === sections.length) return fail('clean-repos-should-start-collapsed')
+        if (open === 0) return fail('repos-with-changes-should-start-open')
+
+        // The panel scrolls them rather than letting them escape.
+        const body = document.querySelector('.scm__body')
+        trail.push('panel scrollHeight/clientHeight: ' + body.scrollHeight + '/' + body.clientHeight)
+        if (getComputedStyle(body).overflowY !== 'auto') return fail('panel-does-not-scroll')
+        const limit = document.querySelector('.shell').getBoundingClientRect().bottom
+        if (body.getBoundingClientRect().bottom > limit + 2) return fail('panel-runs-past-the-window')
+
+        // And a collapsed repo can be opened.
+        const closed = sections.find(el => !el.querySelector('.scm__head'))
+        closed.querySelector('.scm__repo-header').click()
+        await sleep(300)
+        if (!closed.querySelector('.scm__head')) return fail('header-click-does-not-expand')
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    console.log('[smoke:multirepo]', result)
+    app.exit(JSON.parse(result).ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:multirepo] threw:', err)
     app.exit(1)
   }
 }
