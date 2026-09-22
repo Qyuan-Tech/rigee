@@ -47,11 +47,13 @@ export type ViewType = string
  */
 export type IconName =
   | 'file'
+  | 'files'
   | 'diff'
   | 'globe'
   | 'terminal'
   | 'branch'
   | 'folder'
+  | 'plugin'
 
 /**
  * A file matcher, in the only two forms worth supporting before someone asks for a third:
@@ -118,13 +120,25 @@ export interface TabContribution {
   creatable?: { label: string }
 }
 
-/** A panel in one of the two side bars. */
+/**
+ * A panel in one of the two side bars.
+ *
+ * The left slot is an activity bar: one icon per view, one view visible at a time, the way VS Code
+ * arranges it. The right slot stacks whatever is contributed to it — source control lives there so
+ * the file tree and the changes stay visible together, which is the one thing this layout does
+ * better than VS Code's.
+ */
 export interface ViewContribution {
   /** `<pluginId>.<name>`, like a view type: the same namespace rule, the same reason. */
   id: ViewType
   title: string
   slot: 'left' | 'right'
-  /** Lower sorts first within a slot. */
+  /**
+   * The activity bar button. Required, not optional: a left-slot view with no icon would be a
+   * button nobody can identify, and an icon invented by the shell on its behalf would be worse.
+   */
+  icon: IconName
+  /** Lower sorts first within a slot, and top to bottom in the activity bar. */
   order?: number
 }
 

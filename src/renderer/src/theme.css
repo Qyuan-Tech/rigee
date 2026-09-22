@@ -235,6 +235,169 @@ textarea:focus {
   flex-direction: column;
 }
 
+/* ===================================================================== */
+/* Activity bar                                                           */
+/*                                                                        */
+/* Always present, collapsed panel or not: it is the only way back to a    */
+/* side bar you have just hidden, which is the whole reason VS Code gives  */
+/* the rail its own permanent strip rather than putting the switcher       */
+/* inside the panel it switches.                                           */
+/* ===================================================================== */
+
+.activitybar {
+  flex: 0 0 auto;
+  width: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding-top: 6px;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border);
+}
+
+.activitybar__item {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  transition: color var(--t-fast);
+}
+
+.activitybar__item:hover {
+  color: var(--fg);
+}
+
+.activitybar__item--active {
+  color: var(--fg);
+}
+
+/* The selected item carries the accent bar down its left edge, VS Code-style. */
+.activitybar__item--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+
+.activitybar__item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -3px;
+}
+
+/* ===================================================================== */
+/* Plugins view                                                           */
+/* ===================================================================== */
+
+.plugins__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.plugins__row {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.plugins__row--off {
+  opacity: 0.55;
+}
+
+.plugins__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plugins__name {
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.plugins__version {
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A switch, not a checkbox: the state it shows is "this plugin is running or it is not". */
+.plugins__toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-deep);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.plugins__toggle--on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.plugins__knob {
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+
+.plugins__toggle--on .plugins__knob {
+  transform: translateX(12px);
+  background: var(--accent);
+}
+
+.plugins__desc {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.plugins__meta {
+  margin-top: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plugins__state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-faint);
+}
+
+.plugins__state--on {
+  color: var(--git-added);
+}
+
+.plugins__contribution {
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
 .center {
   flex: 1 1 auto;
   display: flex;

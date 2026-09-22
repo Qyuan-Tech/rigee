@@ -28,7 +28,8 @@ const EMPTY: PersistedState = {
   workspaces: [],
   activeWorkspaceId: null,
   ui: {},
-  keybindings: { ...DEFAULT_KEYBINDINGS }
+  keybindings: { ...DEFAULT_KEYBINDINGS },
+  disabledPlugins: []
 }
 
 function statePath(): string {
@@ -78,7 +79,10 @@ function migrate(raw: unknown): PersistedState {
       doc.ui && typeof doc.ui === 'object'
         ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>)
         : {},
-    keybindings: { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) }
+    keybindings: { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) },
+    // No version bump for this one: an absent field means "nothing disabled", which is exactly
+    // what every document written before the plugins view existed means.
+    disabledPlugins: Array.isArray(doc.disabledPlugins) ? (doc.disabledPlugins as string[]) : []
   }
 }
 
@@ -141,4 +145,15 @@ export function saveKeybindings(keybindings: KeyBindings): void {
   const state = loadState()
   state.keybindings = keybindings
   flush()
+}
+
+export function saveDisabledPlugins(disabled: string[]): void {
+  const state = loadState()
+  state.disabledPlugins = [...new Set(disabled)].sort()
+  flush()
+}
+
+/** Read without touching disk twice; main needs it before the renderer has said anything. */
+export function disabledPlugins(): string[] {
+  return loadState().disabledPlugins ?? []
 }

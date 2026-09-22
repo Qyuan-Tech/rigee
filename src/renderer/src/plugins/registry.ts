@@ -1,4 +1,5 @@
 import { PLUGIN_MANIFESTS } from '@plugins/index'
+import { pluginUiChanged } from './signal'
 import {
   matchesSelector,
   type EditorContribution,
@@ -23,9 +24,53 @@ import {
  * MUST NOT IMPORT CORDIS, or any plugin implementation. It is statically imported by the shell,
  * so anything it reaches lands in the entry chunk — which is exactly what the split in
  * @shared/plugin exists to prevent.
+ *
+ * Everything below is filtered by the disabled set. A disabled plugin is not merely stopped: its
+ * contributions cease to exist as far as the shell is concerned, so its tab type stops resolving,
+ * its icon leaves the activity bar and its editor stops claiming files — which is the only
+ * definition of "disabled" that does not leave half of a plugin visible.
  */
 
 type Owned<T> = T & { owner: PluginId }
+
+/**
+ * The shell's own views, declared in exactly the shape a plugin would use.
+ *
+ * `shell` is a reserved owner. The plugin manager is here rather than in a plugin for one reason:
+ * it has to stay reachable when every plugin is disabled, including itself. Nothing else about it
+ * is special — the activity bar, the view host and the namespace check all treat it as they treat
+ * any other view.
+ */
+export const SHELL_OWNER: PluginId = 'shell'
+
+const BUILTIN_VIEWS: Owned<ViewContribution>[] = [
+  { id: 'shell.plugins', title: 'Plugins', slot: 'left', icon: 'plugin', order: 100, owner: SHELL_OWNER }
+]
+
+/**
+ * Plugins the user has switched off, by id.
+ *
+ * Module state rather than the zustand store because the shell's store holds workspace-scoped
+ * descriptors and this is neither — it is global, it is read on paths that are not React, and it
+ * is loaded from disk once at boot.
+ */
+let disabled: ReadonlySet<PluginId> = new Set()
+
+export function disabledPlugins(): ReadonlySet<PluginId> {
+  return disabled
+}
+
+export function isPluginDisabled(id: PluginId): boolean {
+  return disabled.has(id)
+}
+
+/** Replace the disabled set and tell the shell to re-read every contribution table. */
+export function setDisabledPlugins(ids: Iterable<PluginId>): void {
+  disabled = new Set(ids)
+  pluginUiChanged()
+}
+
+const live = <T,>(items: Owned<T>[]): Owned<T>[] => items.filter((c) => !disabled.has(c.owner))
 
 /** Flatten one contribution point across every manifest, stamping each entry with its owner. */
 function collect<T>(pick: (c: PluginContributions) => readonly T[] | undefined): Owned<T>[] {
@@ -48,7 +93,7 @@ const editors: Owned<EditorContribution>[] = collect((c) => c.editors).sort(
   (a, b) => (b.priority ?? 0) - (a.priority ?? 0)
 )
 const tabs: Owned<TabContribution>[] = collect((c) => c.tabs)
-const views: Owned<ViewContribution>[] = collect((c) => c.views).sort(
+const allViews: Owned<ViewContribution>[] = [...collect((c) => c.views), ...BUILTIN_VIEWS].sort(
   (a, b) => (a.order ?? 0) - (b.order ?? 0)
 )
 const statusItems: Owned<StatusBarContribution>[] = collect((c) => c.statusBar).sort(
@@ -66,7 +111,7 @@ export function ownerOf(id: ViewType): PluginId | null {
   return (
     editors.find((c) => c.viewType === id)?.owner ??
     tabs.find((c) => c.viewType === id)?.owner ??
-    views.find((c) => c.id === id)?.owner ??
+    allViews.find((c) => c.id === id)?.owner ??
     statusItems.find((c) => c.id === id)?.owner ??
     overlays.find((c) => c.id === id)?.owner ??
     null
@@ -75,12 +120,12 @@ export function ownerOf(id: ViewType): PluginId | null {
 
 /** Which editor should open this path. Never null: the text editor claims everything. */
 export function resolveViewType(absolutePath: string): ViewType | null {
-  return editors.find((c) => matchesSelector(c.selector, absolutePath))?.viewType ?? null
+  return live(editors).find((c) => matchesSelector(c.selector, absolutePath))?.viewType ?? null
 }
 
 /** Every editor that claims this path, best first. The "Open with" list. */
 export function editorsFor(absolutePath: string): Owned<EditorContribution>[] {
-  return editors.filter((c) => matchesSelector(c.selector, absolutePath))
+  return live(editors).filter((c) => matchesSelector(c.selector, absolutePath))
 }
 
 /**
@@ -103,7 +148,8 @@ export const tabContribution = (viewType: ViewType): Owned<TabContribution> | nu
   tabs.find((c) => c.viewType === viewType) ?? null
 
 /** Tab types offering a "new one of these" button in the tab strip. */
-export const creatableTabs = (): Owned<TabContribution>[] => tabs.filter((c) => c.creatable)
+export const creatableTabs = (): Owned<TabContribution>[] =>
+  live(tabs).filter((c) => c.creatable)
 
 /**
  * Whether a plugin tab is a document, for the bulk-close commands.
@@ -125,12 +171,12 @@ export const viewTypeForLegacyKind = (kind: string): ViewType | null =>
   tabs.find((c) => c.legacyKind === kind)?.viewType ?? null
 
 export const viewsIn = (slot: 'left' | 'right'): Owned<ViewContribution>[] =>
-  views.filter((v) => v.slot === slot)
+  live(allViews).filter((v) => v.slot === slot)
 
 export const statusItemsIn = (align: 'left' | 'right'): Owned<StatusBarContribution>[] =>
-  statusItems.filter((s) => s.align === align)
+  live(statusItems).filter((s) => s.align === align)
 
-export const overlayIds = (): ViewType[] => overlays.map((o) => o.id)
+export const overlayIds = (): ViewType[] => live(overlays).map((o) => o.id)
 
 /** The icon a tab of this view type wants, if it asked for one. */
 export function iconFor(viewType: ViewType | undefined): IconName | null {

@@ -9,7 +9,15 @@ import { ensureShellPath } from './env'
 import { PtyManager } from './pty/manager'
 import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
-import { loadState, saveAllUi, saveKeybindings, saveUi, saveWorkspaces } from './store'
+import {
+  disabledPlugins,
+  loadState,
+  saveAllUi,
+  saveDisabledPlugins,
+  saveKeybindings,
+  saveUi,
+  saveWorkspaces
+} from './store'
 import type { PluginHost } from './plugins/host'
 import type { FileStat } from '@shared/types'
 
@@ -64,11 +72,18 @@ function plugins(): Promise<PluginHost> {
       import('./plugins/host'),
       import('@plugins/registry.main')
     ])
-    const host = new PluginHost(MAIN_HALVES, {
-      window: () => window,
-      webContents: shellWc,
-      send: (payload) => emit(shellWc(), 'plugin:event', payload)
-    })
+    const host = new PluginHost(
+      MAIN_HALVES,
+      {
+        window: () => window,
+        webContents: shellWc,
+        send: (payload) => emit(shellWc(), 'plugin:event', payload)
+      },
+      // Read from disk rather than waited for from the renderer: the first `plugin:invoke` can
+      // arrive before the plugins view has ever been opened, and a disabled plugin must not start
+      // even once.
+      disabledPlugins()
+    )
     pluginHost = host
     return host
   })()
@@ -1192,6 +1207,17 @@ async function captureShot(): Promise<void> {
   try {
     // Give the boot sequence and any tab it restores a moment to paint.
     await new Promise((r) => setTimeout(r, 4000))
+    if (process.env.ONESTOP_SHOT_VIEW) {
+      await wc.executeJavaScript(
+        `(async () => {
+          const item = [...document.querySelectorAll('.activitybar__item')]
+            .find(b => b.title === ${JSON.stringify(process.env.ONESTOP_SHOT_VIEW)})
+          if (item) item.click()
+          await new Promise(r => setTimeout(r, 600))
+        })()`,
+        true
+      )
+    }
     if (process.env.ONESTOP_SHOT_COLLAPSED) {
       await wc.executeJavaScript(
         `window.__onestop.store.getState().setLayout({ leftCollapsed: true, rightCollapsed: true })`,
@@ -1292,6 +1318,48 @@ async function runPluginsSmoke(): Promise<void> {
         if (loaded.includes('pdf')) return fail('pdf-plugin-loaded-for-a-text-file')
         if (loaded.includes('browser')) return fail('browser-plugin-loaded-unprompted')
 
+        // --- the activity bar -------------------------------------------------
+        const rail = () => [...document.querySelectorAll('.activitybar__item')]
+        const railTitles = () => rail().map(b => b.title)
+        trail.push('activity bar: ' + railTitles().join(','))
+        if (!railTitles().includes('Explorer')) return fail('no-explorer-in-the-rail')
+        if (!railTitles().includes('Plugins')) return fail('no-plugins-in-the-rail')
+
+        // The explorer is a plugin now, so the tree on screen proves it activated.
+        if (!document.querySelector('.explorer__body')) return fail('explorer-view-not-rendered')
+
+        rail().find(b => b.title === 'Plugins').click()
+        await sleep(400)
+        if (!document.querySelector('.plugins__body')) return fail('plugins-view-did-not-open')
+        if (document.querySelector('.explorer__body')) return fail('both-left-views-visible')
+        trail.push('plugins view opened, explorer replaced')
+
+        const rows = () => [...document.querySelectorAll('.plugins__row')]
+        trail.push('plugin rows: ' + rows().length)
+        if (rows().length < 5) return fail('not-every-plugin-listed', { n: rows().length })
+
+        // --- switching one off ------------------------------------------------
+        // The PDF plugin, because the effect is checkable in one line: with it gone, a .pdf has
+        // to fall through to the editor of last resort rather than resolve to a viewer that is
+        // not running.
+        if (plugins.resolveViewType('/tmp/a.pdf') !== 'pdf.preview') return fail('pdf-not-claimed')
+        const pdfRow = rows().find(r => (r.textContent || '').includes('PDF Viewer'))
+        if (!pdfRow) return fail('no-pdf-row')
+        pdfRow.querySelector('.plugins__toggle').click()
+        await sleep(600)
+
+        const afterOff = plugins.resolveViewType('/tmp/a.pdf')
+        trail.push('.pdf resolves to ' + afterOff + ' with the plugin off')
+        if (afterOff !== 'text-editor.monaco') return fail('disabled-plugin-still-claims-pdf')
+
+        // And the same switch brings it back.
+        rows().find(r => (r.textContent || '').includes('PDF Viewer'))
+          .querySelector('.plugins__toggle').click()
+        await sleep(600)
+        const afterOn = plugins.resolveViewType('/tmp/a.pdf')
+        trail.push('.pdf resolves to ' + afterOn + ' with the plugin back on')
+        if (afterOn !== 'pdf.preview') return fail('re-enabling-did-not-restore-the-editor')
+
         return JSON.stringify({ ok: true, trail, loaded })
       })()`,
       true
@@ -1310,22 +1378,76 @@ async function runPluginsSmoke(): Promise<void> {
      * renderer→main→plugin round trip itself is covered by `pnpm smoke:pdf`, which reads bytes,
      * and by `pnpm smoke:multirepo`, which drives source control against real repositories.
      */
+    /*
+     * Main's half of the claim, in three steps.
+     *
+     * First: nothing is loaded here yet. The renderer has a source control panel on screen, but
+     * Scratch has no folders, so the panel had nothing to ask — and the main-side host has
+     * therefore never even been constructed. That is the laziness working at the process level,
+     * and it is only visible from here.
+     */
     const hostBefore = pluginHost === null
     const host = await plugins()
+
+    // Then: one real command makes the half appear, on demand, with its commands registered.
     await host.invoke('scm:statusAll', { repoRoots: [] })
     const commands = host.commands()
     const active = host.active()
+
+    /*
+     * Finally: switch source control off from the plugins view and check that "disabled" means
+     * stopped in THIS process too. Its main half is where the filesystem watchers and the
+     * `git cat-file --batch` children live, so a renderer-only notion of disabled would leave all
+     * of that running behind a panel that had vanished.
+     */
+    const off = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const rows = [...document.querySelectorAll('.plugins__row')]
+        const row = rows.find(r => (r.textContent || '').includes('Source Control'))
+        if (!row) return JSON.stringify({ ok: false, stage: 'no-scm-row' })
+        row.querySelector('.plugins__toggle').click()
+        await sleep(800)
+        if (document.querySelector('.scm__body')) {
+          return JSON.stringify({ ok: false, stage: 'disabled-scm-panel-still-on-screen' })
+        }
+        return JSON.stringify({ ok: true })
+      })()`,
+      true
+    )) as string
+
+    const refused = await host
+      .invoke('scm:statusAll', { repoRoots: [] })
+      .then(() => false)
+      .catch(() => true)
+    const disabled = JSON.parse(
+      readFileSync(join(app.getPath('userData'), 'workspaces.json'), 'utf8')
+    ).disabledPlugins as string[] | undefined
+
     const ok =
       info.ok &&
+      (JSON.parse(off) as { ok: boolean }).ok &&
       hostBefore &&
       active.includes('scm') &&
       commands.some((c) => c.startsWith('scm:')) &&
       !active.includes('pdf') &&
-      !active.includes('browser')
+      !active.includes('browser') &&
+      refused &&
+      (disabled ?? []).includes('scm') &&
+      !host.active().includes('scm')
 
     console.log(
       '[smoke:plugins]',
-      JSON.stringify({ ...info, ok, hostUnbuiltUntilAsked: hostBefore, mainActive: active, commands })
+      JSON.stringify({
+        ...info,
+        ok,
+        hostUnbuiltUntilAsked: hostBefore,
+        mainActiveBeforeDisabling: active,
+        disableInRenderer: JSON.parse(off),
+        mainActiveAfterDisabling: host.active(),
+        disabledPluginRefusedInMain: refused,
+        disabledOnDisk: disabled
+      })
     )
     app.exit(ok ? 0 : 1)
   } catch (err) {
@@ -1667,6 +1789,12 @@ function registerHandlers(): void {
     saveAllUi(ui)
   })
   handle('state:saveKeybindings', ({ keybindings }) => { saveKeybindings(keybindings) })
+  handle('state:setDisabledPlugins', async ({ disabled }) => {
+    saveDisabledPlugins(disabled)
+    // Only if the host exists. Building it here to tell it that nothing is running would be an
+    // odd way to honour a request to stop things.
+    await pluginHost?.setDisabled(disabled)
+  })
 
   // --- workspaces --------------------------------------------------------
   handle('workspace:pickFolder', async () => {

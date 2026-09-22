@@ -13,7 +13,7 @@ export const manifest: PluginManifest = {
   displayName: 'Source Control',
   description: 'Git status, staging down to the line, commits, and diffs.',
   contributes: {
-    views: [{ id: 'scm.panel', title: 'Source control', slot: 'right', order: 0 }],
+    views: [{ id: 'scm.panel', title: 'Source control', slot: 'right', icon: 'branch', order: 0 }],
     tabs: [
       {
         viewType: 'scm.diff',

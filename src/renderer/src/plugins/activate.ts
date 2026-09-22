@@ -31,3 +31,15 @@ export async function activatedPlugins(): Promise<PluginId[]> {
   if (!hostP) return []
   return (await hostP).activated()
 }
+
+/**
+ * Stop a plugin's renderer half, if the runtime is even loaded.
+ *
+ * The `!hostP` short-circuit is the common case when switching something off: a plugin nobody has
+ * used has nothing running, and loading the entire plugin runtime in order to stop it would be an
+ * odd way to spend 28 kB.
+ */
+export async function deactivatePlugin(id: PluginId): Promise<void> {
+  if (!hostP) return
+  await (await hostP).deactivate(id)
+}

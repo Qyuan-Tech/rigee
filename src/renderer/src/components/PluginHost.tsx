@@ -2,21 +2,22 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { CollapseRightIcon } from '../icons'
 import { ensurePlugin } from '../plugins/activate'
 import {
-  bindingsVersion,
   boundOverlays,
   editorComponent,
   statusItemComponent,
-  subscribeBindings,
   tabComponent,
   viewComponent
 } from '../plugins/bindings'
+import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import {
   fallbackViewType,
   ownerOf,
   resolveViewType,
+  SHELL_OWNER,
   statusItemsIn,
   viewsIn
 } from '../plugins/registry'
+import { selectedLeftView } from './ActivityBar'
 import { useApp } from '../store'
 import { Notice } from './Notice'
 import type { CustomTab, EditorTab } from '@shared/types'
@@ -30,9 +31,9 @@ import type { CustomTab, EditorTab } from '@shared/types'
  * `ensurePlugin`, and the components come out of the plain Maps in `bindings.ts`.
  */
 
-/** Re-render when a plugin binds or unbinds something. Coarse, and rare: activation only. */
+/** Re-render when a plugin binds, unbinds, or is enabled or disabled. Rare by construction. */
 function useBindings(): number {
-  return useSyncExternalStore(subscribeBindings, bindingsVersion)
+  return useSyncExternalStore(subscribePluginUi, pluginUiVersion)
 }
 
 /**
@@ -49,7 +50,8 @@ function useActivation(id: string | null): string | null {
     setError(null)
     if (!id) return
     const owner = ownerOf(id)
-    if (!owner) return
+    // The shell's own views are already here; there is nothing to load and no plugin to name.
+    if (!owner || owner === SHELL_OWNER) return
     let cancelled = false
     ensurePlugin(owner).catch((e: unknown) => {
       if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -144,10 +146,15 @@ export function PluginTabPane({ tab }: { tab: CustomTab }): React.ReactElement {
 }
 
 /**
- * Every panel contributed to one side bar.
+ * The panels in one side bar.
  *
- * Mounting the slot activates the plugins that claimed it — the source control panel is visible
- * by default, so its plugin loads shortly after first paint and not before it.
+ * The two slots are arranged differently on purpose. The left is an activity bar: many views, one
+ * showing, chosen by the rail and remembered in the layout. The right stacks everything
+ * contributed to it, which today is source control alone and is why the changes stay visible
+ * beside the file tree instead of taking its place.
+ *
+ * Mounting a view activates the plugin that claimed it, so the panel on screen at boot — and only
+ * that one — loads shortly after first paint.
  */
 export function PluginViewSlot({
   slot,
@@ -157,9 +164,18 @@ export function PluginViewSlot({
   onCollapse: () => void
 }): React.ReactElement | null {
   const contributions = viewsIn(slot)
+  const remembered = useApp((s) => s.layout.leftView)
   useBindings()
 
   if (contributions.length === 0) return null
+
+  if (slot === 'left') {
+    const selected = selectedLeftView(contributions.map((c) => c.id), remembered)
+    const view = contributions.find((c) => c.id === selected)
+    if (!view) return null
+    return <PluginView id={view.id} title={view.title} onCollapse={onCollapse} />
+  }
+
   return (
     <>
       {contributions.map((c) => (

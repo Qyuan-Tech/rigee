@@ -84,7 +84,9 @@ an app launched from Finder inherits almost none of it.
 | HTTP auth prompt in browser tabs | works |
 | Restoring tabs, splits and browser pages on next launch | works |
 | PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
-| Plugins — the editor, PDF, source control and the browser are all plugins | works |
+| Plugins — the editor, explorer, PDF, source control and the browser are all plugins | works |
+| Activity bar — icons down the left edge switch the side panel, VS Code style | works |
+| Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
 | Terminals surviving a restart | **no** — the layout returns, the running processes do not |
 
 ## Plugins
@@ -97,6 +99,12 @@ the text editor, the PDF reader, source control and the browser are each a folde
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
 open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.
 `pnpm perf:check` fails the build if that stops being true.
+
+The activity bar down the left edge is built from manifests alone, so the icons are there before
+any plugin has loaded and pressing one is what fetches it. The plugins view behind the puzzle icon
+lists what is installed, what each plugin contributes and whether it is running, and can switch one
+off — which really does stop it: the panel disappears, its file types stop resolving, its git
+watchers die, and the choice survives a restart.
 
 The framework is [cordis](https://github.com/cordiverse/cordis): a plugin gets a Context, and
 everything it registers through that Context — commands, components, listeners, watchers, native

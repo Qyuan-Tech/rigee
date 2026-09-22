@@ -46,6 +46,14 @@ export interface IpcRequests {
   /** Persist every workspace's UI in one write, so switching away cannot lose the previous one. */
   'state:saveAllUi': (args: { ui: Record<WorkspaceId, WorkspaceUiState> }) => void
   'state:saveKeybindings': (args: { keybindings: KeyBindings }) => void
+  /**
+   * Switch plugins on and off.
+   *
+   * Not a plugin command — it is about plugins, so routing it through the plugin command registry
+   * would mean asking a plugin to authorise its own disabling. Main persists the set and stops the
+   * main halves; the renderer stops its own and re-reads the contribution tables.
+   */
+  'state:setDisabledPlugins': (args: { disabled: string[] }) => void
 
   // --- workspaces ------------------------------------------------------
   /** Opens a native directory picker; returns null if the user cancelled. */
@@ -134,6 +142,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'state:saveUi',
   'state:saveAllUi',
   'state:saveKeybindings',
+  'state:setDisabledPlugins',
   'workspace:pickFolder',
   'workspace:probeFolder',
   'workspace:pickWorkspaceFile',

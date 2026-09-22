@@ -55,10 +55,22 @@ export class PluginHost {
   private readonly focusClaims = new Set<FocusClaim>()
   private disposed = false
 
+  /**
+   * Plugins the user has switched off.
+   *
+   * Enforced here as well as in the renderer, and not out of distrust: a disabled plugin's main
+   * half is where the filesystem watchers and the native views live, so "disabled" has to mean
+   * stopped in this process, and a command arriving from a pane that has not re-rendered yet must
+   * not quietly start it again.
+   */
+  private disabled: ReadonlySet<PluginId>
+
   constructor(
     private readonly loaders: Readonly<Record<PluginId, MainPluginLoader>>,
-    deps: PluginHostDeps
+    deps: PluginHostDeps,
+    disabled: Iterable<PluginId> = []
   ) {
+    this.disabled = new Set(disabled)
     this.root.accessor('pluginId', { get: () => undefined })
     this.root.logger.exporter({
       export: (message) => {
@@ -111,6 +123,9 @@ export class PluginHost {
    * that must be running before the renderer asks it anything.
    */
   activate(id: PluginId): Promise<void> {
+    if (this.disabled.has(id)) {
+      return Promise.reject(new Error(`plugin "${id}" is disabled`))
+    }
     const existing = this.activations.get(id)
     if (existing) return existing
 
@@ -149,6 +164,17 @@ export class PluginHost {
 
     this.activations.set(id, pending)
     return pending
+  }
+
+  /**
+   * Apply a new disabled set: stop anything that just went off.
+   *
+   * Enabling is lazy, as it is everywhere else — the plugin comes back the next time something
+   * calls one of its commands, which is the same path a fresh launch takes.
+   */
+  async setDisabled(ids: Iterable<PluginId>): Promise<void> {
+    this.disabled = new Set(ids)
+    await Promise.all([...this.disabled].map((id) => this.deactivate(id)))
   }
 
   /** Which plugins have a live main half. For diagnostics and the plugin smoke test. */

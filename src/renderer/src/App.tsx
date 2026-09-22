@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
 import { TabStrip } from './components/TabStrip'
 import { CenterPane } from './components/CenterPane'
@@ -8,6 +9,7 @@ import { Splitter } from './components/Splitter'
 import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
+import { setDisabledPlugins } from './plugins/registry'
 import { newTerminalTab, sanitizeTabs, useActiveWorkspace, useApp } from './store'
 import {
   SCRATCH_WORKSPACE_ID,
@@ -31,6 +33,11 @@ export function App(): React.ReactElement {
       ])
       if (cancelled) return
       const store = useApp.getState()
+
+      // First, before a single contribution table is read: a disabled plugin must not have its
+      // icon in the activity bar for even one frame, and must not claim a file type it is about
+      // to stop being able to open.
+      setDisabledPlugins(state.disabledPlugins ?? [])
 
       // Scratch is synthesised, never loaded: it must exist even on a first run, and its
       // definition should follow the app rather than whatever was persisted long ago.
@@ -86,7 +93,14 @@ export function App(): React.ReactElement {
       <TitleBar onSettings={() => setSettingsOpen(true)} />
 
       <div className="body">
-        {leftW > 0 ? (
+        {/*
+          The rail is always there, collapsed or not — it is how you get the panel back, and a
+          collapsed side bar with no way to reopen it but a keyboard shortcut is how VS Code's
+          activity bar earns its width.
+        */}
+        <ActivityBar />
+
+        {leftW > 0 && (
           <>
             <div className="pane" style={{ width: leftW }}>
               <Sidebar onCollapse={() => setLayout({ leftCollapsed: true })} />
@@ -94,8 +108,6 @@ export function App(): React.ReactElement {
             </div>
             <Splitter orientation="vertical" onDrag={onLeftDrag} value={layout.leftWidth} />
           </>
-        ) : (
-          <Rail side="left" label="Explorer" onExpand={() => setLayout({ leftCollapsed: false })} />
         )}
 
         <div className="center">

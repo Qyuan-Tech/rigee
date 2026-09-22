@@ -19,5 +19,6 @@ export const RENDERER_HALVES: Readonly<Record<PluginId, () => Promise<{ default:
   pdf: () => import('./pdf/renderer'),
   scm: () => import('./scm/renderer'),
   browser: () => import('./browser/renderer'),
+  explorer: () => import('./explorer/renderer'),
   'text-editor': () => import('./text-editor/renderer')
 }

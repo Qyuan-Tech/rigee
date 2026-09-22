@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react'
+import { pluginUiChanged } from './signal'
 import type { ViewType } from '@shared/plugin'
 
 /**
@@ -68,29 +69,8 @@ const statusItems = new Map<ViewType, PluginStatusItemComponent>()
 const overlays = new Map<ViewType, PluginOverlayComponent>()
 const tabFactories = new Map<ViewType, PluginTabFactory>()
 
-let version = 0
-const listeners = new Set<() => void>()
-
-function changed(): void {
-  version++
-  for (const listener of listeners) listener()
-}
-
-/**
- * Subscribe to "something was bound or unbound".
- *
- * Coarse on purpose. Binding happens once per plugin, at activation, so the handful of host
- * components that subscribe re-render a handful of times in a session. A finer-grained signal
- * would cost more to maintain than it could ever save.
- */
-export function subscribeBindings(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => { listeners.delete(listener) }
-}
-
-export function bindingsVersion(): number {
-  return version
-}
+/** Binding and unbinding are half of what makes the plugin UI move; see signal.ts for the rest. */
+const changed = pluginUiChanged
 
 export const editorComponent = (viewType: ViewType): PluginEditorComponent | undefined =>
   editors.get(viewType)

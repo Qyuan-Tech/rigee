@@ -1,4 +1,4 @@
-import { Context, type FiberState } from 'cordis'
+import { Context, type Fiber, type FiberState } from 'cordis'
 import { RENDERER_HALVES } from '@plugins/registry.renderer'
 import type { PluginId } from '@shared/plugin'
 import { ContributionService } from './contributions'
@@ -22,6 +22,8 @@ const ACTIVE = 2 satisfies FiberState
 
 let rootP: Promise<Context> | null = null
 const activations = new Map<PluginId, Promise<void>>()
+/** One fiber per running plugin, so a single plugin can be stopped without touching the others. */
+const fibers = new Map<PluginId, Fiber>()
 
 function root(): Promise<Context> {
   rootP ??= (async () => {
@@ -69,6 +71,7 @@ export function activate(id: PluginId): Promise<void> {
           'a missing `inject` leaves it pending forever'
       )
     }
+    fibers.set(id, fiber)
   })().catch((err: unknown) => {
     // Retry on the next mount rather than caching the failure for the life of the window.
     activations.delete(id)
@@ -82,4 +85,25 @@ export function activate(id: PluginId): Promise<void> {
 /** Which plugins have a live renderer half. For diagnostics and the plugin smoke test. */
 export function activated(): PluginId[] {
   return [...activations.keys()].sort()
+}
+
+/**
+ * Stop one plugin's renderer half.
+ *
+ * Disposing the fiber is the whole of it: every component it bound, every event it subscribed to
+ * and every effect it took were registered through the context, so they are revoked together and
+ * the shell re-renders without them — a panel disappears, a tab falls back to "no plugin provides
+ * this". That property is why the plugin runtime is cordis and not a Map, and switching a plugin
+ * off in the plugins view is the first thing that actually exercises it.
+ *
+ * Idempotent: stopping a plugin that never started is not an error, because the plugins view lets
+ * you switch off something that was never needed in this session.
+ */
+export async function deactivate(id: PluginId): Promise<void> {
+  const fiber = fibers.get(id)
+  fibers.delete(id)
+  // Dropped BEFORE the await, so a re-enable racing this teardown starts a fresh activation
+  // rather than resolving against the one being torn down.
+  activations.delete(id)
+  await fiber?.dispose()
 }

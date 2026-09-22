@@ -199,6 +199,28 @@ export const CollapseRightIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+
+/**
+ * Two stacked sheets: the explorer, as an activity-bar icon.
+ *
+ * Distinct from FileIcon, which marks one file in a row — at 18px in the rail a single sheet reads
+ * as "a file" rather than "the files", and the two sit six pixels apart on screen.
+ */
+export const FilesIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M5.5 2.5h4l3 3v7a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
+    <path d="M9.5 2.5v3h3" />
+    <path d="M3.5 4.5v8a1.5 1.5 0 0 0 1.5 1.5h5" opacity="0.5" />
+  </Svg>
+)
+
+/** A puzzle piece: plugins. The one icon everyone already reads as "extensions". */
+export const PluginIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M6.2 2.5a1.3 1.3 0 0 1 2.6 0v.9h2.4a.9.9 0 0 1 .9.9v2.4h.9a1.3 1.3 0 0 1 0 2.6h-.9v2.4a.9.9 0 0 1-.9.9H9.1v-.9a1.3 1.3 0 0 0-2.6 0v.9H4.1a.9.9 0 0 1-.9-.9V9.9h.9a1.3 1.3 0 0 0 0-2.6h-.9V4.3a.9.9 0 0 1 .9-.9h2.1Z" />
+  </Svg>
+)
+
 /**
  * The icons a plugin manifest may ask for, by name.
  *
@@ -209,9 +231,11 @@ export const CollapseRightIcon = (p: Props): React.ReactElement => (
  */
 export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
   file: FileIcon,
+  files: FilesIcon,
   diff: DiffIcon,
   globe: GlobeIcon,
   terminal: TerminalIcon,
   branch: BranchIcon,
-  folder: FolderIcon
+  folder: FolderIcon,
+  plugin: PluginIcon
 }

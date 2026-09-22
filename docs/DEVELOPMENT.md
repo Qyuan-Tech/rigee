@@ -57,10 +57,11 @@ src/
     plugins/   the main-side plugin host: cordis root, command registry, shell service
     store.ts   atomic JSON persistence
   preload/     the contextBridge surface (compiled to CJS — see below)
-  renderer/    React shell — window, workspaces, explorer, tabs, terminals
+  renderer/    React shell — window, workspaces, the activity bar, tabs, terminals
     src/plugins/  the renderer-side host, the manifest registry and the component bindings
   plugins/     the features, one folder each
     text-editor/  Monaco, and the editor of last resort for every file
+    explorer/     the file tree
     pdf/          the PDF reader
     scm/          git: status, staging by line, commits, diffs
     browser/      Chromium tabs as native WebContentsViews
@@ -99,8 +100,29 @@ dynamic-import thunks, one file per realm.
 **Contribution points.** `editors` (a viewer for files matching a selector), `tabs` (a tab type the
 plugin owns outright, with its own persisted state), `views` (a side-bar panel), `statusBar`, and
 `overlays` (a dialog mounted at the shell root while the plugin is active). All declarative: the
-shell can draw the tab strip, resolve which viewer opens a `.pdf` and decide what goes in the right
-rail without loading a line of plugin code.
+shell can draw the tab strip, draw the activity bar, resolve which viewer opens a `.pdf` and decide
+what goes in the right rail without loading a line of plugin code.
+
+The two view slots are arranged differently and the difference is deliberate. **`slot: 'left'` is
+an activity bar** — one icon per view down the rail, one view showing, the selection remembered in
+the layout — so the explorer and the plugins view take turns in the same panel. **`slot: 'right'`
+stacks**, which is where source control lives, so the changes stay visible beside the file tree.
+Moving source control into the rail is a one-word change to its manifest; it is on the right
+because seeing both at once is the one thing this layout does better than VS Code's.
+
+**Enabling and disabling.** The plugins view switches a plugin off for real: the renderer disposes
+its fiber, which un-binds every component it contributed; main disposes its own, which stops its
+watchers and destroys its native views; and the registry stops reporting its contributions, so its
+icon leaves the rail and its file types stop resolving. The set is persisted in
+`PersistedState.disabledPlugins` and read by main BEFORE the first `plugin:invoke`, so a disabled
+plugin does not start even once. `pnpm smoke:plugins` drives the whole round trip, including that
+`.pdf` falls back to the text editor while the PDF plugin is off.
+
+**The one shell-owned view.** `shell.plugins` is declared by the shell rather than a plugin,
+because it has to stay reachable when every plugin is off — including itself, if it were one. It
+is bound through the ordinary binding table in `main.tsx`, so the activity bar, the view host and
+the namespace rules treat it exactly as they treat a contributed view. `SHELL_OWNER` is the
+reserved owner id, and `useActivation` skips it: there is nothing to load.
 
 **Activation is lazy and demand-driven.** A renderer half loads when something it contributed is
 first needed — a tab of its view type renders, its panel mounts, its "new tab" button is pressed. A

@@ -1,7 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { PluginsView } from './components/PluginsView'
 import { activatedPlugins } from './plugins/activate'
+import { bind } from './plugins/bindings'
 import { resolveViewType } from './plugins/registry'
 import { useApp, newTerminalTab } from './store'
 import { getTerminal, paneKey } from './terminals'
@@ -36,7 +38,17 @@ window.__onestop = {
   plugins: { activated: activatedPlugins, resolveViewType }
 }
 
-// Before render: Monaco and xterm read these at construction time.
+/*
+ * The shell's own view, bound the same way a plugin binds one.
+ *
+ * Only the plugins manager is here, and only because it has to survive every plugin being turned
+ * off — including itself, if it were one. Binding it through the ordinary table rather than
+ * special-casing it in the view host means the activity bar, the panel and the namespace rules
+ * treat it exactly as they treat anything a plugin contributes.
+ */
+bind('view', 'shell.plugins', PluginsView)
+
+// Before render: xterm reads these at construction time.
 applyFonts()
 
 const root = document.getElementById('root')

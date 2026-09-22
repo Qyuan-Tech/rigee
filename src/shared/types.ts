@@ -238,6 +238,14 @@ export interface PanelLayout {
   rightWidth: number
   leftCollapsed: boolean
   rightCollapsed: boolean
+  /**
+   * Which view the activity bar is showing in the left panel, by view id.
+   *
+   * Null means "the first one", which is what a workspace opened before the activity bar existed
+   * gets. A view id whose plugin has since been disabled or removed falls back the same way — the
+   * shell never renders an activity bar with nothing selected.
+   */
+  leftView?: string | null
 }
 
 /** Per-workspace UI state restored on reopen. */
@@ -260,11 +268,20 @@ export interface PersistedState {
   activeWorkspaceId: WorkspaceId | null
   ui: Record<WorkspaceId, WorkspaceUiState>
   keybindings: KeyBindings
+  /**
+   * Plugins the user has switched off, by id. Global rather than per workspace: a plugin is code,
+   * and wanting it in one project but not another is not a thing anybody has asked for.
+   *
+   * Optional so a document written before the plugins view existed loads unchanged — absent means
+   * everything is enabled, which is the only sensible reading of silence.
+   */
+  disabledPlugins?: string[]
 }
 
 export const PERSISTED_STATE_VERSION = 2 as const
 
 export const DEFAULT_PANEL_LAYOUT: PanelLayout = {
+  leftView: null,
   leftWidth: 260,
   rightWidth: 320,
   leftCollapsed: false,
