@@ -1,0 +1,30 @@
+/* ===================================================================== */
+/* Browser chrome                                                         */
+/*                                                                        */
+/* Lifted out of the shell's theme.css unchanged, class names included:   */
+/* they are the plugin's own and nothing else styles them. Loaded with    */
+/* the plugin's chunk, so a window that never opens a browser tab never   */
+/* fetches it.                                                            */
+/*                                                                        */
+/* The .modal__* rules the auth dialog uses stay in theme.css — the       */
+/* settings dialog shares them, and two copies of a scrim is how they     */
+/* start disagreeing.                                                     */
+/* ===================================================================== */
+
+.browser__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.browser__address {
+  flex: 1;
+  height: 26px;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 12px;
+}

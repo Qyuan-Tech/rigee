@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { TabStrip } from './components/TabStrip'
 import { CenterPane } from './components/CenterPane'
-import { ScmPanel } from './components/ScmPanel'
+import { PluginOverlays, PluginViewSlot, slotLabel } from './components/PluginHost'
 import { StatusBar } from './components/StatusBar'
 import { Splitter } from './components/Splitter'
-import { AuthDialog } from './components/AuthDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
@@ -91,6 +90,7 @@ export function App(): React.ReactElement {
           <>
             <div className="pane" style={{ width: leftW }}>
               <Sidebar onCollapse={() => setLayout({ leftCollapsed: true })} />
+              <PluginViewSlot slot="left" onCollapse={() => setLayout({ leftCollapsed: true })} />
             </div>
             <Splitter orientation="vertical" onDrag={onLeftDrag} value={layout.leftWidth} />
           </>
@@ -103,20 +103,29 @@ export function App(): React.ReactElement {
           <CenterPane />
         </div>
 
+        {/*
+          The right rail holds whatever plugins put there — source control today, and nothing the
+          shell has to know about. An empty slot still renders the pane, so dragging the splitter
+          and the collapse state behave the same whether or not a plugin ever fills it.
+        */}
         {rightW > 0 ? (
           <>
             <Splitter orientation="vertical" onDrag={onRightDrag} value={layout.rightWidth} />
             <div className="pane" style={{ width: rightW }}>
-              <ScmPanel onCollapse={() => setLayout({ rightCollapsed: true })} />
+              <PluginViewSlot slot="right" onCollapse={() => setLayout({ rightCollapsed: true })} />
             </div>
           </>
         ) : (
-          <Rail side="right" label="Source control" onExpand={() => setLayout({ rightCollapsed: false })} />
+          <Rail
+            side="right"
+            label={slotLabel('right', 'Panel')}
+            onExpand={() => setLayout({ rightCollapsed: false })}
+          />
         )}
       </div>
 
       <StatusBar />
-      <AuthDialog />
+      <PluginOverlays />
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </div>
   )

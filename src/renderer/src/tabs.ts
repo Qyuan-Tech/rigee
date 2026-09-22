@@ -8,17 +8,29 @@
  * reproduce by hand once tabs, splits and a browser are in play.
  */
 
-import type { DiffTab, EditorTab, Tab, TabId } from '@shared/types'
+import type { Tab, TabId } from '@shared/types'
 
 /**
- * A tab showing a file: an editor, or a diff of one.
+ * Whether a plugin-owned view type counts as a document.
+ *
+ * Injected rather than imported so this module stays pure: the answer comes from the plugin
+ * manifests, and reaching for them here would drag the registry — and with it the whole plugin
+ * barrel — into a file whose entire value is being testable on its own (`pnpm panes:selftest`
+ * bundles it with esbuild and no aliases).
+ */
+export type DocumentPredicate = (viewType: string) => boolean
+
+/**
+ * A tab showing a document: an editor, or a plugin tab that says it is one (a diff).
  *
  * The bulk-close commands are scoped to these. Terminals and browser tabs share the strip but are
  * not documents — closing a terminal kills a shell that may be running something, and "close
  * everything to the right" is not a bargain anyone wants to make with a running process.
  */
-export function isFileTab(tab: Tab): tab is EditorTab | DiffTab {
-  return tab.kind === 'editor' || tab.kind === 'diff'
+export function isFileTab(tab: Tab, isDocument: DocumentPredicate): boolean {
+  if (tab.kind === 'editor') return true
+  if (tab.kind === 'custom') return isDocument(tab.viewType)
+  return false
 }
 
 export type CloseCommand =
@@ -32,7 +44,8 @@ export type CloseCommand =
 export function tabsToClose(
   tabs: readonly Tab[],
   tabId: TabId,
-  command: CloseCommand
+  command: CloseCommand,
+  isDocument: DocumentPredicate
 ): TabId[] {
   const index = tabs.findIndex((t) => t.id === tabId)
   if (index < 0) return []
@@ -41,7 +54,7 @@ export function tabsToClose(
   // close-all, which is what VSCode does and what `TabBase.pinned` already promises. Nothing in
   // the UI sets the flag yet; honouring it here means whoever adds the toggle gets the behaviour
   // rather than having to remember this file.
-  const sweepable = (t: Tab): boolean => isFileTab(t) && !t.pinned
+  const sweepable = (t: Tab): boolean => isFileTab(t, isDocument) && !t.pinned
 
   switch (command) {
     case 'others':
@@ -51,7 +64,7 @@ export function tabsToClose(
       // two editors is skipped, not treated as the boundary.
       return tabs.slice(index + 1).filter(sweepable).map((t) => t.id)
     case 'all':
-      return tabs.filter(isFileTab).map((t) => t.id)
+      return tabs.filter((t) => isFileTab(t, isDocument)).map((t) => t.id)
   }
 }
 

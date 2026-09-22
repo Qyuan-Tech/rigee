@@ -1,0 +1,85 @@
+import { Context, type FiberState } from 'cordis'
+import { RENDERER_HALVES } from '@plugins/registry.renderer'
+import type { PluginId } from '@shared/plugin'
+import { ContributionService } from './contributions'
+import { PluginRpcService } from './rpc'
+
+/**
+ * The renderer-side plugin host.
+ *
+ * Mirrors the main-process host: one cordis root, one child Context per plugin carrying its
+ * `pluginId`, one fiber per activation so disposing a plugin revokes every component it bound and
+ * every event it subscribed to.
+ *
+ * NOTHING IN THE SHELL MAY IMPORT THIS MODULE STATICALLY. It pulls in cordis (28 kB minified) and
+ * every service; the shell reaches it through `activate.ts`, which is a memoised dynamic import in
+ * the same shape as `lazy.ts`'s Monaco loader. That is what keeps the entry chunk at its current
+ * size whether the app ships four plugins or forty.
+ */
+
+/** cordis's FiberState is an ambient const enum, which verbatimModuleSyntax forbids importing. */
+const ACTIVE = 2 satisfies FiberState
+
+let rootP: Promise<Context> | null = null
+const activations = new Map<PluginId, Promise<void>>()
+
+function root(): Promise<Context> {
+  rootP ??= (async () => {
+    const ctx = new Context()
+    // Without this, reading an absent `ctx.pluginId` throws instead of yielding undefined:
+    // Context is a Proxy that rejects unknown property reads. Every `no pluginId` guard in the
+    // services depends on it.
+    ctx.accessor('pluginId', { get: () => undefined })
+    // cordis's default exporter fills an in-memory ring buffer and prints nothing, so a plugin
+    // whose apply() throws would fail completely silently — no console, no DevTools, no clue.
+    ctx.logger.exporter({
+      export: (message) => {
+        if (message.type !== 'error') return
+        console.error(`[plugin:${message.name}]`, ...message.args)
+      }
+    })
+    await Promise.all([ctx.plugin(ContributionService), ctx.plugin(PluginRpcService)])
+    return ctx
+  })()
+  return rootP
+}
+
+/**
+ * Load and start one plugin's renderer half. Idempotent, and safe to call concurrently.
+ *
+ * The in-flight Map is not optional: React StrictMode double-invokes every effect in development,
+ * so two mounts race to activate the same plugin and would otherwise load it twice — which cordis
+ * permits (it has no `reusable` concept and never dedupes) and which would throw on the second
+ * plugin's attempt to bind an already-bound view type.
+ */
+export function activate(id: PluginId): Promise<void> {
+  const existing = activations.get(id)
+  if (existing) return existing
+
+  const load = RENDERER_HALVES[id]
+  if (!load) return Promise.reject(new Error(`no renderer half for plugin "${id}"`))
+
+  const pending = (async () => {
+    const ctx = await root()
+    const mod = await load()
+    const fiber = await ctx.extend({ pluginId: id }).plugin(mod.default)
+    if (fiber.state !== ACTIVE) {
+      throw new Error(
+        `plugin "${id}" loaded but did not activate (fiber state ${fiber.state}); ` +
+          'a missing `inject` leaves it pending forever'
+      )
+    }
+  })().catch((err: unknown) => {
+    // Retry on the next mount rather than caching the failure for the life of the window.
+    activations.delete(id)
+    throw err
+  })
+
+  activations.set(id, pending)
+  return pending
+}
+
+/** Which plugins have a live renderer half. For diagnostics and the plugin smoke test. */
+export function activated(): PluginId[] {
+  return [...activations.keys()].sort()
+}

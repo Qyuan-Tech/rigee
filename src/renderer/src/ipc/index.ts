@@ -18,7 +18,7 @@ type Client = {
  * can only clone plain data and functions.
  *
  *   const info = await rpc['app:getPlatformInfo']()
- *   const off  = onEvent('scm:status', ({ status }) => ...)
+ *   const off  = onEvent('terminal:exit', ({ paneId }) => ...)
  */
 export const rpc = new Proxy({} as Client, {
   get:

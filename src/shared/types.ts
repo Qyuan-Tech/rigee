@@ -95,7 +95,15 @@ export interface Workspace {
 // Tabs (the centre pane)
 // ---------------------------------------------------------------------------
 
-export type TabKind = 'terminal' | 'editor' | 'diff' | 'browser'
+/**
+ * Three kinds, and only the first two are the shell's business.
+ *
+ * `custom` is the escape hatch a plugin owns end to end — a diff, a browser tab. The shell routes
+ * it by `viewType` and never looks inside `state`. Before the plugin system there were separate
+ * `diff` and `browser` kinds here; they are gone, and tabs persisted under those names are
+ * rewritten on load from the owning plugin's `legacyKind` declaration (see `sanitizeTabs`).
+ */
+export type TabKind = 'terminal' | 'editor' | 'custom'
 
 interface TabBase {
   id: TabId
@@ -134,46 +142,52 @@ export type PaneNode =
 /** Identifier minted by the pty manager in main. */
 export type PtyPaneId = string
 
+/**
+ * A file, shown by whichever editor claimed it.
+ *
+ * `viewType` is resolved once, from the manifests alone, when the tab is created — a plain array
+ * scan, no plugin loaded. Absent means the text editor, which is itself a plugin but the one that
+ * claims everything. A `viewType` whose plugin has since disappeared is not repaired on load: the
+ * pane says so and offers to open the file as text, which is a better answer than silently
+ * handing a PDF to Monaco.
+ */
 export interface EditorTab extends TabBase {
   kind: 'editor'
   filePath: string
   repoId: RepoId | null
   readOnly: boolean
+  /** `<pluginId>.<name>`, e.g. `pdf.preview`. See ViewType in @shared/plugin. */
+  viewType?: string
 }
 
-/** Side-by-side diff, opened from the source control panel. */
-export interface DiffTab extends TabBase {
-  kind: 'diff'
-  filePath: string
-  repoId: RepoId
-  /** Which pair of revisions to diff. */
-  against: DiffTarget
-}
-
-/** What a diff compares. Mirrors the three things the SCM panel can show. */
-export type DiffTarget =
-  /** worktree vs index — i.e. the unstaged changes */
-  | { kind: 'worktree-vs-index' }
-  /** index vs HEAD — i.e. the staged changes */
-  | { kind: 'index-vs-head' }
-  /** worktree vs HEAD — everything, staged or not */
-  | { kind: 'worktree-vs-head' }
-
-export interface BrowserTab extends TabBase {
-  kind: 'browser'
-  url: string
+/**
+ * A tab a plugin owns: the shell stores it, restores it and closes it, and renders whatever the
+ * plugin bound to `viewType`.
+ *
+ * `state` is opaque here and must survive JSON. The plugin validates it on restore — the shell
+ * cannot, because the shell does not know what a browser tab or a diff is.
+ */
+export interface CustomTab extends TabBase {
+  kind: 'custom'
+  viewType: string
+  state: Record<string, unknown>
   /**
-   * Handle for the native WebContentsView living in main. The renderer never touches the view
-   * itself; it only positions a placeholder div and tells main where to put the real thing.
+   * What the tab strip shows on hover. The plugin sets it, because only the plugin knows what
+   * would be useful there — a diff's file path, a page's URL — and the shell cannot read either
+   * out of an opaque state bag.
    */
-  viewId: string
-  canGoBack: boolean
-  canGoForward: boolean
-  loading: boolean
-  faviconDataUrl: string | null
+  tooltip?: string
+  /**
+   * Identity for de-duplication, when the plugin has one.
+   *
+   * Clicking the same file in the source control panel twice should re-activate the diff rather
+   * than open a second one; opening two browser tabs on the same URL is legitimate. So the plugin
+   * decides, by setting this or leaving it undefined.
+   */
+  key?: string
 }
 
-export type Tab = TerminalTab | EditorTab | DiffTab | BrowserTab
+export type Tab = TerminalTab | EditorTab | CustomTab
 
 // ---------------------------------------------------------------------------
 // Terminals
@@ -182,80 +196,10 @@ export type Tab = TerminalTab | EditorTab | DiffTab | BrowserTab
 /** Why a terminal cannot start, when it cannot. */
 export type TerminalError = { kind: 'spawn-failed'; message: string }
 
-// ---------------------------------------------------------------------------
-// Source control
-// ---------------------------------------------------------------------------
-
-/**
- * Single-letter status, matching what the UI badges show and what git porcelain v2 reports.
- *   M modified   A added   D deleted   R renamed   C copied
- *   U unmerged   ? untracked   ! ignored   T typechange
- */
-export type GitStatusLetter = 'M' | 'A' | 'D' | 'R' | 'C' | 'U' | '?' | '!' | 'T'
-
-export interface GitFileChange {
-  /** Repo-relative, forward slashes on every platform. */
-  path: string
-  /** Present only for renames/copies: where the file came from. */
-  origPath: string | null
-  /** Status in the index (staged side). '.' means unchanged there. */
-  index: GitStatusLetter | '.'
-  /** Status in the working tree (unstaged side). '.' means unchanged there. */
-  worktree: GitStatusLetter | '.'
-  /** Rename/copy similarity score, 0-100, when index or worktree is R/C. */
-  score: number | null
-  /** True for submodule entries; they need different diff handling. */
-  isSubmodule: boolean
-}
-
-/** What a partial-selection apply is trying to do; each maps to a different diff and apply. */
-export type SelectionAction = 'stage' | 'unstage' | 'discard'
-
-/** One line of a unified diff, as the hunk view renders and addresses it. */
-export interface DiffLineView {
-  kind: ' ' | '+' | '-'
-  text: string
-  noEol: boolean
-  /** Stable within one diff; what a selection is expressed in. */
-  id: number
-  /** Line numbers for the gutter; null on the side where the line does not exist. */
-  oldNo: number | null
-  newNo: number | null
-}
-
-export interface DiffHunkView {
-  section: string
-  oldStart: number
-  newStart: number
-  lines: DiffLineView[]
-}
-
-/** An in-progress multi-step git operation, which changes what the commit button should do. */
-export type GitOperation = 'none' | 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect'
-
-export interface RepoStatus {
-  repoId: RepoId
-  /** Absolute path to the work tree root. */
-  root: string
-  name: string
-  branch: string | null
-  /** null when there is no upstream configured. */
-  upstream: string | null
-  ahead: number
-  behind: number
-  detachedAt: string | null
-  operation: GitOperation
-  /** Changes with something in the index. */
-  staged: GitFileChange[]
-  /** Tracked changes present only in the working tree. */
-  unstaged: GitFileChange[]
-  untracked: GitFileChange[]
-  /** Unmerged paths. Non-empty means the commit box must show a conflict warning. */
-  conflicts: GitFileChange[]
-  stashCount: number
-  /** When this snapshot was taken, for staleness display. */
-  at: number
-}
+// Source control types used to live here. They are the source control PLUGIN's contract now, and
+// live beside it in src/plugins/scm/protocol.ts — nothing in the shell needs to know what a hunk
+// is. `RepoId` stays because a workspace folder records whether it is a work tree, which is how
+// the explorer decides what to show before any plugin has loaded.
 
 // ---------------------------------------------------------------------------
 // Key bindings

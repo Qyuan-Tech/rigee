@@ -1,12 +1,12 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { newLeaf } from './paneTree'
+import { resolveViewType, viewTypeForLegacyKind } from './plugins/registry'
 import { nextActiveTab } from './tabs'
 import {
   DEFAULT_KEYBINDINGS,
   DEFAULT_PANEL_LAYOUT,
   type PanelLayout,
-  type RepoStatus,
   type Tab,
   type TabId,
   type KeyBindings,
@@ -47,9 +47,6 @@ interface AppState {
    */
   expandedDirs: Record<WorkspaceId, string[]>
 
-  /** Keyed by repo root. */
-  scm: Record<string, RepoStatus>
-
   keybindings: KeyBindings
 
   // --- actions ---
@@ -69,7 +66,6 @@ interface AppState {
   setLayout: (patch: Partial<PanelLayout>) => void
   toggleDir: (workspaceId: WorkspaceId, path: string) => void
   setExpandedDirs: (workspaceId: WorkspaceId, paths: string[]) => void
-  setRepoStatus: (status: RepoStatus) => void
   setKeybindings: (keybindings: KeyBindings) => void
 }
 
@@ -82,7 +78,6 @@ export const useApp = create<AppState>()(
     activeTabByWorkspace: {},
     layout: { ...DEFAULT_PANEL_LAYOUT },
     expandedDirs: {},
-    scm: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
 
     setReady: (ready) => set({ ready }),
@@ -186,18 +181,23 @@ export const useApp = create<AppState>()(
 
     setExpandedDirs: (workspaceId, paths) =>
       set((s) => ({ expandedDirs: { ...s.expandedDirs, [workspaceId]: [...new Set(paths)] } })),
-    setRepoStatus: (status) => set((s) => ({ scm: { ...s.scm, [status.root]: status } })),
     setKeybindings: (keybindings) => set({ keybindings })
   }))
 )
 
 function sameTarget(a: Tab, b: Tab): boolean {
   if (a.kind !== b.kind) return false
-  if (a.kind === 'editor' && b.kind === 'editor') return a.filePath === b.filePath
-  if (a.kind === 'diff' && b.kind === 'diff') {
-    return a.filePath === b.filePath && a.repoId === b.repoId && a.against.kind === b.against.kind
+  if (a.kind === 'editor' && b.kind === 'editor') {
+    // viewType as well as path: "Open as text" on an open PDF must produce a text tab, not
+    // silently re-activate the PDF and look like the menu item did nothing.
+    return a.filePath === b.filePath && a.viewType === b.viewType
   }
-  return false // terminals and browser tabs are always distinct
+  if (a.kind === 'custom' && b.kind === 'custom') {
+    // The plugin decides. No key means "always distinct", which is what two browser tabs on the
+    // same URL should be, and what a diff of the same file against the same revision should not.
+    return a.key !== undefined && a.key === b.key && a.viewType === b.viewType
+  }
+  return false // terminals are always distinct
 }
 
 // --- selectors: keep components subscribed to the narrowest slice possible ---
@@ -228,6 +228,11 @@ const EMPTY_TABS: Tab[] = []
  * render is a broken window.
  *
  * Pane ids are always cleared. The processes they referred to died with the previous run.
+ *
+ * This is also where state written before the plugin system is brought forward. The shell used to
+ * own `diff` and `browser` tab kinds; it does not now, and rather than keep a list of features it
+ * once had, it asks the manifests which plugin claimed each old kind (`legacyKind`). A tab whose
+ * old kind nobody claims is dropped, which is the same answer as for any other unrenderable tab.
  */
 export function sanitizeTabs(tabs: unknown): Tab[] {
   if (!Array.isArray(tabs)) return []
@@ -253,16 +258,61 @@ export function sanitizeTabs(tabs: unknown): Tab[] {
       continue
     }
 
-    if (tab.kind === 'editor' && typeof tab.filePath === 'string') { out.push(tab as Tab); continue }
-    if (tab.kind === 'diff' && typeof tab.filePath === 'string' && tab.against) {
-      out.push(tab as Tab); continue
+    if (tab.kind === 'editor' && typeof tab.filePath === 'string') {
+      // A tab written before editors were plugins has no viewType, and the explorer now puts one
+      // on every tab it opens. Leaving it absent makes the two look like different targets, so
+      // clicking a file that is already open from an older session opens a SECOND tab for it.
+      // Resolving here is free — the same manifest scan the explorer does — and it also means the
+      // tab strip can show the right icon for a restored .pdf.
+      const viewType =
+        typeof tab.viewType === 'string' ? tab.viewType : (resolveViewType(tab.filePath) ?? undefined)
+      out.push({ ...(tab as Extract<Tab, { kind: 'editor' }>), viewType })
+      continue
     }
-    if (tab.kind === 'browser' && typeof tab.url === 'string') {
-      // The native view is gone; it is recreated on first activation.
-      out.push({ ...(tab as Extract<Tab, { kind: 'browser' }>), viewId: '', loading: false })
+
+    if (tab.kind === 'custom' && typeof tab.viewType === 'string') {
+      out.push({
+        id: tab.id,
+        kind: 'custom',
+        title: typeof tab.title === 'string' ? tab.title : tab.viewType,
+        pinned: tab.pinned === true,
+        viewType: tab.viewType,
+        // The plugin validates its own state on restore; the shell cannot, and a tab whose state
+        // is nonsense is the plugin's problem to report rather than ours to guess at.
+        state: isRecord(tab.state) ? tab.state : {},
+        key: typeof tab.key === 'string' ? tab.key : undefined
+      })
+      continue
     }
+
+    const migrated = migrateLegacyTab(tab)
+    if (migrated) out.push(migrated)
   }
   return out
+}
+
+/** A tab persisted under a kind the shell no longer has, rewritten to its plugin's view type. */
+function migrateLegacyTab(tab: Partial<Tab> & Record<string, unknown>): Tab | null {
+  const viewType = viewTypeForLegacyKind(tab.kind as string)
+  if (!viewType || typeof tab.id !== 'string') return null
+
+  // Everything except the shell's own fields becomes the plugin's state. A `diff` tab's filePath,
+  // repoId and against; a `browser` tab's url and navigation flags. The plugin knows what to do
+  // with them — and what to ignore, like the viewId of a native view that died with the process.
+  const { id, kind, title, pinned, ...state } = tab
+  void kind
+  return {
+    id,
+    kind: 'custom',
+    title: typeof title === 'string' ? title : viewType,
+    pinned: pinned === true,
+    viewType,
+    state
+  }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 function isPaneNode(v: unknown): v is PaneNode {

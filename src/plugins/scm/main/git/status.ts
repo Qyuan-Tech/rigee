@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { git, gitText } from './exec'
-import type { GitFileChange, GitOperation, GitStatusLetter, RepoStatus } from '@shared/types'
+import type { GitFileChange, GitOperation, GitStatusLetter, RepoStatus } from '../../protocol'
 
 /**
  * `git status --porcelain=v2 -z` parsing, verified against git 2.50.1.

@@ -1,19 +1,18 @@
-import { useEffect } from 'react'
-import { showOnly } from '../browserViews'
 import { isMac } from '../ipc'
 import { useActiveTab } from '../store'
-import { BrowserPane } from './BrowserPane'
-import { DiffPane, EditorPane } from './EditorPane'
+import { PluginEditorPane, PluginTabPane } from './PluginHost'
 import { TerminalPane } from './TerminalPane'
 
+/**
+ * The centre pane: one tab at a time, three kinds.
+ *
+ * Two of the three are plugin territory. Terminals are the shell's own, because the pty transport
+ * and the split tree are part of what the shell is; everything else — a file, a diff, a web page —
+ * is something a plugin renders. The switch stays exhaustive so a new tab kind cannot be added
+ * without deciding what shows it.
+ */
 export function CenterPane(): React.ReactElement {
   const tab = useActiveTab()
-
-  // Any non-browser tab means every native browser view must be hidden, or it would cover the
-  // editor. BrowserPane re-shows its own view when it mounts.
-  useEffect(() => {
-    if (!tab || tab.kind !== 'browser') showOnly(null)
-  }, [tab])
 
   if (!tab) return <EmptyState />
 
@@ -21,11 +20,9 @@ export function CenterPane(): React.ReactElement {
     case 'terminal':
       return <TerminalPane key={tab.id} tab={tab} />
     case 'editor':
-      return <EditorPane key={tab.id} tab={tab} />
-    case 'diff':
-      return <DiffPane key={tab.id} tab={tab} />
-    case 'browser':
-      return <BrowserPane key={tab.id} tab={tab} />
+      return <PluginEditorPane key={tab.id} tab={tab} />
+    case 'custom':
+      return <PluginTabPane key={tab.id} tab={tab} />
   }
 }
 

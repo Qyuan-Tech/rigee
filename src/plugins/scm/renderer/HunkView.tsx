@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { rpc } from '../ipc'
-import { DiscardIcon, StageIcon, UnstageIcon } from '../icons'
-import type { DiffHunkView, DiffTab, SelectionAction } from '@shared/types'
+import { DiscardIcon, StageIcon, UnstageIcon } from '@renderer/icons'
+import { Notice } from '@renderer/plugins/api'
+import { scm } from './rpc'
+import type { DiffTabState } from './diffTab'
+import type { DiffHunkView, SelectionAction } from '../protocol'
 
 /**
  * Selectable unified diff, for staging part of a file.
@@ -11,10 +13,10 @@ import type { DiffHunkView, DiffTab, SelectionAction } from '@shared/types'
  * off them.
  */
 export function HunkView({
-  tab,
+  target,
   onApplied
 }: {
-  tab: DiffTab
+  target: DiffTabState
   onApplied: () => void
 }): React.ReactElement {
   const [hunks, setHunks] = useState<DiffHunkView[] | null>(null)
@@ -25,11 +27,15 @@ export function HunkView({
   const lastClicked = useRef<number | null>(null)
 
   // Staged rows can only be unstaged; everything else is a candidate for staging.
-  const primary: SelectionAction = tab.against.kind === 'index-vs-head' ? 'unstage' : 'stage'
+  const primary: SelectionAction = target.against.kind === 'index-vs-head' ? 'unstage' : 'stage'
 
   const load = useCallback(async () => {
     try {
-      const res = await rpc['scm:hunks']({ repoRoot: tab.repoId, path: tab.filePath, action: primary })
+      const res = await scm('scm:hunks', {
+        repoRoot: target.repoId,
+        path: target.filePath,
+        action: primary
+      })
       setHunks(res.hunks)
       setBinary(res.binary)
       setSelected(new Set())
@@ -37,7 +43,7 @@ export function HunkView({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [tab.repoId, tab.filePath, primary])
+  }, [target.repoId, target.filePath, primary])
 
   useEffect(() => { void load() }, [load])
 
@@ -88,9 +94,9 @@ export function HunkView({
       if (selected.size === 0) return
       setBusy(true)
       try {
-        await rpc['scm:applySelection']({
-          repoRoot: tab.repoId,
-          path: tab.filePath,
+        await scm('scm:applySelection', {
+          repoRoot: target.repoId,
+          path: target.filePath,
           lineIds: [...selected],
           action
         })
@@ -103,7 +109,7 @@ export function HunkView({
         setBusy(false)
       }
     },
-    [selected, tab.repoId, tab.filePath, onApplied, load]
+    [selected, target.repoId, target.filePath, onApplied, load]
   )
 
   if (binary) return <Notice>Binary file — individual lines cannot be staged.</Notice>
@@ -183,7 +189,7 @@ export function HunkView({
                     <span className="hunk__no">{line.newNo ?? ''}</span>
                     <span className="hunk__marker">{line.kind}</span>
                     <span className="hunk__text">
-                      {line.text || ' '}
+                      {line.text || ' '}
                       {line.noEol && <span className="hunk__noeol"> ↵ no newline at end of file</span>}
                     </span>
                   </div>
@@ -195,23 +201,6 @@ export function HunkView({
       </div>
 
       {error && <div className="error-banner">{error}</div>}
-    </div>
-  )
-}
-
-function Notice({
-  children,
-  tone = 'muted'
-}: {
-  children: React.ReactNode
-  tone?: 'muted' | 'error'
-}): React.ReactElement {
-  return (
-    <div
-      className="empty"
-      style={{ color: tone === 'error' ? 'var(--git-deleted)' : 'var(--fg-faint)' }}
-    >
-      <div style={{ maxWidth: 520, lineHeight: 1.7 }}>{children}</div>
     </div>
   )
 }

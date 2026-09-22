@@ -1,0 +1,29 @@
+import type { PluginManifest } from '@shared/plugin'
+
+/**
+ * Source control.
+ *
+ * The largest of the plugins, and the one that proves the contribution points are real: it owns a
+ * side-bar panel, a tab type, a status bar item, a filesystem watcher and eleven commands, and
+ * the shell contains not one line that knows what a commit is.
+ */
+export const manifest: PluginManifest = {
+  id: 'scm',
+  version: '1.0.0',
+  displayName: 'Source Control',
+  description: 'Git status, staging down to the line, commits, and diffs.',
+  contributes: {
+    views: [{ id: 'scm.panel', title: 'Source control', slot: 'right', order: 0 }],
+    tabs: [
+      {
+        viewType: 'scm.diff',
+        displayName: 'Diff',
+        icon: 'diff',
+        // A diff is a document: "Close Other Files" should sweep it up, the way it always did.
+        isDocument: true,
+        legacyKind: 'diff'
+      }
+    ],
+    statusBar: [{ id: 'scm.branch', align: 'left', order: 10 }]
+  }
+}

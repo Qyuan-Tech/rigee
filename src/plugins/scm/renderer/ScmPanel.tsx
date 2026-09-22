@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
-import { onEvent, isMac, rpc } from '../ipc'
-import { BranchIcon, ChevronIcon, CollapseRightIcon, DiscardIcon, StageIcon, UnstageIcon } from '../icons'
-import { nextTabId, useActiveWorkspace, useApp } from '../store'
-import type { DiffTarget, GitFileChange, RepoStatus } from '@shared/types'
+import { isMac } from '@renderer/ipc'
+import {
+  BranchIcon,
+  ChevronIcon,
+  CollapseRightIcon,
+  DiscardIcon,
+  StageIcon,
+  UnstageIcon
+} from '@renderer/icons'
+import { openPluginTab, useActiveWorkspace } from '@renderer/plugins/api'
+import { diffTabKey } from './diffTab'
+import { scm } from './rpc'
+import { setRepoStatus, useScm } from './store'
+import type { PluginViewProps } from '@renderer/plugins/bindings'
+import type { DiffTarget, GitFileChange, RepoStatus } from '../protocol'
 
 /** Badge colours, matching VS Code's source control decorations. */
 const LETTER_COLOR: Record<string, string> = {
@@ -19,10 +30,9 @@ const LETTER_COLOR: Record<string, string> = {
 
 type Group = 'conflicts' | 'staged' | 'unstaged' | 'untracked'
 
-export function ScmPanel({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
+export function ScmPanel({ onCollapse }: PluginViewProps): React.ReactElement {
   const workspace = useActiveWorkspace()
-  const scm = useApp((s) => s.scm)
-  const setRepoStatus = useApp((s) => s.setRepoStatus)
+  const byRepo = useScm((s) => s.byRepo)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -34,24 +44,25 @@ export function ScmPanel({ onCollapse }: { onCollapse: () => void }): React.Reac
   const refresh = useCallback(async () => {
     if (repoRoots.length === 0) return
     try {
-      const all = await rpc['scm:statusAll']({ repoRoots })
+      const all = await scm('scm:statusAll', { repoRoots })
       for (const s of all) setRepoStatus(s)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootsKey, setRepoStatus])
+  }, [rootsKey])
 
   useEffect(() => {
     // One initial read, then main pushes on every filesystem change — including changes made by
     // git running in one of the app's own terminals. No polling.
+    //
+    // The push listener is not here any more: it is registered once when the plugin activates, so
+    // the status bar item keeps up to date while the panel is collapsed and unmounted.
     void refresh()
-    const off = onEvent('scm:status', ({ status }) => setRepoStatus(status))
-    if (repoRoots.length > 0) void rpc['scm:watch']({ repoRoots })
-    return off
+    if (repoRoots.length > 0) void scm('scm:watch', { repoRoots })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootsKey, refresh, setRepoStatus])
+  }, [rootsKey, refresh])
 
   /** Run a mutation, then refresh so the panel reflects reality rather than what we assumed. */
   const act = useCallback(
@@ -92,7 +103,7 @@ export function ScmPanel({ onCollapse }: { onCollapse: () => void }): React.Reac
   return (
     <Panel onCollapse={onCollapse} scroll={multi}>
       {repoRoots.map((root) => {
-        const status = scm[root]
+        const status = byRepo[root]
         return status ? (
           <RepoSection key={root} status={status} multi={multi} busy={busy} act={act} />
         ) : (
@@ -124,7 +135,7 @@ function RepoSection({
     (amend: boolean) => {
       if (!message.trim() && !amend) return
       void act(async () => {
-        await rpc['scm:commit']({ repoRoot: root, message, amend })
+        await scm('scm:commit', { repoRoot: root, message, amend })
         setMessage('')
       })
     },
@@ -191,7 +202,7 @@ function RepoSection({
               className="btn"
               disabled={busy}
               title="Stage everything"
-              onClick={() => void act(() => rpc['scm:stage']({ repoRoot: root, paths: allUnstaged }))}
+              onClick={() => void act(() => scm('scm:stage', { repoRoot: root, paths: allUnstaged }))}
             >
               Stage all
             </button>
@@ -233,8 +244,6 @@ function FileGroup({
   act: (fn: () => Promise<unknown>) => Promise<void>
   against: DiffTarget
 }): React.ReactElement | null {
-  const openTab = useApp((s) => s.openTab)
-  const workspaceId = useApp((s) => s.activeWorkspaceId)
   if (files.length === 0) return null
 
   const staged = group === 'staged'
@@ -253,10 +262,15 @@ function FileGroup({
             className="row row--clickable"
             title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
             onClick={() => {
-              if (!workspaceId) return
-              openTab(workspaceId, {
-                id: nextTabId(), kind: 'diff', title: basename(f.path), pinned: false,
-                filePath: f.path, repoId: root, against
+              const state = { filePath: f.path, repoId: root, against }
+              openPluginTab('scm', {
+                viewType: 'scm.diff',
+                title: basename(f.path),
+                // The strip shows the basename; the hover has to say which file, because a repo
+                // with three index.ts in it otherwise offers three identical tabs.
+                tooltip: f.path,
+                state,
+                key: diffTabKey(state)
               })
             }}
           >
@@ -269,7 +283,7 @@ function FileGroup({
                   className="icon-button"
                   title="Discard changes"
                   disabled={busy}
-                  onClick={() => void act(() => rpc['scm:discard']({ repoRoot: root, paths: [f.path] }))}
+                  onClick={() => void act(() => scm('scm:discard', { repoRoot: root, paths: [f.path] }))}
                 >
                   <DiscardIcon size={12} />
                 </button>
@@ -281,8 +295,8 @@ function FileGroup({
                 onClick={() =>
                   void act(() =>
                     staged
-                      ? rpc['scm:unstage']({ repoRoot: root, paths: [f.path] })
-                      : rpc['scm:stage']({ repoRoot: root, paths: [f.path] })
+                      ? scm('scm:unstage', { repoRoot: root, paths: [f.path] })
+                      : scm('scm:stage', { repoRoot: root, paths: [f.path] })
                   )
                 }
               >

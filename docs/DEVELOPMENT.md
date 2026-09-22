@@ -16,7 +16,10 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
-| `pnpm panes:selftest` | 36 checks on the split tree and key chords, pure functions |
+| `pnpm panes:selftest` | 102 checks on the split tree, key chords and the tab strip, pure functions |
+| `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
+| `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not |
+| `pnpm smoke:pdf` | renders a PDF the app prints for itself and checks pixels reached the canvas |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys |
 | `pnpm smoke:persist` | builds tabs and splits, then reads back what was written to disk |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
@@ -24,24 +27,176 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
 
+### Fixtures for the smoke modes
+
+Three modes need a directory to point at, and two of them fail confusingly if you pick the wrong
+one:
+
+```bash
+ONESTOP_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:multirepo   # a directory OF git repos
+ONESTOP_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:explorer    # two or more folders
+ONESTOP_SMOKE_REPO=/private/tmp/bigrepo    pnpm smoke:scroll      # one repo, see below
+```
+
+**Use `/private/tmp`, not `/tmp`.** On macOS `/tmp` is a symlink, so `git rev-parse
+--show-toplevel` answers with the resolved path while the workspace holds the one you passed. The
+source control panel keys statuses by repository root, the two never match, and the panel sits on
+"reading alpha…" for ever — which reads exactly like source control being broken.
+
+**`smoke:scroll` needs a repository big enough to overflow both panels**: dozens of dirty files and
+dozens of top-level entries. Against a tidy repo it fails with `explorer-fixture-too-small`, which
+is the check refusing to pass vacuously rather than a regression.
+
 ## Layout
 
 ```
 src/
-  shared/      types + the IPC contract; imported by all three targets
-  main/        Electron main
+  shared/      types + the IPC contract + the plugin contract; imported by all three targets
+  main/        Electron main — the shell only
     pty/       pseudo-terminals, one per split pane
-    git/       status parsing, blobs, selective patching, filesystem watching
-    browser.ts WebContentsView tab manager
+    plugins/   the main-side plugin host: cordis root, command registry, shell service
     store.ts   atomic JSON persistence
   preload/     the contextBridge surface (compiled to CJS — see below)
-  renderer/    React shell
-scripts/       self-tests and the local installer
+  renderer/    React shell — window, workspaces, explorer, tabs, terminals
+    src/plugins/  the renderer-side host, the manifest registry and the component bindings
+  plugins/     the features, one folder each
+    text-editor/  Monaco, and the editor of last resort for every file
+    pdf/          the PDF reader
+    scm/          git: status, staging by line, commits, diffs
+    browser/      Chromium tabs as native WebContentsViews
+    shared/       what more than one plugin needs (the Monaco loader). Not a plugin.
+scripts/       self-tests, the startup budget check and the local installer
 ```
 
 Three tsconfig projects, because the three targets genuinely differ: `tsconfig.node.json` (main,
 no DOM), `tsconfig.preload.json` (DOM **and** Node — the preload straddles both), and
-`tsconfig.web.json` (renderer, no Node).
+`tsconfig.web.json` (renderer, no Node). Plugins straddle two of them by file name:
+`src/plugins/*/main/**` belongs to the node project, `src/plugins/*/renderer/**` to the web
+project, and `manifest.ts` / `protocol.ts` to both. That split is mandatory, not tidiness — see
+the plugin section below.
+
+## Plugins
+
+The shell is a window, a workspace model, a tab framework, terminals, persistence and an IPC
+spine. Everything else is a plugin: the text editor, the PDF reader, source control and the
+browser all live in `src/plugins/<id>/` and reach the shell only through the contract in
+`src/shared/plugin.ts`. The framework underneath is [cordis](https://github.com/cordiverse/cordis).
+
+A plugin is up to two halves, because Electron leaves no choice — a PDF renders in the sandboxed
+renderer and the bytes it renders can only be read in main:
+
+```
+src/plugins/pdf/
+  manifest.ts          what exists: id, version, contributions. Plain data, read in both realms.
+  protocol.ts          the command and event types the two halves share. Realm-free.
+  main/index.ts        default-exports a cordis Plugin. Node only.
+  renderer/index.tsx   default-exports a cordis Plugin. DOM only.
+```
+
+`src/plugins/index.ts` lists the manifests; `registry.main.ts` and `registry.renderer.ts` hold the
+dynamic-import thunks, one file per realm.
+
+**Contribution points.** `editors` (a viewer for files matching a selector), `tabs` (a tab type the
+plugin owns outright, with its own persisted state), `views` (a side-bar panel), `statusBar`, and
+`overlays` (a dialog mounted at the shell root while the plugin is active). All declarative: the
+shell can draw the tab strip, resolve which viewer opens a `.pdf` and decide what goes in the right
+rail without loading a line of plugin code.
+
+**Activation is lazy and demand-driven.** A renderer half loads when something it contributed is
+first needed — a tab of its view type renders, its panel mounts, its "new tab" button is pressed. A
+main half loads when the renderer first calls one of its commands. Opening a `.ts` file loads the
+text editor and nothing else; `pnpm smoke:plugins` asserts exactly that, because it is the property
+the whole design exists to produce.
+
+**Two IPC channels, forever.** `plugin:invoke` carries every renderer→main call and `plugin:event`
+carries every push. Source control and the browser used to own twenty-two entries in
+`REQUEST_CHANNELS` between them; the preload allowlist is a literal you can read in one screen
+again, and authorisation happens in main's command registry, where a command nobody registered is
+rejected.
+
+### Things the framework will do to you
+
+Each of these was verified by running cordis 4.0.0-rc.10, and each is silent when you get it wrong.
+
+**`inject` is mandatory, and omitting it does not throw where you would look.** Reading
+`ctx.commands` without declaring `inject: ['commands']` throws *"cannot get property "commands"
+without inject"* — but a half whose injection cannot be satisfied never even runs: its fiber sits
+in `PENDING` forever, `await ctx.plugin(...)` resolves **successfully**, and the symptom surfaces
+minutes later as `unknown plugin command`. Both hosts assert the fiber reached `ACTIVE` so that
+turns back into an error naming the plugin.
+
+**`apply` must have a braced body.** cordis reads a plugin's return value as an effect and throws
+`TypeError: Invalid effect` for anything that is not void, a function or an (async)iterable. So
+`apply: (ctx) => ctx.contributions.editor(...)` — the shape a linter will suggest — fails at load.
+
+**Errors inside `apply` print nothing by default.** cordis's default log exporter fills an
+in-memory ring buffer. Both hosts register a `console.error` exporter at construction; without it a
+plugin that throws on load simply does not appear, with no message anywhere.
+
+**Never put a cordis service call on a render or per-event path, and bind it properly when you
+take it off one.** Measured per call on this install:
+
+| form | cost |
+|---|---|
+| `ctx.svc.method(…)` | 17,700 ns — rebuilds a shadow context on every property read |
+| `const s = ctx.svc; s.method(…)` | 4,460 ns — still proxied per call |
+| `const m = ctx.svc.method` | **throws** `Cannot read properties of undefined (reading 'ctx')` |
+| `const m = s.method.bind(s)` | 219 ns |
+
+The third row is the trap: cordis substitutes the shadow context only when the receiver is the
+proxy itself, so a detached method reference has no `this` at all — and it fails at the first call,
+not at capture. Bind at activation. This is also why the renderer keeps its component registry in
+plain Maps (`src/renderer/src/plugins/bindings.ts`) and the shell never touches cordis while
+rendering.
+
+**Service methods must be prototype methods, never arrow-function fields.** `this.ctx` means "the
+calling plugin's context" only because cordis swaps `thisArg` when the method is read; an arrow
+closes over `this` at construction and would silently see the root's context, so `ctx.pluginId`
+would be undefined for every caller.
+
+**`root.fiber.dispose()` is a restart, not a teardown.** On the root fiber cordis maps dispose to
+`restart()`: it unloads every plugin and every service and then brings the root back up, leaving
+`root.commands` undefined and the host looking alive. Dispose the per-plugin fibers instead, which
+is what `PluginHost.dispose()` does.
+
+**An absent property on a Context throws rather than returning undefined.** It is a Proxy. Both
+hosts install `ctx.accessor('pluginId', { get: () => undefined })` so the `no pluginId` guards in
+the services are reachable code rather than decoration.
+
+### The startup budget
+
+`pnpm perf:check` runs against a real build and fails if:
+
+- `index.html` gains a second `<link rel="modulepreload">`
+- the entry chunk grows past its budget (276 kB measured before the plugin system)
+- Monaco, pdf.js, xterm or cordis appear **in** the entry chunk, or stop having a chunk of their own
+- pdf.js's runtime assets are missing from `out/renderer/pdfjs/`
+
+The first three exist because a plugin system makes one specific regression trivially easy: a
+single static import from the shell into a plugin pulls that plugin's whole chunk into the entry's
+static graph, and nothing warns. It is the same failure that listing `monaco-editor` in
+`manualChunks` once produced — dom-ready went from 0.83 s to 14.6 s.
+
+### pdf.js, and two traps that only fire in the packaged app
+
+**The worker must be `workerSrc`, pointing at a copied asset — not `workerPort`, and not Vite's
+`?worker`.** With a port, `PDFWorker.create` caches one worker per port in a WeakMap: two open PDF
+tabs share it, closing the first breaks the second, and because `#webWorker` is null in that path
+`destroy()` never calls `terminate()` — one leaked 1.2 MB worker per document. With `workerSrc`,
+pdf.js creates a dedicated worker per document and tears it down with the loading task.
+
+**The runtime assets do not ship by themselves.** `pdfjs-dist` is a devDependency (promoting it
+would drag 35 MB, plus 243 MB of `@napi-rs/canvas` prebuilds it never uses, into the production
+closure), so `node_modules` is gone at runtime and `electron-builder` packs `out/**` and nothing
+else. A small Vite plugin in `electron.vite.config.ts` copies the worker, `cmaps/`,
+`standard_fonts/`, `iccs/` and the three `wasm` files the worker actually asks for into
+`out/renderer/pdfjs/`, and serves the same URLs in dev. **`cMapUrl` is what makes Chinese PDFs
+work**: any CIDFont using a predefined Adobe CMap renders blank or garbled without it, and the only
+symptom is a `warn()` inside the worker.
+
+Also: pass `useWorkerFetch: true` explicitly. pdf.js infers it with `/https?:/.test(protocol)`,
+which is true in dev and false under a packaged `file://` renderer — two different code paths — and
+`false` additionally hard-disables ICC colour management.
 
 ## Things that will bite you
 

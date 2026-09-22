@@ -7,6 +7,8 @@
  * 16x16 grid with a 1.5px stroke so the weights match at the sizes the chrome actually uses.
  */
 
+import type { IconName } from '@shared/plugin'
+
 interface Props {
   size?: number
   className?: string
@@ -196,3 +198,20 @@ export const CollapseRightIcon = (p: Props): React.ReactElement => (
     <path d="M10.5 5.5 13 8l-2.5 2.5" />
   </Svg>
 )
+
+/**
+ * The icons a plugin manifest may ask for, by name.
+ *
+ * A manifest is plain data read in both processes, so it cannot hold a component; it names one
+ * from this table instead. Adding a name here and to `IconName` is what makes it available to
+ * plugins — deliberately a small, curated set rather than "any SVG you like", because the chrome
+ * only stays coherent while everything in it is drawn on the same grid at the same weight.
+ */
+export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
+  file: FileIcon,
+  diff: DiffIcon,
+  globe: GlobeIcon,
+  terminal: TerminalIcon,
+  branch: BranchIcon,
+  folder: FolderIcon
+}

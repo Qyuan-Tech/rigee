@@ -13,7 +13,6 @@
 import type {
   FileStat,
   PersistedState,
-  RepoStatus,
   Tab,
   PtyPaneId,
   Platform,
@@ -22,11 +21,9 @@ import type {
   WorkspaceFolder,
   WorkspaceId,
   WorkspaceUiState,
-  DiffTarget,
-  DiffHunkView,
-  SelectionAction,
   KeyBindings
 } from './types'
+import type { PluginEventEnvelope, PluginInvocation } from './plugin'
 
 /** renderer -> main -> renderer. Every one of these is awaited. */
 export interface IpcRequests {
@@ -105,80 +102,23 @@ export interface IpcRequests {
   /** Kill every pane of a workspace and drop its port. */
   'terminal:disconnect': (args: { workspaceId: WorkspaceId }) => void
 
-  // --- source control --------------------------------------------------
-  'scm:status': (args: { repoRoot: string }) => RepoStatus
-  'scm:statusAll': (args: { repoRoots: string[] }) => RepoStatus[]
-  'scm:diff': (args: {
-    repoRoot: string
-    path: string
-    against: DiffTarget
-  }) => { original: string; modified: string; binary: boolean; tooLarge: boolean }
-  'scm:stage': (args: { repoRoot: string; paths: string[] }) => void
-  'scm:unstage': (args: { repoRoot: string; paths: string[] }) => void
-  'scm:discard': (args: { repoRoot: string; paths: string[] }) => void
-  'scm:commit': (args: { repoRoot: string; message: string; amend: boolean }) => { sha: string }
-  'scm:watch': (args: { repoRoots: string[] }) => void
-  /** Hunks of one file, for selective staging. `binary` means the hunk UI must be disabled. */
-  'scm:hunks': (args: {
-    repoRoot: string
-    path: string
-    action: SelectionAction
-  }) => { hunks: DiffHunkView[]; binary: boolean }
-  /** Apply only the given line ids. Returns false when the selection produced no patch. */
-  'scm:applySelection': (args: {
-    repoRoot: string
-    path: string
-    lineIds: number[]
-    action: SelectionAction
-  }) => { applied: boolean }
-
-  // --- browser tabs ----------------------------------------------------
-  'browser:create': (args: { tabId: string; url: string; bounds: ViewBounds }) => { viewId: string }
-  'browser:destroy': (args: { viewId: string }) => void
-  /** Only one browser view is visible at a time; the rest stay alive but hidden. */
-  'browser:setVisible': (args: { viewId: string; visible: boolean }) => void
-  'browser:setBounds': (args: { viewId: string; bounds: ViewBounds }) => void
-  'browser:navigate': (args: { viewId: string; url: string }) => void
-  'browser:goBack': (args: { viewId: string }) => void
-  'browser:goForward': (args: { viewId: string }) => void
-  'browser:reload': (args: { viewId: string }) => void
-  'browser:stop': (args: { viewId: string }) => void
-  'browser:openDevTools': (args: { viewId: string }) => void
+  // --- plugins ---------------------------------------------------------
   /**
-   * Answer an HTTP 401/407. `username: null` cancels the request, which is what closing the
-   * dialog must do — leaving it unanswered would hang the page forever.
+   * Every renderer→main plugin call, on one channel.
+   *
+   * Source control and the browser used to own twenty-two channels between them here. They are
+   * plugins now, and their commands are typed beside them — see src/plugins/scm/protocol.ts and
+   * src/plugins/browser/protocol.ts. The allowlist below grew by two entries and stops there,
+   * which is the whole point: it stays a literal that can be read and audited.
    */
-  'browser:authResponse': (args: {
-    requestId: string
-    username: string | null
-    password: string
-  }) => void
+  'plugin:invoke': (args: PluginInvocation) => unknown
 }
 
 /** main -> renderer push. Low rate; terminal bytes do NOT go through here. */
 export interface IpcEvents {
   'terminal:exit': { workspaceId: WorkspaceId; paneId: PtyPaneId; exitCode: number }
-  'scm:status': { status: RepoStatus }
-  'browser:state': {
-    viewId: string
-    url: string
-    title: string
-    canGoBack: boolean
-    canGoForward: boolean
-    loading: boolean
-    faviconDataUrl: string | null
-  }
-  /** A page called window.open and we adopted it; the renderer must register a new tab. */
-  'browser:tabRequested': { viewId: string; url: string; openerViewId: string }
-  /** HTTP 401/407. The renderer shows a prompt and answers with 'browser:authResponse'. */
-  'browser:authRequested': {
-    viewId: string
-    requestId: string
-    host: string
-    realm: string
-    isProxy: boolean
-    url: string
-  }
+  /** Everything a plugin pushes, enveloped with its id. See src/shared/plugin.ts. */
+  'plugin:event': PluginEventEnvelope
   'fs:changed': { paths: string[] }
   'app:error': { scope: string; message: string }
 }
@@ -209,35 +149,12 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'terminal:kill',
   'terminal:requestPort',
   'terminal:disconnect',
-  'scm:status',
-  'scm:statusAll',
-  'scm:diff',
-  'scm:stage',
-  'scm:unstage',
-  'scm:discard',
-  'scm:commit',
-  'scm:watch',
-  'scm:hunks',
-  'scm:applySelection',
-  'browser:create',
-  'browser:destroy',
-  'browser:setVisible',
-  'browser:setBounds',
-  'browser:navigate',
-  'browser:goBack',
-  'browser:goForward',
-  'browser:reload',
-  'browser:stop',
-  'browser:openDevTools',
-  'browser:authResponse'
+  'plugin:invoke'
 ] as const
 
 export const EVENT_CHANNELS: readonly IpcEventChannel[] = [
   'terminal:exit',
-  'scm:status',
-  'browser:state',
-  'browser:tabRequested',
-  'browser:authRequested',
+  'plugin:event',
   'fs:changed',
   'app:error'
 ] as const
@@ -261,4 +178,4 @@ export interface OnestopBridge {
 }
 
 /** Re-exported so consumers need only one import. */
-export type { Tab, Workspace, RepoStatus, FileStat, ViewBounds }
+export type { Tab, Workspace, FileStat, ViewBounds }

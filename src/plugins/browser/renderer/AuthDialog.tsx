@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { onEvent, rpc } from '../ipc'
-import type { IpcEvents } from '@shared/ipc'
-
-type Request = IpcEvents['browser:authRequested']
+import { invoke, on } from './rpc'
+import type { AuthRequestedEvent } from '../protocol'
 
 /**
  * HTTP 401/407 prompt for the browser tabs.
@@ -12,14 +10,17 @@ type Request = IpcEvents['browser:authRequested']
  * is exactly how it behaved before this dialog existed.
  *
  * Requests queue: a page with several protected subresources can raise more than one.
+ *
+ * Mounted by the shell for as long as the plugin is active, which is from the moment a browser
+ * tab first renders — a challenge cannot arrive before there is a view to raise it.
  */
 export function AuthDialog(): React.ReactElement | null {
-  const [queue, setQueue] = useState<Request[]>([])
+  const [queue, setQueue] = useState<AuthRequestedEvent[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const userRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => onEvent('browser:authRequested', (req) => setQueue((q) => [...q, req])), [])
+  useEffect(() => on('authRequested', (req) => setQueue((q) => [...q, req])), [])
 
   const current = queue[0] ?? null
 
@@ -33,7 +34,7 @@ export function AuthDialog(): React.ReactElement | null {
   if (!current) return null
 
   const answer = (u: string | null): void => {
-    void rpc['browser:authResponse']({ requestId: current.requestId, username: u, password })
+    void invoke('browser:authResponse', { requestId: current.requestId, username: u, password })
     setQueue((q) => q.slice(1))
   }
 

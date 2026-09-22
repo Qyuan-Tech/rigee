@@ -11,6 +11,7 @@ import {
   PlusIcon,
   TerminalIcon
 } from '../icons'
+import { resolveViewType } from '../plugins/registry'
 import { nextTabId, nextWorkspaceId, useActiveWorkspace, useApp } from '../store'
 import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
 
@@ -499,7 +500,11 @@ function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.Rea
         if (!workspaceId) return
         openTab(workspaceId, {
           id: nextTabId(), kind: 'editor', title: stat.name, pinned: false,
-          filePath: stat.path, repoId: null, readOnly: false
+          filePath: stat.path, repoId: null, readOnly: false,
+          // Resolved once, here, from the manifests alone: an array scan over a handful of
+          // declarations, and no plugin loaded. Doing it in the pane instead would either scan on
+          // every render or force the viewer to load before the user has committed to the file.
+          viewType: resolveViewType(stat.path) ?? undefined
         })
       }}
     >

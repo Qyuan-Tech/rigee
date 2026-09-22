@@ -5,7 +5,7 @@ import { git, gitText } from './exec'
 import { readStatus, resolveRepoPaths, type RepoPaths } from './status'
 import { buildSelectionPatch, parseUnifiedDiff, type ParsedDiff } from './patch'
 import { ScmWatchers } from './watcher'
-import type { DiffTarget, RepoStatus, SelectionAction } from '@shared/types'
+import type { DiffTarget, RepoStatus, SelectionAction } from '../../protocol'
 
 /**
  * The source control service: one entry per repository, each holding its resolved paths and a

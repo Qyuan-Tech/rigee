@@ -1,5 +1,14 @@
 {
-  "include": ["electron.vite.config.ts", "src/main/**/*", "src/shared/**/*"],
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*",
+    "src/shared/**/*",
+    "src/plugins/index.ts",
+    "src/plugins/registry.main.ts",
+    "src/plugins/*/manifest.ts",
+    "src/plugins/*/protocol.ts",
+    "src/plugins/*/main/**/*"
+  ],
   "compilerOptions": {
     "composite": true,
     "tsBuildInfoFile": "node_modules/.tmp/tsconfig.node.tsbuildinfo",
@@ -15,6 +24,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "baseUrl": ".",
-    "paths": { "@shared/*": ["src/shared/*"] }
+    "paths": { "@shared/*": ["src/shared/*"], "@plugins/*": ["src/plugins/*"] }
   }
 }

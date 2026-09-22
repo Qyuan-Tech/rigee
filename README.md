@@ -83,7 +83,25 @@ an app launched from Finder inherits almost none of it.
 | Live refresh — the panel updates when git runs in your own terminal | works |
 | HTTP auth prompt in browser tabs | works |
 | Restoring tabs, splits and browser pages on next launch | works |
+| PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
+| Plugins — the editor, PDF, source control and the browser are all plugins | works |
 | Terminals surviving a restart | **no** — the layout returns, the running processes do not |
+
+## Plugins
+
+onestop's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
+features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
+the text editor, the PDF reader, source control and the browser are each a folder under
+`src/plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+
+That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
+open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.
+`pnpm perf:check` fails the build if that stops being true.
+
+The framework is [cordis](https://github.com/cordiverse/cordis): a plugin gets a Context, and
+everything it registers through that Context — commands, components, listeners, watchers, native
+views — is revoked when the plugin is disposed. See `docs/DEVELOPMENT.md` for the contribution
+points and the traps.
 
 ## Terminals
 

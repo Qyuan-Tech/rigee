@@ -5,15 +5,13 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { BrowserTabs } from './browser'
 import { ensureShellPath } from './env'
-import { GitService } from './git/service'
-import type { ParsedDiff } from './git/patch'
 import { PtyManager } from './pty/manager'
 import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
 import { loadState, saveAllUi, saveKeybindings, saveUi, saveWorkspaces } from './store'
-import type { DiffHunkView, FileStat, ViewBounds } from '@shared/types'
+import type { PluginHost } from './plugins/host'
+import type { FileStat } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -42,12 +40,40 @@ if (process.env.ONESTOP_SMOKE) {
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024
 
 let window: BrowserWindow | null = null
-let browserTabs: BrowserTabs | null = null
 let ptys: PtyManager | null = null
-const gitService = new GitService()
 
 const shellWc = (): WebContents | null =>
   window && !window.webContents.isDestroyed() ? window.webContents : null
+
+// ---------------------------------------------------------------------------
+// Plugins
+//
+// The host is built on the first `plugin:invoke` and not a moment earlier. cordis costs a
+// measured 10.4 ms to import and 3.5 ms to construct a Context — small against a 409 ms
+// module-eval budget, and entirely avoidable, because nothing before that first call needs it.
+// Both imports are dynamic for the same reason: a static one would put cordis and the main-half
+// registry in the boot path whether or not any plugin is ever used.
+// ---------------------------------------------------------------------------
+
+let pluginHost: PluginHost | null = null
+let pluginHostP: Promise<PluginHost> | null = null
+
+function plugins(): Promise<PluginHost> {
+  pluginHostP ??= (async () => {
+    const [{ PluginHost }, { MAIN_HALVES }] = await Promise.all([
+      import('./plugins/host'),
+      import('@plugins/registry.main')
+    ])
+    const host = new PluginHost(MAIN_HALVES, {
+      window: () => window,
+      webContents: shellWc,
+      send: (payload) => emit(shellWc(), 'plugin:event', payload)
+    })
+    pluginHost = host
+    return host
+  })()
+  return pluginHostP
+}
 
 // ---------------------------------------------------------------------------
 // Window
@@ -82,7 +108,6 @@ function createWindow(): void {
     }
   })
 
-  browserTabs = new BrowserTabs(window, shellWc)
   ptys = new PtyManager(shellWc, (workspaceId, paneId, exitCode) =>
     emit(shellWc(), 'terminal:exit', { workspaceId, paneId, exitCode })
   )
@@ -114,6 +139,10 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'explorer') void runExplorerSmoke()
     else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
+    // These two must stay ABOVE the catch-all below, which matches any truthy value: a branch
+    // added after it silently never runs and the generic check reports a cheerful green.
+    else if (process.env.ONESTOP_SMOKE === 'plugins') void runPluginsSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'pdf') void runPdfSmoke()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
 
@@ -148,34 +177,6 @@ function createWindow(): void {
   loading.catch((err: unknown) => {
     console.error(`[shell] failed to load ${devUrl ?? indexHtml}:`, err)
     window?.show()
-  })
-}
-
-/**
- * Give keyboard focus to whichever surface should have it: the visible browser tab if there is
- * one, otherwise the shell itself.
- */
-/**
- * Attach gutter line numbers to a parsed diff. The counters advance per side: a '-' line exists
- * only in the old file, a '+' only in the new, context in both.
- */
-function withLineNumbers(parsed: ParsedDiff): DiffHunkView[] {
-  return parsed.hunks.map((h) => {
-    let oldNo = h.oldStart
-    let newNo = h.newStart
-    return {
-      section: h.section,
-      oldStart: h.oldStart,
-      newStart: h.newStart,
-      lines: h.lines.map((l) => ({
-        kind: l.kind,
-        text: l.text,
-        noEol: l.noEol,
-        id: l.id,
-        oldNo: l.kind === '+' ? null : oldNo++,
-        newNo: l.kind === '-' ? null : newNo++
-      }))
-    }
   })
 }
 
@@ -325,8 +326,14 @@ async function runMultiRepoSmoke(): Promise<void> {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
         const { store } = window.__onestop
         const trail = []
+        // What the panel actually says, on every failure. Source control is a plugin now, so a
+        // blank panel can mean the plugin did not load, or loaded and could not reach git — and
+        // the difference is written on screen in both cases.
+        const panelText = () =>
+          ((document.querySelectorAll('.pane')[1] || {}).innerText || '(no right pane)')
+            .replace(/\\s+/g, ' ').trim().slice(0, 200)
         const fail = (stage, extra) =>
-          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+          JSON.stringify(Object.assign({ ok: false, stage, trail, panel: panelText() }, extra || {}))
 
         for (let i = 0; i < 60; i++) { if (store.getState().ready) break; await sleep(250) }
         const repos = ${JSON.stringify(repos)}
@@ -711,9 +718,8 @@ async function runScratchSmoke(): Promise<void> {
         // does not hide it the screen simply does not change.
         store.getState().setActiveWorkspace('ws-probe')
         store.getState().openTab('ws-probe', {
-          id: 'scratch-probe-browser', kind: 'browser', title: 'probe', pinned: false,
-          url: 'about:blank', viewId: '', canGoBack: false, canGoForward: false,
-          loading: false, faviconDataUrl: null
+          id: 'scratch-probe-browser', kind: 'custom', viewType: 'browser.page',
+          title: 'probe', pinned: false, state: { url: 'about:blank' }
         })
         await sleep(1800)
         trail.push('browser tab open in ws-probe')
@@ -726,8 +732,12 @@ async function runScratchSmoke(): Promise<void> {
       true
     )) as string
     const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
-    // Asked in main, because only main knows what is actually composited over the window.
-    const stillVisible = browserTabs?.visibleIds() ?? []
+    // Asked in main, because only main knows what is actually composited over the window. The
+    // browser plugin exposes it as a command precisely so this check did not have to survive the
+    // feature moving out of the shell.
+    const stillVisible = pluginHost
+      ? ((await pluginHost.invoke('browser:visibleIds', {})) as string[])
+      : []
 
     // And the workspace must still be on disk. A workspace that vanishes across a restart looks
     // exactly like "clicking workspaces does nothing": there is nothing left to click.
@@ -932,35 +942,43 @@ async function runCopySmoke(): Promise<void> {
  * Regression check for the crash on the way out.
  *
  * Close the window on macOS and the app keeps running, but every WebContentsView it owned is
- * already gone while BrowserTabs still holds entries for them. Quitting then walked that map and
- * threw *"Object has been destroyed"* out of `before-quit` — a crash dialog on an app that was
- * leaving anyway, and one that only appears if you close the window before quitting rather than
- * quitting straight from it.
+ * already gone while the browser plugin still holds entries for them. Quitting then walked that
+ * map and threw *"Object has been destroyed"* out of `before-quit` — a crash dialog on an app that
+ * was leaving anyway, and one that only appears if you close the window before quitting rather
+ * than quitting straight from it.
  *
- * Reproduced here by doing precisely that, with the teardown called directly so the check does
- * not depend on the app actually reaching its quit handlers.
+ * Reproduced here by doing precisely that. Teardown is called directly because `app.exit()` never
+ * runs `before-quit`, and it now goes through the plugin host: disposing a plugin's fiber is what
+ * runs the cleanup that used to be a line in this file, so this also checks that the fiber
+ * teardown path survives a destroyed window.
  */
 async function runQuitSmoke(): Promise<void> {
   const win = window
-  const tabs = browserTabs
-  if (!win || !tabs) { console.error('[smoke:quit] no window'); app.exit(1); return }
+  if (!win) { console.error('[smoke:quit] no window'); app.exit(1); return }
 
+  const host = await plugins()
   const bounds = { x: 0, y: 0, width: 400, height: 300 }
-  tabs.create('about:blank', bounds)
-  tabs.create('about:blank', bounds)
+  try {
+    await host.invoke('browser:create', { url: 'about:blank', bounds })
+    await host.invoke('browser:create', { url: 'about:blank', bounds })
+  } catch (err) {
+    console.error('[smoke:quit] could not open browser views:', err)
+    app.exit(1)
+    return
+  }
 
   win.destroy()
   await new Promise((r) => setTimeout(r, 300))
 
   try {
-    tabs.destroyAll()
+    await host.dispose()
     ptys?.disposeAll()
   } catch (err) {
     console.error('[smoke:quit] teardown threw after the window was destroyed:', err)
     app.exit(1)
     return
   }
-  console.log('[smoke:quit] {"ok":true}')
+  console.log('[smoke:quit]', JSON.stringify({ ok: true, plugins: host.active() }))
   app.exit(0)
 }
 
@@ -995,9 +1013,8 @@ async function runTabsSmoke(): Promise<void> {
         const editor = (id) => ({ id, kind: 'editor', title: id, pinned: false,
           filePath: '/' + id + '.ts', repoId: null, readOnly: false })
         // about:blank, so the check does not quietly depend on the network.
-        const browser = (id) => ({ id, kind: 'browser', title: id, pinned: false,
-          url: 'about:blank', viewId: '', canGoBack: false, canGoForward: false,
-          loading: false, faviconDataUrl: null })
+        const browser = (id) => ({ id, kind: 'custom', viewType: 'browser.page', title: id,
+          pinned: false, state: { url: 'about:blank' } })
 
         // Start from empty. Arriving at Scratch opens a terminal on its own now, so the fixture
         // below would otherwise be counting someone else's tab.
@@ -1107,9 +1124,8 @@ async function runPersistSmoke(): Promise<void> {
         await sleep(1500)
 
         store.getState().openTab(scratch.id, {
-          id: 'persist-browser-tab', kind: 'browser', title: 'probe', pinned: false,
-          url: 'https://example.com/persisted', viewId: '',
-          canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null
+          id: 'persist-browser-tab', kind: 'custom', viewType: 'browser.page',
+          title: 'probe', pinned: false, state: { url: 'https://example.com/persisted' }
         })
 
         // Longer than the save debounce.
@@ -1131,7 +1147,9 @@ async function runPersistSmoke(): Promise<void> {
     }
     const tabs = doc.ui?.['__scratch__']?.tabs ?? []
     const term = tabs.find((t) => t.id === info.terminalTabId)
-    const browser = tabs.find((t) => t.kind === 'browser')
+    // A plugin tab on disk: the shell persisted the envelope, the plugin's own state rode along
+    // inside it. Reading the url back out of `state` is the check that both halves survived.
+    const browser = tabs.find((t) => t.kind === 'custom' && t.viewType === 'browser.page')
 
     const countLeaves = (n: unknown): number => {
       const node = n as { kind?: string; children?: unknown[] }
@@ -1146,7 +1164,8 @@ async function runPersistSmoke(): Promise<void> {
       terminalRestored: !!term,
       leavesInMemory: info.leaves,
       leavesOnDisk: term ? countLeaves((term as { root?: unknown }).root) : 0,
-      browserUrlOnDisk: (browser as { url?: string } | undefined)?.url ?? null
+      browserUrlOnDisk:
+        (browser as { state?: { url?: string } } | undefined)?.state?.url ?? null
     }
     const ok =
       report.terminalRestored &&
@@ -1191,9 +1210,276 @@ async function captureShot(): Promise<void> {
   }
 }
 
+/**
+ * Give keyboard focus to whichever surface should have it.
+ *
+ * The shell, unless a plugin claims it first. The browser plugin does, because its tabs are
+ * native views composited over the page: a BrowserWindow hands focus to its own webContents, not
+ * to a child view, and without this the window looks alive and accepts no typing at all. Claims
+ * are only consulted if the plugin host exists — before any plugin has run there is nothing over
+ * the shell to focus.
+ */
 function focusActiveView(): void {
-  const browser = browserTabs?.focusVisible()
-  if (!browser) shellWc()?.focus()
+  if (!pluginHost?.focusClaimed()) shellWc()?.focus()
+}
+
+/**
+ * The plugin boundary, end to end.
+ *
+ * Three claims, and the second is the one worth a test: that laziness is real. Opening a text file
+ * must load the text editor and NOTHING else — no pdf.js, no browser plugin — and that is a
+ * negative the DOM cannot show, so it is asserted against the renderer host's own activation list
+ * and again in main against the command registry. If a static import ever leaks a plugin into the
+ * entry chunk, `pnpm perf:check` catches the bytes and this catches the behaviour.
+ */
+async function runPluginsSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    // Its own fixture in the throwaway data directory, so the check does not depend on the repo
+    // being on disk — a packaged app has no src/ to open.
+    const textFixture = join(app.getPath('userData'), 'smoke.ts')
+    writeFileSync(textFixture, 'export const answer = 42\n', 'utf8')
+
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, plugins } = window.__onestop
+        const trail = []
+        const st = () => store.getState()
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 60; i++) { if (st().ready) break; await sleep(250) }
+        if (!st().ready) return fail('never-ready')
+
+        // Declarative resolution, from manifests alone.
+        const pdfView = plugins.resolveViewType('/tmp/a.pdf')
+        const textView = plugins.resolveViewType('/tmp/a.ts')
+        trail.push('.pdf resolves to ' + pdfView + ', .ts resolves to ' + textView)
+        if (pdfView !== 'pdf.preview') return fail('pdf-editor-not-declared')
+        if (textView !== 'text-editor.monaco') return fail('text-editor-is-not-the-floor')
+
+        // The source control panel is in the right rail and visible by default, so its plugin
+        // should come up on its own shortly after first paint.
+        for (let i = 0; i < 40; i++) {
+          if (document.querySelector('.scm__body')) break
+          await sleep(250)
+        }
+        if (!document.querySelector('.scm__body')) return fail('scm-panel-never-rendered')
+        trail.push('scm panel rendered')
+
+        const scratch = st().workspaces.find(w => w.id === '__scratch__')
+        if (!scratch) return fail('no-scratch')
+        store.getState().setActiveWorkspace(scratch.id)
+
+        // Open a text file. The text editor must load; the PDF plugin must not.
+        store.getState().openTab(scratch.id, {
+          id: 'plugins-smoke-text', kind: 'editor', title: 'smoke.ts', pinned: false,
+          filePath: ${JSON.stringify(textFixture)}, repoId: null, readOnly: true,
+          viewType: 'text-editor.monaco'
+        })
+        for (let i = 0; i < 60; i++) {
+          if (document.querySelector('.monaco-editor')) break
+          await sleep(250)
+        }
+        if (!document.querySelector('.monaco-editor')) return fail('monaco-never-mounted')
+        trail.push('monaco mounted from the text-editor plugin')
+
+        const loaded = await plugins.activated()
+        trail.push('plugins loaded: ' + loaded.join(',') )
+        if (!loaded.includes('text-editor')) return fail('text-editor-not-active')
+        if (loaded.includes('pdf')) return fail('pdf-plugin-loaded-for-a-text-file')
+        if (loaded.includes('browser')) return fail('browser-plugin-loaded-unprompted')
+
+        return JSON.stringify({ ok: true, trail, loaded })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
+
+    /*
+     * Main's own half of the claim, in two steps.
+     *
+     * First: nothing is loaded here yet. The renderer has a source control panel on screen, but
+     * Scratch has no folders, so the panel had nothing to ask — and the main-side host has
+     * therefore never even been constructed. That is the laziness working at the process level,
+     * and it is only visible from here.
+     *
+     * Then: one real command makes the half appear, on demand, with its commands registered. The
+     * renderer→main→plugin round trip itself is covered by `pnpm smoke:pdf`, which reads bytes,
+     * and by `pnpm smoke:multirepo`, which drives source control against real repositories.
+     */
+    const hostBefore = pluginHost === null
+    const host = await plugins()
+    await host.invoke('scm:statusAll', { repoRoots: [] })
+    const commands = host.commands()
+    const active = host.active()
+    const ok =
+      info.ok &&
+      hostBefore &&
+      active.includes('scm') &&
+      commands.some((c) => c.startsWith('scm:')) &&
+      !active.includes('pdf') &&
+      !active.includes('browser')
+
+    console.log(
+      '[smoke:plugins]',
+      JSON.stringify({ ...info, ok, hostUnbuiltUntilAsked: hostBefore, mainActive: active, commands })
+    )
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:plugins] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * A one-page PDF with a known line of text, written by hand.
+ *
+ * `printToPDF` looked like the obvious fixture and is not: with the default `printBackground:
+ * false` the shell prints as an empty content stream, so the check passed a blank page to the
+ * viewer and then asserted the page was not blank. Thirty lines of PDF are worth more than that —
+ * the bytes are deterministic, the marker is ours, and the text layer has something specific to
+ * find, which turns "a canvas appeared" into "the document was parsed, rendered AND made
+ * selectable".
+ *
+ * The xref offsets have to be right: pdf.js can reconstruct a broken table, and a fixture that
+ * quietly exercises the recovery path instead of the normal one is not the test anyone wanted.
+ */
+function minimalPdf(marker: string): Buffer {
+  const content = `BT /F1 24 Tf 40 500 Td (${marker}) Tj ET\n`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R ' +
+      '/Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${content.length} >>\nstream\n${content}endstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  ]
+
+  let pdf = '%PDF-1.4\n'
+  const offsets: number[] = []
+  objects.forEach((body, i) => {
+    offsets.push(pdf.length)
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`
+  })
+
+  const xref = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(pdf, 'latin1')
+}
+
+/**
+ * The PDF plugin, end to end: bytes over `plugin:invoke`, pdf.js in a real worker, ink on a canvas
+ * and a text layer you could select.
+ *
+ * What it cannot cover is a CJK document with a predefined Adobe CMap — writing one by hand means
+ * embedding a CID font. That path is guarded instead by `pnpm perf:check` asserting the cmaps were
+ * emitted into the packaged build, which is the way it actually breaks.
+ */
+const PDF_SMOKE_MARKER = 'ONESTOP-PDF-SMOKE'
+
+async function runPdfSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const pdf = join(app.getPath('userData'), 'smoke.pdf')
+    writeFileSync(pdf, minimalPdf(PDF_SMOKE_MARKER))
+    console.log(`[smoke:pdf] fixture ${pdf} ${statSync(pdf).size} bytes`)
+
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, plugins } = window.__onestop
+        const trail = []
+        const st = () => store.getState()
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 60; i++) { if (st().ready) break; await sleep(250) }
+        const scratch = st().workspaces.find(w => w.id === '__scratch__')
+        if (!scratch) return fail('no-scratch')
+        store.getState().setActiveWorkspace(scratch.id)
+
+        const path = ${JSON.stringify(pdf)}
+        const viewType = plugins.resolveViewType(path)
+        trail.push('resolved ' + viewType)
+        if (viewType !== 'pdf.preview') return fail('pdf-not-claimed')
+
+        store.getState().openTab(scratch.id, {
+          id: 'pdf-smoke-tab', kind: 'editor', title: 'smoke.pdf', pinned: false,
+          filePath: path, repoId: null, readOnly: true, viewType
+        })
+
+        // A rendered page is a canvas with a real backing store. pdf.js fetches its worker, the
+        // bytes come over plugin:invoke, and the first page paints; 20 s is generous for all of it.
+        let canvas = null
+        for (let i = 0; i < 80; i++) {
+          await sleep(250)
+          canvas = [...document.querySelectorAll('canvas')].find(c => c.width > 0 && c.height > 0)
+          if (canvas) break
+        }
+        if (!canvas) {
+          const notice = (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 200)
+          return fail('no-page-rendered', { notice })
+        }
+        trail.push('page canvas ' + canvas.width + 'x' + canvas.height)
+
+        // Non-blank: printToPDF of the shell always puts something on page 1. Sampled over the
+        // WHOLE canvas, not a band at the top — printToPDF applies a default page margin, so the
+        // first couple of hundred rows are legitimately empty and a band there proves nothing.
+        const ctx = canvas.getContext('2d')
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+        let ink = 0
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) ink++
+        }
+        trail.push('non-white pixels: ' + ink + ' of ' + (canvas.width * canvas.height))
+        if (ink === 0) return fail('page-rendered-blank')
+
+        // And the text layer, which is what makes the text selectable and searchable. Waited for
+        // separately because it is built only after the page's canvas render resolves.
+        let layerText = ''
+        for (let i = 0; i < 40; i++) {
+          const layer = document.querySelector('.textLayer')
+          layerText = layer ? (layer.textContent || '') : ''
+          if (layerText.includes(${JSON.stringify(PDF_SMOKE_MARKER)})) break
+          await sleep(250)
+        }
+        trail.push('text layer: ' + JSON.stringify(layerText.slice(0, 60)))
+        if (!layerText.includes(${JSON.stringify(PDF_SMOKE_MARKER)})) {
+          return fail('text-layer-missing-the-marker')
+        }
+
+        const loaded = await plugins.activated()
+        trail.push('plugins loaded: ' + loaded.join(','))
+        if (!loaded.includes('pdf')) return fail('pdf-plugin-not-active')
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
+
+    // A viewer is a visual thing and the assertions above are all numeric. Setting ONESTOP_SHOT
+    // leaves a PNG of what was actually on screen, which is the difference between "a canvas had
+    // ink in it" and "this looks like a PDF reader".
+    if (process.env.ONESTOP_SHOT) {
+      writeFileSync(process.env.ONESTOP_SHOT, (await wc.capturePage()).toPNG())
+      console.log(`[smoke:pdf] shot ${process.env.ONESTOP_SHOT}`)
+    }
+
+    const commands = pluginHost?.commands() ?? []
+    const ok = info.ok && commands.includes('pdf:read')
+    console.log('[smoke:pdf]', JSON.stringify({ ...info, ok, commands }))
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:pdf] threw:', err)
+    app.exit(1)
+  }
 }
 
 /**
@@ -1341,52 +1627,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
-  browserTabs?.destroyAll()
+  // Fire and forget: before-quit is synchronous and the host's teardown is not. Every plugin's
+  // cleanup is an effect on its fiber, so what matters is that disposal STARTS — and the smoke
+  // modes, which exit through app.exit() and never reach this handler at all, call it directly.
+  void pluginHost?.dispose()
   ptys?.disposeAll()
-  gitService.dispose()
-})
-
-/**
- * HTTP 401/407. Registered once on `app`, not per WebContents: Session has no 'login' event, and
- * the app-level signature is the only one that tells us which WebContents asked, so we can
- * attribute the prompt to the right tab.
- *
- * Signature is 5 args here. (WebContents' own 'login' takes 4 — dropping
- * authenticationResponseDetails there is a silent footgun that binds `callback` to authInfo.)
- */
-/**
- * Outstanding HTTP auth challenges, keyed by the id handed to the renderer. The callback must be
- * invoked exactly once: calling it with no arguments cancels the request, and never calling it
- * leaves the page loading forever.
- */
-const pendingAuth = new Map<string, (username?: string, password?: string) => void>()
-let authSeq = 0
-
-/** A dialog nobody answers must not pin the request open indefinitely. */
-const AUTH_TIMEOUT_MS = 2 * 60 * 1000
-
-app.on('login', (event, webContents, details, authInfo, callback) => {
-  const viewId = webContents ? browserTabs?.idFor(webContents) ?? null : null
-  if (!viewId) return // not one of our browser tabs; let Electron's default (cancel) apply
-  event.preventDefault()
-
-  const requestId = `auth${++authSeq}`
-  pendingAuth.set(requestId, callback)
-  emit(shellWc(), 'browser:authRequested', {
-    viewId,
-    requestId,
-    host: authInfo.host || authInfo.realm || 'the server',
-    realm: authInfo.realm,
-    isProxy: authInfo.isProxy,
-    url: details.url
-  })
-
-  setTimeout(() => {
-    const cb = pendingAuth.get(requestId)
-    if (!cb) return
-    pendingAuth.delete(requestId)
-    cb()
-  }, AUTH_TIMEOUT_MS).unref()
 })
 
 // ---------------------------------------------------------------------------
@@ -1516,39 +1761,8 @@ function registerHandlers(): void {
 
   handle('fs:writeFile', ({ path, content }) => { writeFileSync(path, content, 'utf8') })
 
-  // --- browser tabs ------------------------------------------------------
-  handle('browser:create', ({ url, bounds }) => {
-    if (!browserTabs) throw new Error('window not ready')
-    return { viewId: browserTabs.create(url, bounds) }
-  })
-  handle('browser:destroy', ({ viewId }) => { browserTabs?.destroy(viewId) })
-  handle('browser:setVisible', ({ viewId, visible }) => {
-    if (visible) {
-      browserTabs?.showOnly(viewId)
-    } else {
-      browserTabs?.setVisible(viewId, false)
-      shellWc()?.focus()
-    }
-  })
-  handle('browser:setBounds', ({ viewId, bounds }: { viewId: string; bounds: ViewBounds }) => {
-    browserTabs?.setBounds(viewId, bounds)
-  })
-  handle('browser:navigate', ({ viewId, url }) => { browserTabs?.navigate(viewId, url) })
-  handle('browser:goBack', ({ viewId }) => { browserTabs?.goBack(viewId) })
-  handle('browser:goForward', ({ viewId }) => { browserTabs?.goForward(viewId) })
-  handle('browser:reload', ({ viewId }) => { browserTabs?.reload(viewId) })
-  handle('browser:stop', ({ viewId }) => { browserTabs?.stop(viewId) })
-  handle('browser:openDevTools', ({ viewId }) => { browserTabs?.openDevTools(viewId) })
-  handle('browser:authResponse', ({ requestId, username, password }) => {
-    const cb = pendingAuth.get(requestId)
-    if (!cb) return // already timed out, or answered twice
-    pendingAuth.delete(requestId)
-    if (username === null) cb()
-    else cb(username, password)
-  })
-
   registerTerminalHandlers()
-  registerScmHandlers()
+  registerPluginHandlers()
 }
 
 function registerTerminalHandlers(): void {
@@ -1568,22 +1782,24 @@ function registerTerminalHandlers(): void {
   handle('terminal:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
 }
 
-function registerScmHandlers(): void {
-  handle('scm:status', ({ repoRoot }) => gitService.status(repoRoot))
-  handle('scm:statusAll', ({ repoRoots }) => gitService.statusAll(repoRoots))
-  handle('scm:diff', ({ repoRoot, path, against }) => gitService.diff(repoRoot, path, against))
-  handle('scm:stage', ({ repoRoot, paths }) => gitService.stage(repoRoot, paths))
-  handle('scm:unstage', ({ repoRoot, paths }) => gitService.unstage(repoRoot, paths))
-  handle('scm:discard', ({ repoRoot, paths }) => gitService.discard(repoRoot, paths))
-  handle('scm:commit', ({ repoRoot, message, amend }) => gitService.commit(repoRoot, message, amend))
-  handle('scm:hunks', async ({ repoRoot, path, action }) => {
-    const parsed = await gitService.hunks(repoRoot, path, action)
-    return { hunks: withLineNumbers(parsed), binary: parsed.binary }
+/**
+ * One handler for every plugin, on one channel.
+ *
+ * Source control and the browser each had a block of their own here. They are plugins now: their
+ * commands are registered by their own main halves, dispatched through the command registry, and
+ * authorised there — an unregistered command is rejected rather than reaching anything.
+ */
+function registerPluginHandlers(): void {
+  handle('plugin:invoke', async ({ command, payload }) => {
+    const host = await plugins()
+    try {
+      return await host.invoke(command, payload)
+    } catch (err) {
+      // Name the command, not the channel. `handle` prefixes whatever escapes with the channel it
+      // arrived on, which was useful when every feature had one of its own and says nothing now
+      // that all twenty-two of them are `plugin:invoke` — a reader would see "plugin:invoke: ENOENT"
+      // with no way to tell whether git, the browser or the PDF reader produced it.
+      throw new Error(`${command}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   })
-  handle('scm:applySelection', ({ repoRoot, path, lineIds, action }) =>
-    gitService.applySelection(repoRoot, path, lineIds, action)
-  )
-  handle('scm:watch', ({ repoRoots }) =>
-    gitService.watch(repoRoots, (status) => emit(shellWc(), 'scm:status', { status }))
-  )
 }

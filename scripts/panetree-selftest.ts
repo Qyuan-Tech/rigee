@@ -309,54 +309,66 @@ console.log('\nterminal clipboard')
 
 console.log('\ntab strip')
 {
+  /*
+   * Which plugin tabs count as documents comes from the manifests at runtime. Injected here as a
+   * literal so this file stays a pure unit test: it is bundled by esbuild with no aliases, and
+   * reaching for the real registry would drag the whole plugin barrel into it.
+   */
+  const isDocument = (viewType: string): boolean => viewType === 'scm.diff'
+
   const editor = (id: string, pinned = false): Tab =>
     ({ id, kind: 'editor', title: id, pinned, filePath: `/${id}.ts`, repoId: null, readOnly: false })
   const diff = (id: string): Tab =>
-    ({ id, kind: 'diff', title: id, pinned: false, filePath: `/${id}.ts`, repoId: 'r',
-       against: { kind: 'worktree-vs-index' } })
+    ({ id, kind: 'custom', title: id, pinned: false, viewType: 'scm.diff',
+       state: { filePath: `/${id}.ts`, repoId: 'r', against: { kind: 'worktree-vs-index' } },
+       key: `scm.diff:r:/${id}.ts:worktree-vs-index` })
   const terminal = (id: string): Tab =>
     ({ id, kind: 'terminal', title: id, pinned: false,
        root: { kind: 'leaf', id: `${id}-leaf`, paneId: null }, activeLeafId: `${id}-leaf` })
   const browser = (id: string): Tab =>
-    ({ id, kind: 'browser', title: id, pinned: false, url: 'https://example.com', viewId: '',
-       canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null })
+    ({ id, kind: 'custom', title: id, pinned: false, viewType: 'browser.page',
+       state: { url: 'https://example.com' } })
 
-  check('an editor is a file tab', isFileTab(editor('a')))
-  check('a diff is a file tab', isFileTab(diff('d')))
-  check('a terminal is not', !isFileTab(terminal('t')))
-  check('a browser is not', !isFileTab(browser('b')))
+  check('an editor is a file tab', isFileTab(editor('a'), isDocument))
+  check('a diff is a file tab', isFileTab(diff('d'), isDocument))
+  check('a terminal is not', !isFileTab(terminal('t'), isDocument))
+  check('a browser is not', !isFileTab(browser('b'), isDocument))
+  check('nor is a plugin tab whose plugin is gone',
+    !isFileTab({ id: 'z', kind: 'custom', title: 'z', pinned: false,
+                 viewType: 'ghost.view', state: {} }, isDocument))
 
   // The whole point of the feature: terminals and browsers share the strip and must come through
   // every bulk close untouched. A swept-up terminal takes a running process with it.
   const mixed = [terminal('t1'), editor('e1'), browser('b1'), editor('e2'), diff('d1'), terminal('t2')]
 
   eq('close others spares terminals and browsers',
-    tabsToClose(mixed, 'e1', 'others').join(','), 'e2,d1')
+    tabsToClose(mixed, 'e1', 'others', isDocument).join(','), 'e2,d1')
   eq('close to the right spares them too',
-    tabsToClose(mixed, 'e1', 'right').join(','), 'e2,d1')
+    tabsToClose(mixed, 'e1', 'right', isDocument).join(','), 'e2,d1')
   eq('close all means all FILES',
-    tabsToClose(mixed, 'e1', 'all').join(','), 'e1,e2,d1')
+    tabsToClose(mixed, 'e1', 'all', isDocument).join(','), 'e1,e2,d1')
 
   eq('close to the right of the last file tab is empty',
-    tabsToClose(mixed, 'd1', 'right').length, 0)
+    tabsToClose(mixed, 'd1', 'right', isDocument).length, 0)
   eq('close others excludes the target',
-    tabsToClose(mixed, 'e2', 'others').join(','), 'e1,d1')
+    tabsToClose(mixed, 'e2', 'others', isDocument).join(','), 'e1,d1')
 
   // A terminal between two editors is skipped, not treated as the right-hand boundary.
   eq('a terminal in the middle does not stop the sweep',
-    tabsToClose([editor('a'), terminal('t'), editor('b')], 'a', 'right').join(','), 'b')
+    tabsToClose([editor('a'), terminal('t'), editor('b')], 'a', 'right', isDocument).join(','), 'b')
 
-  eq('an unknown tab closes nothing', tabsToClose(mixed, 'nope', 'all').length, 0)
+  eq('an unknown tab closes nothing', tabsToClose(mixed, 'nope', 'all', isDocument).length, 0)
 
   // Pinned: TabBase says pinned tabs survive "close others", so they must also survive the
   // narrower sweep, but not an explicit close-all. Matches VSCode.
   const withPinned = [editor('p', true), editor('x'), editor('y')]
   eq('a pinned tab survives close others',
-    tabsToClose(withPinned, 'x', 'others').join(','), 'y')
+    tabsToClose(withPinned, 'x', 'others', isDocument).join(','), 'y')
   eq('and survives close to the right',
-    tabsToClose([editor('a'), editor('p', true), editor('z')], 'a', 'right').join(','), 'z')
+    tabsToClose([editor('a'), editor('p', true), editor('z')], 'a', 'right', isDocument).join(','),
+    'z')
   eq('but close all takes it',
-    tabsToClose(withPinned, 'x', 'all').join(','), 'p,x,y')
+    tabsToClose(withPinned, 'x', 'all', isDocument).join(','), 'p,x,y')
 
   // Selection after a bulk close. Computed once, so it cannot walk through doomed tabs.
   const ids = (...xs: string[]): Set<string> => new Set(xs)

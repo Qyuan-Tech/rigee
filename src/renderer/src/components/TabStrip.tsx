@@ -1,20 +1,29 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { CloseIcon, DiffIcon, FileIcon, GlobeIcon, TerminalIcon } from '../icons'
+import { CloseIcon, FileIcon, ICONS, TerminalIcon } from '../icons'
+import { ensurePlugin } from '../plugins/activate'
+import { tabFactory } from '../plugins/bindings'
+import {
+  creatableTabs,
+  displayNameOf,
+  iconFor,
+  isDocumentViewType,
+  ownerOf
+} from '../plugins/registry'
 import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useTabs } from '../store'
 import { isFileTab, tabsToClose } from '../tabs'
 import type { Tab, TabId } from '@shared/types'
 
-function TabIcon({ kind }: { kind: Tab['kind'] }): React.ReactElement {
-  switch (kind) {
-    case 'terminal':
-      return <TerminalIcon size={13} />
-    case 'editor':
-      return <FileIcon size={13} />
-    case 'diff':
-      return <DiffIcon size={13} />
-    case 'browser':
-      return <GlobeIcon size={13} />
-  }
+/**
+ * A tab's icon, asked for by name in the owning plugin's manifest.
+ *
+ * Manifest data only — looking this up must never activate anything, or the strip would load
+ * every plugin whose tab is merely restored from disk.
+ */
+function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
+  if (tab.kind === 'terminal') return <TerminalIcon size={13} />
+  const name = iconFor(tab.kind === 'editor' ? tab.viewType : tab.viewType)
+  const Icon = name ? ICONS[name] : FileIcon
+  return <Icon size={13} />
 }
 
 export function TabStrip(): React.ReactElement {
@@ -56,14 +65,35 @@ export function TabStrip(): React.ReactElement {
     openTab(workspace.id, newTerminalTab())
   }, [openTab, workspace])
 
-  const addBrowser = useCallback(() => {
-    if (!workspace) return
-    openTab(workspace.id, {
-      id: nextTabId(), kind: 'browser', title: 'new tab', pinned: false,
-      url: 'https://www.google.com', viewId: '',
-      canGoBack: false, canGoForward: false, loading: false, faviconDataUrl: null
-    })
-  }, [openTab, workspace])
+  /**
+   * Open a fresh tab of a plugin-owned type.
+   *
+   * The button comes from the manifest, so it exists before the plugin does; pressing it is the
+   * first thing that loads the plugin, and only then can it say what an empty one of these looks
+   * like. Hence activate-then-ask rather than a description in the manifest: "a new browser tab
+   * starts at Google" is the plugin's business, not the shell's.
+   */
+  const addPluginTab = useCallback(
+    async (viewType: string) => {
+      const owner = ownerOf(viewType)
+      if (!owner) return
+      await ensurePlugin(owner)
+      const create = tabFactory(viewType)
+      if (!create) return
+      // Re-read the workspace AFTER the await. The first press of this button fetches cordis, the
+      // plugin host and the plugin's chunk, which takes long enough to switch workspaces in — and
+      // the closed-over id would then put the tab in the workspace the user just left, where it
+      // silently becomes the active tab. Worse, if that workspace was closed, `openTab` would
+      // recreate its entries in a store that had just deleted them.
+      const workspaceId = useApp.getState().activeWorkspaceId
+      if (!workspaceId) return
+      const { title, state, key } = create()
+      openTab(workspaceId, {
+        id: nextTabId(), kind: 'custom', title, pinned: false, viewType, state, key
+      })
+    },
+    [openTab]
+  )
 
   if (!workspace) return <div className="tabstrip" />
 
@@ -87,7 +117,7 @@ export function TabStrip(): React.ReactElement {
           onContextMenu={(e) => {
             // There is no useful default menu on the strip, so swallow it either way.
             e.preventDefault()
-            if (!isFileTab(tab)) return
+            if (!isFileTab(tab, isDocumentViewType)) return
             // Select as well as target. Partly because acting on a tab you cannot see is
             // disorienting, but mostly because a visible browser tab is a native WebContentsView
             // composited ON TOP of this whole page: the menu would be drawn underneath it and
@@ -97,7 +127,7 @@ export function TabStrip(): React.ReactElement {
           }}
           title={tabTooltip(tab)}
         >
-          <span className="tab__icon"><TabIcon kind={tab.kind} /></span>
+          <span className="tab__icon"><TabIcon tab={tab} /></span>
           <span className="tab__label">{tab.title}</span>
           <button
             className="tab__close"
@@ -113,9 +143,25 @@ export function TabStrip(): React.ReactElement {
         <button className="icon-button" onClick={addTerminal} title="New terminal">
           <TerminalIcon size={14} />
         </button>
-        <button className="icon-button" onClick={addBrowser} title="New browser tab">
-          <GlobeIcon size={14} />
-        </button>
+        {creatableTabs().map((c) => {
+          const Icon = c.icon ? ICONS[c.icon] : FileIcon
+          return (
+            <button
+              key={c.viewType}
+              className="icon-button"
+              // A failed activation must say so. `void` on its own leaves an unhandled rejection
+              // and a button that reads as dead.
+              onClick={() =>
+                addPluginTab(c.viewType).catch((e: unknown) =>
+                  console.error(`[tabs] could not open ${c.viewType}`, e)
+                )
+              }
+              title={c.creatable?.label ?? c.displayName}
+            >
+              <Icon size={14} />
+            </button>
+          )
+        })}
       </div>
 
       {menu && (
@@ -161,8 +207,8 @@ function TabMenu({
 
   if (!tabs.some((t) => t.id === tabId)) return null
 
-  const others = tabsToClose(tabs, tabId, 'others')
-  const toRight = tabsToClose(tabs, tabId, 'right')
+  const others = tabsToClose(tabs, tabId, 'others', isDocumentViewType)
+  const toRight = tabsToClose(tabs, tabId, 'right', isDocumentViewType)
 
   return (
     <div className="menu" ref={ref} style={pos} onMouseDown={(e) => e.stopPropagation()}>
@@ -177,7 +223,10 @@ function TabMenu({
       </button>
       <div className="menu__sep" />
       {/* Named for what it does. "Close All" above a surviving terminal tab would be a lie. */}
-      <button className="menu__item" onClick={() => onClose(tabsToClose(tabs, tabId, 'all'))}>
+      <button
+        className="menu__item"
+        onClick={() => onClose(tabsToClose(tabs, tabId, 'all', isDocumentViewType))}
+      >
         <span>Close All Files</span>
       </button>
     </div>
@@ -186,11 +235,17 @@ function TabMenu({
 
 function tabTooltip(tab: Tab): string {
   switch (tab.kind) {
-    case 'editor':
-    case 'diff':
-      return tab.filePath
-    case 'browser':
-      return tab.url
+    case 'editor': {
+      const viewer = tab.viewType ? displayNameOf(tab.viewType) : null
+      return viewer ? `${tab.filePath} — ${viewer}` : tab.filePath
+    }
+    case 'custom': {
+      // The plugin's own tooltip first: a diff's file path, a page's URL. The shell cannot read
+      // either out of an opaque state bag, and falling back to the type name alone would have made
+      // every diff tab hover as "Diff" — which is what the strip already says.
+      const name = displayNameOf(tab.viewType) ?? tab.viewType
+      return tab.tooltip ? `${tab.tooltip} — ${name}` : name
+    }
     case 'terminal':
       return 'terminal'
   }
