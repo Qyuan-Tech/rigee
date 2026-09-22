@@ -111,6 +111,7 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'mouse') void runMouseSmoke()
     else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
     else if (process.env.ONESTOP_SMOKE === 'scroll') void runScrollSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'explorer') void runExplorerSmoke()
     else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
@@ -400,6 +401,114 @@ async function runMultiRepoSmoke(): Promise<void> {
     app.exit(JSON.parse(result).ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:multirepo] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
+ * The explorer remembers which folders were open, per workspace and across a restart.
+ *
+ * Expansion used to live in each DirNode. Switching workspaces unmounts the whole tree, so the
+ * state went with it and coming back re-expanded everything from defaults — losing exactly the
+ * arrangement you had set up in the project you were working in.
+ *
+ * Point ONESTOP_SMOKE_MULTIREPO at a directory of folders; two of them become two workspaces.
+ */
+async function runExplorerSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = process.env.ONESTOP_SMOKE_MULTIREPO
+  if (!dir) { console.error('[smoke:explorer] set ONESTOP_SMOKE_MULTIREPO'); app.exit(1); return }
+  const roots = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => join(dir, e.name)).sort().slice(0, 2)
+  if (roots.length < 2) { console.error('[smoke:explorer] need two folders'); app.exit(1); return }
+  try {
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store } = window.__onestop
+        const trail = []
+        const st = () => store.getState()
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 60; i++) { if (st().ready) break; await sleep(250) }
+        const roots = ${JSON.stringify(roots)}
+        roots.forEach((p, i) => store.getState().addWorkspace({
+          id: 'ws-exp' + i, name: 'exp' + i, createdAt: Date.now(), lastOpenedAt: Date.now(),
+          folders: [{ path: p, name: p.split('/').pop(), isGitRepo: true, repoRoot: p }]
+        }))
+        await sleep(1200)
+
+        const expandedOf = (ws) => (st().expandedDirs[ws] ?? []).slice().sort()
+
+        // A first visit opens the roots.
+        store.getState().setActiveWorkspace('ws-exp0')
+        await sleep(1200)
+        trail.push('ws-exp0 on arrival: ' + JSON.stringify(expandedOf('ws-exp0')))
+        if (expandedOf('ws-exp0').length !== 1) return fail('roots-not-open-on-first-visit')
+
+        // Collapse everything in A, so its state is distinctive and not just the default.
+        store.getState().setExpandedDirs('ws-exp0', [])
+        await sleep(400)
+        const rowsCollapsed = document.querySelectorAll('.explorer__body .row').length
+        trail.push('ws-exp0 rows while collapsed: ' + rowsCollapsed)
+
+        // Visit B, which must get its own defaults rather than A's.
+        store.getState().setActiveWorkspace('ws-exp1')
+        await sleep(1200)
+        trail.push('ws-exp1 on arrival: ' + JSON.stringify(expandedOf('ws-exp1')))
+        if (expandedOf('ws-exp1').length !== 1) return fail('second-workspace-did-not-seed')
+
+        // Back to A: still collapsed. This is the report.
+        store.getState().setActiveWorkspace('ws-exp0')
+        await sleep(1200)
+        trail.push('ws-exp0 on return: ' + JSON.stringify(expandedOf('ws-exp0')))
+        if (expandedOf('ws-exp0').length !== 0) {
+          return fail('returning-to-a-workspace-reset-its-expansion', { got: expandedOf('ws-exp0') })
+        }
+        if (document.querySelectorAll('.explorer__body .row').length !== rowsCollapsed) {
+          return fail('rendered-tree-does-not-match-remembered-state')
+        }
+
+        // The button is a toggle, not a one-way collapse.
+        const btn = () => [...document.querySelectorAll('.section-header .icon-button')]
+          .find(b => b.title === 'Collapse all folders' || b.title === 'Expand folders')
+        trail.push('button now says: ' + btn().title)
+        if (btn().title !== 'Expand folders') return fail('button-should-offer-expand-when-collapsed')
+        btn().click()
+        await sleep(600)
+        trail.push('after expand: ' + JSON.stringify(expandedOf('ws-exp0')))
+        if (expandedOf('ws-exp0').length === 0) return fail('expand-did-nothing')
+        if (btn().title !== 'Collapse all folders') return fail('button-should-offer-collapse-when-open')
+        btn().click()
+        await sleep(600)
+        if (expandedOf('ws-exp0').length !== 0) return fail('collapse-did-nothing')
+        trail.push('toggle works both ways')
+
+        // And it reaches disk, so a restart keeps it.
+        store.getState().setExpandedDirs('ws-exp0', [roots[0]])
+        await sleep(2000)
+        return JSON.stringify({ ok: true, trail, expectOnDisk: roots[0] })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[]; expectOnDisk?: string }
+    let persisted: string[] = []
+    if (info.ok) {
+      const file = join(app.getPath('userData'), 'workspaces.json')
+      try {
+        const doc = JSON.parse(readFileSync(file, 'utf8')) as {
+          ui?: Record<string, { expandedDirs?: string[] }>
+        }
+        persisted = doc.ui?.['ws-exp0']?.expandedDirs ?? []
+      } catch { /* reported below */ }
+    }
+    const ok = info.ok && persisted.length === 1 && persisted[0] === info.expectOnDisk
+    console.log('[smoke:explorer]', JSON.stringify({ ...info, ok, persisted }))
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:explorer] threw:', err)
     app.exit(1)
   }
 }

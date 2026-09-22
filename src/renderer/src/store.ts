@@ -37,6 +37,16 @@ interface AppState {
   activeTabByWorkspace: Record<WorkspaceId, TabId | null>
   layout: PanelLayout
 
+  /**
+   * Which explorer directories are expanded, per workspace, by absolute path.
+   *
+   * In the store rather than in each DirNode because it has to outlive the components: switching
+   * workspaces unmounts the whole tree, and local state went with it — so coming back to a
+   * workspace re-expanded everything from defaults instead of showing it as you left it.
+   * Persisted as `WorkspaceUiState.expandedDirs`.
+   */
+  expandedDirs: Record<WorkspaceId, string[]>
+
   /** Keyed by repo root. */
   scm: Record<string, RepoStatus>
 
@@ -57,6 +67,8 @@ interface AppState {
   reorderTabs: (workspaceId: WorkspaceId, from: number, to: number) => void
 
   setLayout: (patch: Partial<PanelLayout>) => void
+  toggleDir: (workspaceId: WorkspaceId, path: string) => void
+  setExpandedDirs: (workspaceId: WorkspaceId, paths: string[]) => void
   setRepoStatus: (status: RepoStatus) => void
   setKeybindings: (keybindings: KeyBindings) => void
 }
@@ -69,6 +81,7 @@ export const useApp = create<AppState>()(
     tabsByWorkspace: {},
     activeTabByWorkspace: {},
     layout: { ...DEFAULT_PANEL_LAYOUT },
+    expandedDirs: {},
     scm: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
 
@@ -163,6 +176,16 @@ export const useApp = create<AppState>()(
       }),
 
     setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
+
+    toggleDir: (workspaceId, path) =>
+      set((s) => {
+        const open = new Set(s.expandedDirs[workspaceId] ?? [])
+        if (!open.delete(path)) open.add(path)
+        return { expandedDirs: { ...s.expandedDirs, [workspaceId]: [...open] } }
+      }),
+
+    setExpandedDirs: (workspaceId, paths) =>
+      set((s) => ({ expandedDirs: { ...s.expandedDirs, [workspaceId]: [...new Set(paths)] } })),
     setRepoStatus: (status) => set((s) => ({ scm: { ...s.scm, [status.root]: status } })),
     setKeybindings: (keybindings) => set({ keybindings })
   }))

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { rpc } from '../ipc'
 import {
   ChevronIcon,
   CollapseAllIcon,
+  ExpandAllIcon,
   CloseIcon,
   CollapseLeftIcon,
   FileIcon,
@@ -275,18 +276,58 @@ function OpenMenu({
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Directory listings, cached by absolute path outside React.
+ *
+ * Shared rather than per-node so that (a) switching workspaces and coming back does not re-read
+ * every directory, and (b) "expand all" knows what the tree looks like without issuing a storm of
+ * reads. Paths are absolute, so two workspaces containing the same folder share the entry.
+ */
+const listings = new Map<string, FileStat[]>()
+
 function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const [dropping, setDropping] = useState(false)
+  const workspaceId = workspace?.id ?? null
+  const expanded = useApp((s) => (workspaceId ? s.expandedDirs[workspaceId] : undefined))
+  const setExpandedDirs = useApp((s) => s.setExpandedDirs)
+
+  const open = useMemo(() => new Set(expanded ?? []), [expanded])
+
   /*
-   * Collapse-all is a counter, not a boolean.
-   *
-   * Each DirNode owns whether it is open, which is what keeps expanding a big tree from
-   * re-rendering the sidebar. A shared "collapsed" flag would fight that ownership — the node
-   * could never be reopened while the flag was set. A counter is a broadcast instead: nodes close
-   * when it changes and are free to reopen afterwards.
+   * A workspace with no record yet starts with its root folders open, which is what you want on
+   * first sight of a project. Once there is a record — even an empty one, meaning "everything
+   * collapsed" — it is authoritative and must not be re-seeded, or collapsing everything would
+   * undo itself on the next visit.
    */
-  const [collapseSignal, setCollapseSignal] = useState(0)
+  useEffect(() => {
+    if (!workspaceId || expanded !== undefined) return
+    if (!workspace || workspace.folders.length === 0) return
+    setExpandedDirs(workspaceId, workspace.folders.map((f) => f.path))
+  }, [workspaceId, expanded, workspace, setExpandedDirs])
+
+  const anyOpen = open.size > 0
+
+  /**
+   * Collapse everything, or put it back.
+   *
+   * "Expand all" walks the listings already read rather than fetching the whole tree: a real
+   * checkout with node_modules in it is tens of thousands of directories, and a button that can
+   * fire off that many reads is a trap. In practice it restores what a collapse just hid, because
+   * those listings are all still cached, and reaches anything else the user has browsed to.
+   */
+  const toggleAll = useCallback(() => {
+    if (!workspaceId || !workspace) return
+    if (anyOpen) { setExpandedDirs(workspaceId, []); return }
+
+    const out: string[] = []
+    const walk = (dir: string): void => {
+      out.push(dir)
+      for (const child of listings.get(dir) ?? []) if (child.isDir) walk(child.path)
+    }
+    for (const f of workspace.folders) walk(f.path)
+    setExpandedDirs(workspaceId, out)
+  }, [anyOpen, workspace, workspaceId, setExpandedDirs])
 
   /**
    * Dropping folders here collects them, which is the input side of "Save Workspace As".
@@ -360,11 +401,11 @@ function FileExplorer(): React.ReactElement {
         <span className="section-header__title">Explorer</span>
         <button
           className="icon-button"
-          title="Collapse all folders"
+          title={anyOpen ? 'Collapse all folders' : 'Expand folders'}
           disabled={!workspace || workspace.folders.length === 0}
-          onClick={() => setCollapseSignal((n) => n + 1)}
+          onClick={toggleAll}
         >
-          <CollapseAllIcon size={14} />
+          {anyOpen ? <CollapseAllIcon size={14} /> : <ExpandAllIcon size={14} />}
         </button>
       </div>
       <div className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}>
@@ -375,8 +416,8 @@ function FileExplorer(): React.ReactElement {
           </div>
         )}
         {workspace?.folders.map((f) => (
-          <DirNode key={f.path} path={f.path} name={f.name} depth={0} defaultOpen
-            collapseSignal={collapseSignal} />
+          <DirNode key={f.path} path={f.path} name={f.name} depth={0}
+            open={open} workspaceId={workspaceId} />
         ))}
       </div>
     </div>
@@ -387,63 +428,56 @@ interface DirNodeProps {
   path: string
   name: string
   depth: number
-  defaultOpen?: boolean
-  /** Bumped by "collapse all"; every node closes when it changes. */
-  collapseSignal: number
+  /** Expanded paths for the active workspace. Held in the store so it survives a switch. */
+  open: ReadonlySet<string>
+  workspaceId: string | null
 }
 
 /**
- * Lazily loaded directory node. Children are fetched on first expand and kept afterwards, so
- * collapsing and re-expanding a large directory costs nothing.
+ * Lazily loaded directory node. Listings are cached by path in `listings` and kept afterwards, so
+ * collapsing and re-expanding a large directory costs nothing and neither does leaving the
+ * workspace and coming back.
  */
-function DirNode({
-  path,
-  name,
-  depth,
-  defaultOpen = false,
-  collapseSignal
-}: DirNodeProps): React.ReactElement {
-  const [open, setOpen] = useState(defaultOpen)
-  const [children, setChildren] = useState<FileStat[] | null>(null)
+function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.ReactElement {
+  const toggleDir = useApp((s) => s.toggleDir)
+  const isOpen = open.has(path)
+  const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
 
-  // Skip the first run: mounting is not a collapse request, and a root folder opens by default.
-  const firstSignal = useRef(collapseSignal)
   useEffect(() => {
-    if (collapseSignal !== firstSignal.current) setOpen(false)
-  }, [collapseSignal])
-
-  useEffect(() => {
-    if (!open || children !== null) return
+    if (!isOpen || children !== null) return
     let cancelled = false
     void rpc['fs:list'](path)
-      .then((list) => { if (!cancelled) setChildren(list) })
+      .then((list) => {
+        listings.set(path, list)
+        if (!cancelled) setChildren(list)
+      })
       .catch((e: Error) => { if (!cancelled) setError(e.message) })
     return () => { cancelled = true }
-  }, [open, children, path])
+  }, [isOpen, children, path])
 
   return (
     <>
       <div
         className="row row--clickable"
         style={{ paddingLeft: 8 + depth * 12 }}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { if (workspaceId) toggleDir(workspaceId, path) }}
       >
         <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
-          <ChevronIcon size={12} open={open} />
+          <ChevronIcon size={12} open={isOpen} />
         </span>
         <span className="row__label">{name}</span>
       </div>
-      {open && error && (
+      {isOpen && error && (
         <div className="row" style={{ paddingLeft: 8 + (depth + 1) * 12 }}>
           <span style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{error}</span>
         </div>
       )}
-      {open &&
+      {isOpen &&
         children?.map((c) =>
           c.isDir ? (
             <DirNode key={c.path} path={c.path} name={c.name} depth={depth + 1}
-              collapseSignal={collapseSignal} />
+              open={open} workspaceId={workspaceId} />
           ) : (
             <FileNode key={c.path} stat={c} depth={depth + 1} />
           )

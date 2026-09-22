@@ -162,6 +162,16 @@ export const GearIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** The mirror of CollapseAllIcon: two chevrons opening away from each other. */
+export const ExpandAllIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M5 4 8 1.5" opacity="0" />
+    <path d="M5 5.5 8 2.5l3 3" />
+    <path d="M5 10.5 8 13.5l3-3" />
+    <path d="M2.5 8h11" opacity="0.5" />
+  </Svg>
+)
+
 /** Two chevrons folding towards each other, the way VS Code draws "collapse all". */
 export const CollapseAllIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>

@@ -48,7 +48,12 @@ export function App(): React.ReactElement {
           activeTabByWorkspace: {
             ...s.activeTabByWorkspace,
             [wsId]: ui.activeTabId && ids.has(ui.activeTabId) ? ui.activeTabId : (tabs[0]?.id ?? null)
-          }
+          },
+          // Only when the record has one. Leaving it absent is what tells the explorer this
+          // workspace has never been opened, so it should start with its roots expanded.
+          expandedDirs: Array.isArray(ui.expandedDirs)
+            ? { ...s.expandedDirs, [wsId]: ui.expandedDirs }
+            : s.expandedDirs
         }))
       }
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
@@ -260,7 +265,7 @@ function usePersistence(): void {
         tabs: s.tabsByWorkspace[ws.id] ?? [],
         activeTabId: s.activeTabByWorkspace[ws.id] ?? null,
         layout: s.layout,
-        expandedDirs: []
+        expandedDirs: s.expandedDirs[ws.id] ?? []
       }
     }
     rpc['state:saveAllUi']({ ui }).catch((e: unknown) => console.error('[persist] saveAllUi failed', e))
@@ -278,7 +283,8 @@ function usePersistence(): void {
 
     const unsub = useApp.subscribe(
       (s) =>
-        [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces] as const,
+        [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces,
+         s.expandedDirs] as const,
       schedule
     )
     const interval = setInterval(save, SAVE_INTERVAL_MS)
