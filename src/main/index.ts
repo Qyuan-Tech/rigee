@@ -1614,6 +1614,14 @@ function plantV2Document(dir: string): void {
 function plantExamplePlugin(dir: string): void {
   const from = join(__dirnameESM, '../../examples/hello-plugin')
   const to = join(dir, 'plugins', 'hello')
+  // Absent when this runs from the PACKAGED app: electron-builder packs `out/**` and nothing else,
+  // so examples/ is not there. That is the interesting case to be able to test — file:// origin,
+  // real CSP, code inside an asar — so the plugin may be planted by hand instead, and this skips
+  // rather than throwing at module scope and taking the whole launch with it.
+  if (!existsSync(from)) {
+    console.log(`[smoke:diskplugin] no ${from}; using whatever is already in ${to}`)
+    return
+  }
   mkdirSync(join(to, '..'), { recursive: true })
   cpSync(from, to, { recursive: true })
   console.log(`[smoke:diskplugin] installed ${from} -> ${to}`)
