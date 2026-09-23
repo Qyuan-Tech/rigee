@@ -293,13 +293,21 @@ export class GitService {
         console.warn(`[git] cannot watch ${root}: ${String(err)}`)
       }
     }
-    this.watchers.retain(new Set(resolved))
+    await this.watchers.retain(new Set(resolved))
   }
 
-  dispose(): void {
+  /**
+   * Async because releasing a filesystem watcher is async all the way down, and the quit path has
+   * to be able to wait for it — an unsubscribe still in flight when Node tears the environment
+   * down aborts the process. See `ScmWatchers.unwatch`.
+   */
+  async dispose(): Promise<void> {
     this.lastStatusKey.clear()
-    this.watchers?.dispose()
+    // Detached before the await so a `watch()` racing the teardown builds a fresh ScmWatchers
+    // rather than adding subscriptions to the one being torn down.
+    const watchers = this.watchers
     this.watchers = null
+    await watchers?.dispose()
     for (const repo of new Set(this.repos.values())) repo.blobs.dispose()
     this.repos.clear()
   }

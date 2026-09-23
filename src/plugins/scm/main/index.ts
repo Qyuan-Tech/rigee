@@ -41,7 +41,10 @@ const plugin: Plugin = {
     let git!: GitService
     ctx.effect(() => {
       git = new GitService()
-      return () => { git.dispose() }
+      // RETURNED, not voided: cordis awaits a disposer that hands back a promise (verified
+      // against 4.0.0-rc.10), and that is the link that lets `app.quit` wait for the filesystem
+      // watchers to actually let go. Dropping the promise here would put the abort-on-quit back.
+      return () => git.dispose()
     }, 'git service')
 
     registerScmCommands(register, {

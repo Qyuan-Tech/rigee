@@ -159,6 +159,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'persist') void runPersistSmoke()
     else if (process.env.RIGEE_SMOKE === 'tabs') void runTabsSmoke()
     else if (process.env.RIGEE_SMOKE === 'quit') void runQuitSmoke()
+    else if (process.env.RIGEE_SMOKE === 'shutdown') void runShutdownSmoke()
     else if (process.env.RIGEE_SMOKE === 'copy') void runCopySmoke()
     else if (process.env.RIGEE_SMOKE === 'mouse') void runMouseSmoke()
     else if (process.env.RIGEE_SMOKE === 'scratch') void runScratchSmoke()
@@ -1033,6 +1034,84 @@ async function runQuitSmoke(): Promise<void> {
   }
   console.log('[smoke:quit]', JSON.stringify({ ok: true, plugins: host.active() }))
   app.exit(0)
+}
+
+/**
+ * The other crash on the way out — the one `smoke:quit` structurally cannot catch.
+ *
+ * `smoke:quit` leaves through `app.exit()`, which never runs `before-quit`. That is deliberate
+ * there (it is testing teardown with a destroyed window) but it means the whole quit HANDLER was
+ * untested, and a real Cmd+Q on the packaged app aborted:
+ *
+ *     watcher.node … PromiseRunner::onWorkComplete → napi_fatal_error → abort()
+ *
+ * Source control's filesystem watchers are native. Releasing one schedules work on
+ * @parcel/watcher's thread that finishes through a napi callback, and `before-quit` used to start
+ * disposal without waiting — so the callback arrived mid `Environment::RunCleanup`, where napi has
+ * nowhere to put it and aborts. Nothing in-process notices; you get a crash report for an app that
+ * looked like it quit.
+ *
+ * So this one watches a real repository and then leaves through `app.quit()` — the actual path a
+ * user takes.
+ *
+ * WHAT IT ASSERTS, AND WHAT IT DOES NOT. It does not reproduce the abort. That needs the napi
+ * callback to land inside a window a few milliseconds wide, and quitting with one repo watched
+ * exits 0 either way — measured, by patching the built main back to the old handler. An
+ * exit-code assertion would pass for both versions, which is worse than no test at all.
+ *
+ * So it asserts the property that makes the window unreachable: WHEN THE APP ACTUALLY QUITS,
+ * PLUGIN TEARDOWN HAS FINISHED — not merely started. Two deliberate choices make that a real
+ * check rather than a coincidence:
+ *
+ *   - it reads `host.torndown` from `will-quit`, the last point before the environment goes;
+ *   - it makes teardown take 800 ms. Without that the old code also passed, because Electron
+ *     spends longer closing windows than a one-repo dispose takes, so the bug hid behind a race
+ *     it happened to win. The delay stands in for the slow native unsubscribe of a large watched
+ *     tree, which is the condition the crash report was produced under (four workspaces, an app
+ *     up for nearly two hours) — it does not create the bug, it stops the test from depending on
+ *     which side of a race this particular machine lands.
+ */
+async function runShutdownSmoke(): Promise<void> {
+  const host = await plugins()
+  const repo = app.getAppPath()
+  try {
+    await host.invoke('scm:watch', { repoRoots: [repo] })
+  } catch (err) {
+    console.error('[smoke:shutdown] could not watch', repo, err)
+    app.exit(1)
+    return
+  }
+
+  // Let the FSEvents stream actually come up. Unsubscribing a subscription that never finished
+  // subscribing is a different (and much tamer) path than the one we are here to exercise.
+  await new Promise((r) => setTimeout(r, 500))
+  const watching = host.active()
+
+  // See the note above: teardown is slowed on this instance only, so that "did the quit wait?"
+  // stops being a question about timing. `before-quit` holds the same object, and `torndown` is
+  // still set by the real dispose underneath.
+  const realDispose = host.dispose.bind(host)
+  host.dispose = async (): Promise<void> => {
+    await new Promise((r) => setTimeout(r, 800))
+    await realDispose()
+  }
+
+  app.on('will-quit', () => {
+    const ok = host.torndown
+    console.log('[smoke:shutdown]', JSON.stringify({ watching, torndownAtWillQuit: ok }))
+    if (!ok) {
+      console.error(
+        '[smoke:shutdown] FAILED: the app is quitting while plugin teardown is still running.\n' +
+          '  A native watcher unsubscribe completing after this point aborts the process\n' +
+          '  (watcher.node → PromiseRunner::onWorkComplete → napi_fatal_error).\n' +
+          '  before-quit must hold the quit open until dispose() resolves.'
+      )
+      app.exit(1)
+    }
+  })
+
+  console.log('[smoke:shutdown]', JSON.stringify({ watching, quitting: repo }))
+  app.quit()
 }
 
 /**
@@ -2426,12 +2505,46 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => {
-  // Fire and forget: before-quit is synchronous and the host's teardown is not. Every plugin's
-  // cleanup is an effect on its fiber, so what matters is that disposal STARTS — and the smoke
-  // modes, which exit through app.exit() and never reach this handler at all, call it directly.
-  void pluginHost?.dispose()
-  ptys?.disposeAll()
+
+/**
+ * Teardown, once, with the quit held open until it finishes.
+ *
+ * `before-quit` is synchronous and plugin teardown is not, so this used to start disposal and let
+ * the process leave without it — which is not merely untidy. The source control plugin's
+ * filesystem watchers are native: releasing one schedules work on @parcel/watcher's own thread
+ * that completes through a napi callback, and if the environment is already being torn down when
+ * that callback lands, napi aborts the process. A plain Cmd+Q on the packaged app produced
+ *
+ *     watcher.node … PromiseRunner::onWorkComplete → napi_fatal_error → abort()
+ *
+ * i.e. a SIGABRT crash report for an app that had quit cleanly from the user's point of view. So
+ * the quit is cancelled once, teardown is awaited, and then it is re-issued for real.
+ *
+ * The timeout is the safety valve: a wedged unsubscribe must never turn "quit" into "hang". Two
+ * seconds is ~100x what disposal measures at, so reaching it means something is genuinely stuck
+ * and leaving is the better failure.
+ */
+const QUIT_TEARDOWN_TIMEOUT_MS = 2000
+let quitting: Promise<void> | null = null
+
+app.on('before-quit', (event) => {
+  // The second pass, after teardown re-issues the quit. Let it through.
+  if (quitting) return
+  event.preventDefault()
+
+  quitting = (async () => {
+    // Synchronous, and first: killing the ptys stops anything still writing to a pipe we are
+    // about to close, and it cannot throw its way out of the teardown below.
+    ptys?.disposeAll()
+    const host = pluginHost
+    if (!host) return
+    await Promise.race([
+      host.dispose().catch((err: unknown) => {
+        console.error('[quit] plugin teardown failed:', err)
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, QUIT_TEARDOWN_TIMEOUT_MS).unref?.())
+    ])
+  })().finally(() => { app.quit() })
 })
 
 // ---------------------------------------------------------------------------

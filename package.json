@@ -41,6 +41,7 @@
     "smoke:persist": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=persist electron .",
     "smoke:tabs": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=tabs electron .",
     "smoke:quit": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=quit electron .",
+    "smoke:shutdown": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=shutdown electron . && echo '[smoke:shutdown] exited cleanly'",
     "smoke:copy": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=copy electron .",
     "smoke:scratch": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=scratch electron .",
     "smoke:scroll": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=scroll electron .",

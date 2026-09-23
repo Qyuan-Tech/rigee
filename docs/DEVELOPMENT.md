@@ -25,6 +25,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:persist` | builds tabs, splits and a two-group row, then reads back what reached disk |
 | `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
+| `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -289,6 +290,26 @@ because Chromium looks that storage up by the partition string (`persist:rigee-b
 copying the cookies without renaming the folder would sign everybody out anyway. The old directory
 is left alone: an upgrade that deletes the previous version's data has no way back. That literal
 `onestop` is load-bearing; it is not a rename that was missed.
+
+**Quitting must WAIT for plugin teardown, not just start it.** `before-quit` is synchronous and
+teardown is not, so it used to fire `pluginHost.dispose()` and let the process leave. Source
+control's filesystem watchers are native: `@parcel/watcher`'s `unsubscribe()` finishes through a
+napi async callback, and when that callback lands after Node has begun tearing the environment
+down there is nowhere to deliver it — `PromiseRunner::onWorkComplete` calls `napi_fatal_error` and
+the process aborts. What the user sees is a **SIGABRT crash report for an app that quit normally**,
+minutes after the window closed, with `watcher.node` at the top of the stack. The handler now
+cancels the quit once, awaits disposal (capped at 2 s so a wedged unsubscribe cannot turn "quit"
+into "hang"), and re-issues it. The chain only works because every link returns its promise:
+`ScmWatchers.unwatch` awaits the unsubscribes, `GitService.dispose` awaits the watchers, the scm
+plugin's effect *returns* `() => git.dispose()` rather than voiding it, and cordis awaits a
+disposer that hands back a promise.
+
+`pnpm smoke:shutdown` guards it. Note what it does and does not do: it does **not** reproduce the
+abort — that race is a few milliseconds wide and a one-repo quit exits 0 with or without the fix,
+verified by patching the built main back to the old handler. It asserts the invariant instead
+(teardown is finished by `will-quit`), and it slows teardown to 800 ms so the answer stops
+depending on whether Electron's window-closing happens to outrun `dispose()` on the machine
+running the test. Without that delay the old code passed too.
 
 **The preload must compile to CJS.** `package.json` sets `"type": "module"`, so electron-vite
 would emit an ESM preload, and an ESM preload under `sandbox: true` fails with *"Cannot use import

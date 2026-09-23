@@ -54,6 +54,21 @@ export class PluginHost {
   private readonly fibers = new Map<PluginId, Fiber>()
   private readonly focusClaims = new Set<FocusClaim>()
   private disposed = false
+  private toreDown = false
+
+  /**
+   * True once `dispose()` has fully finished — not merely started.
+   *
+   * The distinction is the whole of the quit-time crash: source control's watchers are native, and
+   * releasing one completes through a napi callback that aborts the process if it lands after Node
+   * has begun tearing the environment down. `disposed` flips at the top of `dispose()` and so
+   * cannot tell "teardown is running" from "teardown is done"; this flips at the bottom.
+   * `smoke:shutdown` asserts it from `will-quit`, which is the point at which it must already be
+   * true.
+   */
+  get torndown(): boolean {
+    return this.toreDown
+  }
 
   /**
    * Plugins the user has switched off.
@@ -221,5 +236,6 @@ export class PluginHost {
     this.fibers.clear()
     this.activations.clear()
     await Promise.all(fibers.map((f) => f.dispose().catch(() => { /* already gone */ })))
+    this.toreDown = true
   }
 }

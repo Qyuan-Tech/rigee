@@ -186,25 +186,41 @@ export class ScmWatchers {
       })
   }
 
-  unwatch(repoRoot: string): void {
+  /**
+   * Stop watching one repo, and WAIT until the native subscriptions are really gone.
+   *
+   * The await is the whole point of this method's signature, and it was missing. `unsubscribe()`
+   * is not bookkeeping: it schedules work on @parcel/watcher's own thread and completes through a
+   * napi async callback. Start one and let the process quit underneath it and that callback
+   * arrives while Node is already tearing the environment down — napi has nowhere to deliver it,
+   * calls `napi_fatal_error`, and the app dies with SIGABRT in `Environment::RunCleanup` instead
+   * of exiting. Observed exactly that on a packaged build after a normal Cmd+Q:
+   *
+   *     watcher.node … PromiseRunner::onWorkComplete → napi_fatal_error → abort()
+   *
+   * So every caller on the quit path has to be able to wait, which means this returns a promise
+   * and `dispose` awaits all of them.
+   */
+  async unwatch(repoRoot: string): Promise<void> {
     const entry = this.entries.get(repoRoot)
     if (!entry) return
     this.entries.delete(repoRoot)
     if (entry.timer) clearTimeout(entry.timer)
     if (entry.maxTimer) clearTimeout(entry.maxTimer)
     if (entry.poll) clearInterval(entry.poll)
-    for (const sub of entry.subs) void sub.unsubscribe().catch(() => { /* already gone */ })
+    // Emptied before awaiting, so a second unwatch of the same repo cannot unsubscribe twice.
+    const subs = entry.subs.splice(0)
+    await Promise.all(subs.map((sub) => sub.unsubscribe().catch(() => { /* already gone */ })))
   }
 
   /** Stop watching everything not in `keep`, so switching workspace releases the old repos. */
-  retain(keep: Set<string>): void {
-    for (const root of [...this.entries.keys()]) {
-      if (!keep.has(root)) this.unwatch(root)
-    }
+  async retain(keep: Set<string>): Promise<void> {
+    const doomed = [...this.entries.keys()].filter((root) => !keep.has(root))
+    await Promise.all(doomed.map((root) => this.unwatch(root)))
   }
 
-  dispose(): void {
-    for (const root of [...this.entries.keys()]) this.unwatch(root)
+  async dispose(): Promise<void> {
+    await Promise.all([...this.entries.keys()].map((root) => this.unwatch(root)))
   }
 }
 
