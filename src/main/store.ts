@@ -43,7 +43,8 @@ function statePath(): string {
   return join(app.getPath('userData'), 'workspaces.json')
 }
 
-function writeAtomic(file: string, contents: string): void {
+/** Exported so the plugin trust store writes the same way the document does: tmp file + rename. */
+export function writeAtomic(file: string, contents: string): void {
   mkdirSync(join(file, '..'), { recursive: true })
   const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`
   try {

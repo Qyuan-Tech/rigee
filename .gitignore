@@ -2,6 +2,10 @@
 node_modules/
 out/
 dist/
+# …except the example plugin's, which is the POINT of the example: it ships the way a real plugin
+# does, as built ESM with no build step, so `pnpm smoke:diskplugin` installs exactly what a user
+# would unpack. Nothing generates it.
+!examples/*/dist/
 release/
 .cache/
 .vite/

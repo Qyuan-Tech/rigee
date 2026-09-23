@@ -7,6 +7,7 @@ import {
   type OverlayContribution,
   type PluginContributions,
   type PluginId,
+  type PluginManifest,
   type StatusBarContribution,
   type TabContribution,
   type ViewContribution,
@@ -56,6 +57,26 @@ const BUILTIN_VIEWS: Owned<ViewContribution>[] = [
  */
 let disabled: ReadonlySet<PluginId> = new Set()
 
+/**
+ * Plugins found on disk that the user has not approved, by id.
+ *
+ * Treated exactly as disabled ones are, and for a stronger reason: their contributions must not
+ * resolve, or an untrusted plugin could claim `*.pdf` and the shell would try to render one with
+ * code nobody agreed to run. Kept SEPARATE from `disabled` because the two mean different things
+ * to the user — "off" is a choice they made, "untrusted" is a question they have not answered —
+ * and the plugins view says so differently.
+ *
+ * Their MANIFESTS are still registered, which is what lets the install prompt say "this adds a
+ * panel called X". A manifest is inert data; it is the halves that are withheld.
+ */
+let untrusted: ReadonlySet<PluginId> = new Set()
+
+/** Where a disk plugin's renderer half is fetched from, once it is trusted. */
+let rendererUrls: ReadonlyMap<PluginId, string> = new Map()
+
+/** Manifests discovered at boot, beyond the ones bundled into the build. */
+let diskManifests: readonly PluginManifest[] = []
+
 export function disabledPlugins(): ReadonlySet<PluginId> {
   return disabled
 }
@@ -70,12 +91,13 @@ export function setDisabledPlugins(ids: Iterable<PluginId>): void {
   pluginUiChanged()
 }
 
-const live = <T,>(items: Owned<T>[]): Owned<T>[] => items.filter((c) => !disabled.has(c.owner))
+const live = <T,>(items: Owned<T>[]): Owned<T>[] =>
+  items.filter((c) => !disabled.has(c.owner) && !untrusted.has(c.owner))
 
 /** Flatten one contribution point across every manifest, stamping each entry with its owner. */
 function collect<T>(pick: (c: PluginContributions) => readonly T[] | undefined): Owned<T>[] {
   const out: Owned<T>[] = []
-  for (const manifest of PLUGIN_MANIFESTS) {
+  for (const manifest of [...PLUGIN_MANIFESTS, ...diskManifests]) {
     for (const contribution of pick(manifest.contributes ?? {}) ?? []) {
       out.push({ ...contribution, owner: manifest.id })
     }
@@ -89,17 +111,58 @@ function collect<T>(pick: (c: PluginContributions) => readonly T[] | undefined):
  * `sort` is stable (guaranteed since ES2019), so equal priorities keep manifest order rather than
  * whatever order the engine happens to produce.
  */
-const editors: Owned<EditorContribution>[] = collect((c) => c.editors).sort(
-  (a, b) => (b.priority ?? 0) - (a.priority ?? 0)
-)
-const tabs: Owned<TabContribution>[] = collect((c) => c.tabs)
-const allViews: Owned<ViewContribution>[] = [...collect((c) => c.views), ...BUILTIN_VIEWS].sort(
-  (a, b) => (a.order ?? 0) - (b.order ?? 0)
-)
-const statusItems: Owned<StatusBarContribution>[] = collect((c) => c.statusBar).sort(
-  (a, b) => (a.order ?? 0) - (b.order ?? 0)
-)
-const overlays: Owned<OverlayContribution>[] = collect((c) => c.overlays)
+let editors: Owned<EditorContribution>[] = []
+let tabs: Owned<TabContribution>[] = []
+let allViews: Owned<ViewContribution>[] = []
+let statusItems: Owned<StatusBarContribution>[] = []
+let overlays: Owned<OverlayContribution>[] = []
+
+/**
+ * Rebuild every table from the manifests currently known.
+ *
+ * Run once at module load and again when the disk plugins arrive. Rebuilding rather than appending
+ * because `editors` and `allViews` are SORTED: appending a disk plugin's editor to the end would
+ * put it after the text editor's -Infinity fallback, so it would claim nothing and the file would
+ * silently open as text.
+ */
+function rebuild(): void {
+  editors = collect((c) => c.editors).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+  tabs = collect((c) => c.tabs)
+  allViews = [...collect((c) => c.views), ...BUILTIN_VIEWS].sort(
+    (a, b) => (a.order ?? 0) - (b.order ?? 0)
+  )
+  statusItems = collect((c) => c.statusBar).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  overlays = collect((c) => c.overlays)
+}
+
+rebuild()
+
+/**
+ * Take the disk plugins main discovered at boot.
+ *
+ * Called once, from the boot sequence, with what `plugins:list` returned. Trust is decided in
+ * main — it owns the grant file and the hashes — and arrives here already reduced to "can the
+ * renderer load this or not", so there is no second implementation of the rule on this side of
+ * the bridge to disagree with the first.
+ */
+export function setDiskPlugins(
+  installed: readonly { manifest: PluginManifest; trusted: boolean; rendererUrl: string | null }[]
+): void {
+  diskManifests = installed.map((p) => p.manifest)
+  untrusted = new Set(installed.filter((p) => !p.trusted).map((p) => p.manifest.id))
+  rendererUrls = new Map(
+    installed.flatMap((p) => (p.rendererUrl ? [[p.manifest.id, p.rendererUrl] as const] : []))
+  )
+  rebuild()
+  pluginUiChanged()
+}
+
+/** Where to import a disk plugin's renderer half from, or undefined if it is not ours to load. */
+export function diskRendererUrl(id: PluginId): string | undefined {
+  return rendererUrls.get(id)
+}
+
+
 
 /**
  * Which plugin owns a view type, tab type, view or status item.

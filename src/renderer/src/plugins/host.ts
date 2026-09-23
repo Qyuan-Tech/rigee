@@ -1,5 +1,6 @@
-import { Context, type Fiber, type FiberState } from 'cordis'
+import { Context, type Fiber, type FiberState, type Plugin } from 'cordis'
 import { RENDERER_HALVES } from '@plugins/registry.renderer'
+import { diskRendererUrl } from './registry'
 import type { PluginId } from '@rigee/plugin-api/manifest'
 import { ContributionService } from './contributions'
 import { PluginRpcService } from './rpc'
@@ -47,6 +48,27 @@ function root(): Promise<Context> {
 }
 
 /**
+ * How a plugin that did not ship with the app is fetched.
+ *
+ * `rigee-plugin://<id>/…`, served by main, which hands over a file only for a plugin the user has
+ * approved as it currently stands. The URL is undefined for anything untrusted, so this returns
+ * nothing and the caller reports "no renderer half" — the same answer as for a plugin that has
+ * none, which is the right one: from the renderer's point of view there is nothing to load.
+ *
+ * `@vite-ignore` because the specifier is a runtime value. Without it Rollup tries to resolve the
+ * variable at build time, warns, and leaves behind an import that cannot work.
+ *
+ * The plugin's own `import 'react'` and `import '@rigee/plugin-api'` resolve through the import
+ * map in index.html, to the shell's copies. That is not an optimisation: a second React means
+ * hooks throw, and a second copy of the API package means a host nobody installed.
+ */
+function diskHalf(id: PluginId): (() => Promise<{ default: Plugin }>) | undefined {
+  const url = diskRendererUrl(id)
+  if (!url) return undefined
+  return async () => (await import(/* @vite-ignore */ url)) as { default: Plugin }
+}
+
+/**
  * Load and start one plugin's renderer half. Idempotent, and safe to call concurrently.
  *
  * The in-flight Map is not optional: React StrictMode double-invokes every effect in development,
@@ -58,7 +80,7 @@ export function activate(id: PluginId): Promise<void> {
   const existing = activations.get(id)
   if (existing) return existing
 
-  const load = RENDERER_HALVES[id]
+  const load = RENDERER_HALVES[id] ?? diskHalf(id)
   if (!load) return Promise.reject(new Error(`no renderer half for plugin "${id}"`))
 
   const pending = (async () => {

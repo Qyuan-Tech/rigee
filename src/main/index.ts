@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -28,6 +29,18 @@ import {
   saveWorkspaces
 } from './store'
 import type { PluginHost } from './plugins/host'
+import {
+  approvePlugin,
+  diskLoaders,
+  installedPlugins,
+  registerPluginProtocol,
+  registerPluginScheme,
+  rendererEntryUrl,
+  revokePlugin,
+  scanDiskPlugins
+} from './plugins/installed'
+import { initTrustStore } from './plugins/trust'
+import { PLUGIN_MANIFESTS } from '@plugins/index'
 import { PERSISTED_STATE_VERSION, type FileStat } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -55,6 +68,9 @@ if (process.env.RIGEE_SMOKE) {
   // process, so a v2 document written once the window is up would never be read — the mode would
   // assert against a freshly created v3 document and pass without migrating anything.
   if (process.env.RIGEE_SMOKE === 'migrate') plantV2Document(dir)
+  // Same reason: the plugin directory is scanned once, at app ready. A plugin copied in after
+  // that is not in the snapshot, and the mode would assert against an empty registry.
+  if (process.env.RIGEE_SMOKE === 'diskplugin') plantExamplePlugin(dir)
 }
 
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
@@ -86,7 +102,11 @@ function plugins(): Promise<PluginHost> {
       import('@plugins/registry.main')
     ])
     const host = new PluginHost(
-      MAIN_HALVES,
+      // Bundled first, disk second, and a disk plugin cannot shadow a bundled one because
+      // discovery rejects an id that is already taken. The disk half re-checks trust when it is
+      // actually called, so revoking approval stops the code running rather than stopping it
+      // running next launch.
+      { ...MAIN_HALVES, ...diskLoaders() },
       {
         window: () => window,
         webContents: shellWc,
@@ -173,6 +193,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'plugins') void runPluginsSmoke()
     else if (process.env.RIGEE_SMOKE === 'pdf') void runPdfSmoke()
     else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
+    else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -1583,6 +1604,155 @@ function plantV2Document(dir: string): void {
 }
 
 /**
+ * Copy `examples/hello-plugin` into the throwaway userData directory, as an install would.
+ *
+ * The example is a plugin with no build step — hand-written ESM leaving react, react/jsx-runtime
+ * and @rigee/plugin-api external — so what this copies is exactly what somebody would unpack from
+ * a tarball. Planted during module evaluation because the plugin directory is scanned once, at app
+ * ready; copied after that, it would not be in the snapshot and the mode would prove nothing.
+ */
+function plantExamplePlugin(dir: string): void {
+  const from = join(__dirnameESM, '../../examples/hello-plugin')
+  const to = join(dir, 'plugins', 'hello')
+  mkdirSync(join(to, '..'), { recursive: true })
+  cpSync(from, to, { recursive: true })
+  console.log(`[smoke:diskplugin] installed ${from} -> ${to}`)
+}
+
+/**
+ * The whole third-party path, end to end: discovered, refused, approved, loaded, tampered with.
+ *
+ * This is the only test that runs code the app did not ship. Every part of the mechanism it
+ * touches fails silently if it is wrong — an untrusted plugin whose contributions still resolve
+ * looks exactly like a working one until you notice the shell tried to load code nobody approved;
+ * an import map that misses means the plugin gets its own React and hooks throw somewhere deep in
+ * a render; a hash that is not really checked means an update installs itself.
+ *
+ * Six steps, in order, each of which has to fail if the one before it did not really happen:
+ *
+ *   1. discovered, and NOT trusted. Its view must not resolve and its panel must not exist.
+ *   2. approving it makes the view resolve.
+ *   3. the panel renders — which is the import map working, because the panel is a React
+ *      component written against the shell's react and drawn with the shell's icon set.
+ *   4. its main half answers a command, over the same single plugin channel everything else uses.
+ *   5. changing one byte on disk revokes trust by hash.
+ *   6. after revoking, the renderer half is gone again.
+ */
+async function runDiskPluginSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const entry = join(app.getPath('userData'), 'plugins', 'hello', 'dist', 'renderer.js')
+
+  try {
+    const before = installedPlugins().find((p) => p.manifest.id === 'hello')
+    const discovered = before?.trust.status === 'untrusted'
+
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store, plugins } = window.__rigee
+        const trail = []
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+        const rails = () => [...document.querySelectorAll('.activitybar button')].map(b => b.title)
+
+        for (let i = 0; i < 80; i++) { if (store.getState().ready) break; await sleep(250) }
+        if (!store.getState().ready) return fail('never-ready')
+
+        // 1. Present in the list, absent from everything that would run it.
+        trail.push('activity bar before approval: ' + rails().join(','))
+        if (rails().some(t => t.includes('Hello'))) return fail('untrusted-plugin-reached-the-rail')
+        if ((await plugins.activated()).includes('hello')) return fail('untrusted-plugin-activated')
+
+        // 2. Approve, through the same call the plugins view makes.
+        const granted = await window.rigee.invoke('plugins:setTrust', { id: 'hello', trusted: true })
+        if (!granted.ok) return fail('approval-refused', granted)
+        // The plugins view is what re-reads the list into the registry; open it the way a user
+        // would rather than reaching past the UI.
+        const pluginsButton = [...document.querySelectorAll('.activitybar button')]
+          .find(b => b.title === 'Plugins')
+        if (!pluginsButton) return fail('no-plugins-button')
+        pluginsButton.click()
+        await sleep(600)
+        trail.push('activity bar after approval: ' + rails().join(','))
+        if (!rails().some(t => t.includes('Hello'))) return fail('approved-plugin-not-in-the-rail')
+
+        // 3. Open it. Rendering at all is the import map working: the panel is React, built
+        //    elsewhere, against specifiers only the import map can resolve.
+        const helloButton = [...document.querySelectorAll('.activitybar button')]
+          .find(b => b.title.includes('Hello'))
+        helloButton.click()
+        for (let i = 0; i < 40; i++) {
+          if (document.querySelector('#hello-ping')) break
+          await sleep(100)
+        }
+        if (!document.querySelector('#hello-ping')) return fail('panel-never-rendered')
+        const ws = document.querySelector('#hello-workspace')?.textContent ?? ''
+        trail.push('panel rendered, ' + ws)
+        // useActiveWorkspace is a HOOK from the shell's React. If the plugin had got its own copy
+        // this is where it would have thrown instead of rendering.
+        if (!ws.startsWith('workspace:')) return fail('plugin-hook-did-not-run', { ws })
+        // The icon came from the shell's set, through the api package's icons object.
+        if (!document.querySelector('#hello-ping')?.parentElement?.querySelector('svg')) {
+          trail.push('note: no svg in the panel header')
+        }
+
+        // 4. Its main half, over the one plugin channel.
+        document.querySelector('#hello-ping').click()
+        for (let i = 0; i < 40; i++) {
+          if (document.querySelector('#hello-pong')) break
+          await sleep(100)
+        }
+        const pong = document.querySelector('#hello-pong')?.textContent ?? ''
+        trail.push('main half: ' + (pong || 'no reply'))
+        if (!pong.startsWith('pong from node')) return fail('main-half-did-not-answer')
+
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[]; stage?: string }
+
+    const afterApproval = installedPlugins().find((p) => p.manifest.id === 'hello')
+    const mainLoaded = (await plugins()).active().includes('hello')
+
+    // 5. One byte. The grant is pinned to the hash of the whole directory, so appending a comment
+    //    is the same event as an update: the code is not the code that was approved.
+    appendFileSync(entry, '\n// tampered\n', 'utf8')
+    scanDiskPlugins(join(app.getPath('userData'), 'plugins'))
+    const tampered = installedPlugins().find((p) => p.manifest.id === 'hello')
+
+    // 6. And the renderer half is refused again — asked of the same function the host calls.
+    const servableAfterTamper = rendererEntryUrl('hello') !== null
+
+    const ok =
+      discovered &&
+      info.ok &&
+      afterApproval?.trust.status === 'trusted' &&
+      mainLoaded &&
+      tampered?.trust.status === 'changed' &&
+      !servableAfterTamper
+
+    console.log(
+      '[smoke:diskplugin]',
+      JSON.stringify({
+        ...info,
+        ok,
+        discoveredUntrusted: discovered,
+        trustAfterApproval: afterApproval?.trust.status,
+        mainHalfLoaded: mainLoaded,
+        trustAfterTamper: tampered?.trust.status,
+        servableAfterTamper
+      })
+    )
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:diskplugin] threw:', err)
+    app.exit(1)
+  }
+}
+
+/**
  * The v2 -> v3 document change, end to end, and the only proof that existing users keep their tabs.
  *
  * `migrate()` has no unit test and cannot easily get one: it only means anything in the sequence
@@ -2505,9 +2675,26 @@ function adoptLegacyUserData(): void {
   }
 }
 
+/**
+ * Before `app.whenReady`, because Electron requires it: a privileged scheme cannot be declared
+ * once the protocol registry is up.
+ *
+ * Costs nothing — it registers a name, it does not read anything from disk.
+ */
+registerPluginScheme()
+
 app.whenReady().then(() => {
   mark('app ready')
   adoptLegacyUserData()
+  // Trust before the scan, and both before the window: the renderer asks for the plugin registry
+  // as part of `state:load`, and a manifest arriving after the activity bar has rendered would
+  // make a third-party panel's icon appear a moment late, which reads as a glitch. One readdir
+  // and a hash per installed plugin; with no plugins directory — the normal case — one failed
+  // stat.
+  initTrustStore(join(app.getPath('userData'), 'plugin-trust.json'))
+  const scan = scanDiskPlugins(join(app.getPath('userData'), 'plugins'))
+  if (scan.found > 0) mark(`disk plugins scanned (${scan.found})`)
+  registerPluginProtocol()
   // Kick off PATH recovery immediately but do not block first paint on it; the handlers that
   // actually need a resolved PATH await the same promise.
   void ensureShellPath().then(() => mark('shell PATH resolved'))
@@ -2594,6 +2781,22 @@ function registerHandlers(): void {
     saveAllUi(ui)
   })
   handle('state:saveKeybindings', ({ keybindings }) => { saveKeybindings(keybindings) })
+  handle('plugins:list', () =>
+    installedPlugins().map((p) => ({ ...p, rendererUrl: rendererEntryUrl(p.manifest.id) }))
+  )
+
+  handle('plugins:setTrust', async ({ id, trusted }) => {
+    if (!trusted) {
+      revokePlugin(id)
+      // Stop it NOW rather than at the next launch. Its fiber owns whatever it installed — a
+      // watcher, a listener, a child process — and "revoked" has to mean those are gone.
+      await pluginHost?.deactivate(id)
+      return { ok: true }
+    }
+    const result = approvePlugin(id)
+    return result
+  })
+
   handle('state:setDisabledPlugins', async ({ disabled }) => {
     saveDisabledPlugins(disabled)
     // Only if the host exists. Building it here to tell it that nothing is running would be an

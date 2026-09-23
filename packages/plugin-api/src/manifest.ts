@@ -192,15 +192,21 @@ export interface PluginContributions {
  * presses yes, and the nine were only ever a way of not deciding which three mattered. These four
  * are the ones a reviewer can actually reason about.
  *
- * KNOW WHAT THIS IS AND IS NOT. It is an integrity boundary against mistakes and against a plugin
- * quietly growing new appetites between versions — the grant is recorded per plugin, and asking for
- * more invalidates it. It is NOT a sandbox. A plugin's renderer half runs in the shell's own
- * JavaScript context, so a hostile one can reach whatever the shell can reach no matter what it
- * declared. That is why installing is a trust decision (see `trust.ts` in the shell) and why the
- * dialog says so in those words rather than implying the permissions contain the code.
+ * BE CLEAR ABOUT WHAT THESE DO, BECAUSE IT IS NOT WHAT THE WORD "PERMISSION" SUGGESTS. Nothing
+ * enforces them at the call site, and nothing can in this architecture: a main half is an ES module
+ * in the main process and imports `node:fs` itself, and a renderer half runs in the shell's own
+ * JavaScript context and can reach `window.rigee` directly. A declaration is a statement of intent,
+ * not a capability the shell hands over and can withhold.
  *
- * Real isolation needs a separate context per plugin — a worker for the logic, a locked-down frame
- * for the UI — which is a much larger change and is not pretended at here.
+ * What they are actually for is CHANGE DETECTION, and that part is enforced. The set is recorded
+ * with the trust grant, so a plugin that asked only to read files and comes back next version
+ * wanting to run programs cannot be silently loaded — approval is withdrawn and the user is asked
+ * again. Nobody re-reads a plugin they already trusted; this is the moment they would.
+ *
+ * Real enforcement needs a separate context per plugin — a worker for the logic, a locked-down
+ * frame for the UI, every contribution point becoming a message — which is a much larger change
+ * and is not pretended at here. Installing a plugin runs its code with the application's
+ * privileges, and rigee's install dialog says exactly that.
  */
 export type PluginPermission =
   /** Read files anywhere the user can. Any viewer needs this. */

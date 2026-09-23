@@ -398,6 +398,79 @@ textarea:focus {
   word-break: break-word;
 }
 
+/*
+ * The trust prompt.
+ *
+ * Deliberately the loudest thing in the panel. It is the one place the user decides to run code
+ * that did not ship with the app, and a decision styled like the rest of the list is one people
+ * make without reading.
+ */
+.plugins__trust {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--git-modified, #b58900);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--git-modified, #b58900) 8%, transparent);
+}
+
+.plugins__trust-headline {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.plugins__trust-body {
+  font-size: 11px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+
+.plugins__trust-perms {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.plugins__trust-caveat {
+  list-style: none;
+  margin-left: -16px;
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+.plugins__trust-approve {
+  margin-top: 8px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-raised, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.plugins__trust-approve:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.1));
+}
+
+.plugins__link {
+  font: inherit;
+  font-size: 10px;
+  color: var(--fg-faint);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.plugins__link:hover {
+  color: var(--fg-muted);
+}
+
 .center {
   flex: 1 1 auto;
   display: flex;

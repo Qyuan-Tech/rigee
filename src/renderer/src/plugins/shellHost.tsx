@@ -15,6 +15,11 @@
  * that claim to the entry size.
  */
 
+import * as React from 'react'
+import * as ReactDOM from 'react-dom'
+import * as jsxRuntime from 'react/jsx-runtime'
+import * as jsxDevRuntime from 'react/jsx-dev-runtime'
+import * as pluginApi from '@rigee/plugin-api'
 import { installShellHost, type ShellHost } from '@rigee/plugin-api'
 import { Notice } from '../components/Notice'
 import { editorFontSize, monoFamily } from '../fonts'
@@ -99,3 +104,32 @@ const host: ShellHost = {
 }
 
 installShellHost(host)
+
+/**
+ * The same modules again, under the names a plugin loaded from disk imports them by.
+ *
+ * A disk plugin's bundle says `import { useState } from 'react'`. That resolves through the import
+ * map in index.html to `assets/plugin-runtime/react.js`, a generated file whose whole body is
+ * "read this global and re-export it" — see `pluginRuntime()` in electron.vite.config.ts for why
+ * it reads a global instead of importing react itself (as an import it shared modules with the
+ * shell's entry, Rollup re-cut the chunks, and startup grew three modulepreloads).
+ *
+ * So these four assignments are what make that indirection land on the SHELL's copies. Two Reacts
+ * in one window means hooks throw the moment a plugin renders inside the shell's tree, and two
+ * copies of the API package means the second one has no host installed.
+ *
+ * Eager, and before any plugin can run: the shims throw rather than resolve to undefined if this
+ * has not happened, which is the right failure but only worth having if it cannot occur.
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __rigeePluginRuntime: Record<string, unknown> | undefined
+}
+
+globalThis.__rigeePluginRuntime = {
+  react: React,
+  'react-dom': ReactDOM,
+  'react/jsx-runtime': jsxRuntime,
+  'react/jsx-dev-runtime': jsxDevRuntime,
+  '@rigee/plugin-api': pluginApi
+}

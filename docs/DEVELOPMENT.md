@@ -26,6 +26,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
+| `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -74,7 +75,7 @@ Three environment variables change what is in the frame, and they compose:
 
 ```
 src/
-  shared/      types + the IPC contract + the plugin contract; imported by all three targets
+  shared/      the domain model and the IPC contract; imported by all three targets
   main/        Electron main — the shell only
     pty/       pseudo-terminals, one per split pane
     plugins/   the main-side plugin host: cordis root, command registry, shell service
@@ -89,6 +90,10 @@ plugins/       the features, one folder each — OUTSIDE src/, see below
   scm/           git: status, staging by line, commits, diffs
   browser/       Chromium tabs as native WebContentsViews
   shared/        what more than one plugin needs (the Monaco loader). Not a plugin.
+packages/
+  plugin-api/    the published contract a plugin is written against. Nothing app-specific.
+examples/
+  hello-plugin/  a worked third-party plugin, hand-written ESM, no build step
 scripts/       self-tests, the startup budget check and the local installer
 ```
 
@@ -109,8 +114,9 @@ the plugin section below.
 
 The shell is a window, a workspace model, a tab framework, terminals, persistence and an IPC
 spine. Everything else is a plugin: the text editor, the PDF reader, source control and the
-browser all live in `plugins/<id>/` and reach the shell only through the contract in
-`src/shared/plugin.ts`. The framework underneath is [cordis](https://github.com/cordiverse/cordis).
+browser all live in `plugins/<id>/` and reach the shell only through `@rigee/plugin-api`
+(`packages/plugin-api/`). The framework underneath is
+[cordis](https://github.com/cordiverse/cordis).
 
 A plugin is up to two halves, because Electron leaves no choice — a PDF renders in the sandboxed
 renderer and the bytes it renders can only be read in main:
@@ -124,7 +130,9 @@ plugins/pdf/
 ```
 
 `plugins/index.ts` lists the manifests; `registry.main.ts` and `registry.renderer.ts` hold the
-dynamic-import thunks, one file per realm.
+dynamic-import thunks, one file per realm. A plugin installed from disk supplies the same manifest
+in its `package.json` and names its own entry files instead — see "Plugins that did not ship with
+the app" below.
 
 **Contribution points.** `editors` (a viewer for files matching a selector), `tabs` (a tab type the
 plugin owns outright, with its own persisted state), `views` (a side-bar panel), `statusBar`, and
@@ -164,6 +172,79 @@ carries every push. Source control and the browser used to own twenty-two entrie
 `REQUEST_CHANNELS` between them; the preload allowlist is a literal you can read in one screen
 again, and authorisation happens in main's command registry, where a command nobody registered is
 rejected.
+
+### Plugins that did not ship with the app
+
+A plugin from somebody else's repository lives in `<userData>/plugins/<id>/` and is an ordinary npm
+package — `package.json` with the manifest under a `rigee` key, plus the two built entries. There
+is a worked example in `examples/hello-plugin/`, hand-written ESM with no build step, and
+`pnpm smoke:diskplugin` installs it into a throwaway data directory and drives the whole path.
+
+```
+<userData>/plugins/hello/
+  package.json        { "rigee": { "id": "hello", "apiVersion": 1, "main": …, "renderer": … } }
+  dist/main.js        ESM, default-exports a cordis Plugin. Node.
+  dist/renderer.js    ESM, default-exports a cordis Plugin. DOM.
+```
+
+**The bundled plugins do not go through any of this.** They are in the build's module graph, so
+each gets its own chunk, the manifests cost a kilobyte, and a launch that opens nothing loads none
+of them. Two sources, one registry; nothing downstream can tell which is which.
+
+**`@rigee/plugin-api` is the whole contract.** `packages/plugin-api/` is a real, publishable
+package, and the in-repo plugins import it exactly as an external one would — there is not a single
+`@renderer/*` or `@shared/*` import left under `plugins/`. The package declares the SHAPE and holds
+no implementation; `renderer/src/plugins/shellHost.tsx` installs the behaviour once, at boot, before
+anything can activate.
+
+**Three bare specifiers, resolved by an import map.** A plugin leaves `react`, `react/jsx-runtime`
+and `@rigee/plugin-api` external and gets the shell's copies. This is not tidiness: two Reacts in
+one window makes hooks throw the moment a plugin's component renders inside the shell's tree, and a
+second copy of the API package has no host installed. The map is written into index.html by
+`pluginRuntime()` in `electron.vite.config.ts`, which also hashes it into `script-src` — an import
+map can only be inline, and the alternative to a hash is `'unsafe-inline'`.
+
+Two traps in that mechanism, both already paid for:
+
+- **The shims must not be Rollup entries.** As entries they shared modules with the shell's entry,
+  Rollup re-cut the chunks, and index.html went from preloading one chunk to four — startup began
+  fetching the plugin runtime for plugins that may not exist. They read `globalThis.
+  __rigeePluginRuntime` instead, so they import nothing and cannot perturb the graph.
+  `pnpm perf:check` asserts the preload count and is what caught it.
+- **`export * from 'react'` does not work.** react is CommonJS; Rollup cannot enumerate a CJS
+  module's exports for a star re-export and emits a module exporting nothing. The names are read
+  off the installed package at build time instead, so they cannot drift.
+
+**Nothing crosses the bridge that cannot be cloned.** `plugins:list` sends only DISK manifests. A
+bundled manifest may carry a `match` predicate as its file selector — the text editor claims
+everything with one — and contextBridge answers a function with *"An object could not be cloned"*,
+which reaches the caller naming no cause at all. The renderer already has those manifests
+statically and composes the two lists itself.
+
+**The custom scheme needs four privileges**, and `corsEnabled` is the non-obvious one: the packaged
+renderer is a `file://` document, so every other scheme is cross-origin and Chromium rejects the
+import before the handler runs. See `registerPluginScheme` for what each one buys.
+
+#### Trust
+
+A plugin found on disk is **inert**: listed, manifest read, nothing imported — not in main, not in
+the renderer — until the user approves that exact build. The grant (`<userData>/plugin-trust.json`)
+pins a SHA-256 of the whole directory and the declared permission set, so an update, a tampered
+file, or a version that has grown an appetite all revoke it and ask again. `pnpm smoke:diskplugin`
+appends one byte to the example and asserts trust flips to `changed` and the renderer half stops
+being servable.
+
+**Be precise about what the permissions do, because it is not what the word suggests.** Nothing
+enforces them at the call site, and nothing can in this architecture: a main half is an ES module
+in the main process and imports `node:fs` itself, and a renderer half runs in the shell's own
+JavaScript context and can reach `window.rigee` directly. What is enforced is *change detection* —
+a plugin that asked only to read files and comes back wanting to run programs does not load until
+the user has been asked again. The install prompt says so in those words and does not imply a
+sandbox, because a user who believes in a boundary approves things they would otherwise read.
+
+Real isolation means a separate context per plugin — a worker for the logic, a locked-down frame
+for the UI, every contribution point becoming a message. That is a much larger change and is not
+pretended at anywhere in this code.
 
 ### Things the framework will do to you
 

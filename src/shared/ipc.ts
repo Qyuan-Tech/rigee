@@ -23,7 +23,41 @@ import type {
   WorkspaceUiState,
   KeyBindings
 } from './types'
-import type { PluginEventEnvelope, PluginInvocation } from '@rigee/plugin-api/manifest'
+import type {
+  PluginEventEnvelope,
+  PluginId,
+  PluginInvocation,
+  PluginManifest,
+  PluginPermission
+} from '@rigee/plugin-api/manifest'
+
+/**
+ * One plugin installed from disk.
+ *
+ * MUST BE CLONABLE, all the way down: it crosses contextBridge, which refuses functions with
+ * "An object could not be cloned" — an error that arrives at the caller naming no cause. That is
+ * why only DISK manifests travel: they come from JSON, so they cannot contain a function, whereas
+ * a bundled manifest may hold a `match` predicate as its file selector. The renderer composes the
+ * full list from these plus the manifests it already has statically.
+ */
+export interface InstalledPluginInfo {
+  manifest: PluginManifest
+  trust:
+    | { status: 'trusted' }
+    | { status: 'untrusted' }
+    | { status: 'changed'; approvedVersion: string }
+    | { status: 'needs-permissions'; added: PluginPermission[] }
+  permissions: PluginPermission[]
+  version: string
+  /**
+   * Where the renderer imports this plugin's renderer half from, when there is one to import.
+   *
+   * A `rigee-plugin://` URL, and null unless the plugin is trusted as it stands — so "can the
+   * renderer load this?" is answered by main, which owns the trust store, rather than re-derived
+   * on the other side of the bridge from a status string.
+   */
+  rendererUrl: string | null
+}
 
 /** renderer -> main -> renderer. Every one of these is awaited. */
 export interface IpcRequests {
@@ -119,6 +153,22 @@ export interface IpcRequests {
    * which is the whole point: it stays a literal that can be read and audited.
    */
   'plugin:invoke': (args: PluginInvocation) => unknown
+
+  /**
+   * The plugins installed from disk, with their trust state.
+   *
+   * A SHELL channel, not a plugin one — the allowlist above still grows only for the shell's own
+   * features, and a plugin still cannot add a channel of its own. Managing plugins is exactly the
+   * kind of thing the shell has to keep for itself: a plugin that could approve a plugin would
+   * make the trust model decorative.
+   */
+  'plugins:list': () => InstalledPluginInfo[]
+  /**
+   * Approve or withdraw approval for one disk plugin.
+   *
+   * Approval pins the plugin's current hash and permissions; see src/main/plugins/trust.ts.
+   */
+  'plugins:setTrust': (args: { id: PluginId; trusted: boolean }) => { ok: boolean; reason?: string }
 }
 
 /** main -> renderer push. Low rate; terminal bytes do NOT go through here. */
@@ -156,7 +206,9 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'terminal:kill',
   'terminal:requestPort',
   'terminal:disconnect',
-  'plugin:invoke'
+  'plugin:invoke',
+  'plugins:list',
+  'plugins:setTrust'
 ] as const
 
 export const EVENT_CHANNELS: readonly IpcEventChannel[] = [

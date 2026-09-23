@@ -9,7 +9,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
 import { activeGroup, allTabs } from './groups'
-import { setDisabledPlugins } from './plugins/registry'
+import { setDisabledPlugins, setDiskPlugins } from './plugins/registry'
 import {
   nextGroupId,
   newTerminalTab,
@@ -34,17 +34,29 @@ export function App(): React.ReactElement {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const [state, platform] = await Promise.all([
+      // In parallel: main has both answers ready and the registry needs them before anything is
+      // rendered from it.
+      const [state, platform, installed] = await Promise.all([
         rpc['state:load']() as Promise<PersistedState>,
-        rpc['app:getPlatformInfo']()
+        rpc['app:getPlatformInfo'](),
+        rpc['plugins:list']()
       ])
       if (cancelled) return
       const store = useApp.getState()
 
-      // First, before a single contribution table is read: a disabled plugin must not have its
-      // icon in the activity bar for even one frame, and must not claim a file type it is about
-      // to stop being able to open.
+      // Both of these FIRST, before a single contribution table is read. A disabled plugin must
+      // not have its icon in the activity bar for even one frame, and must not claim a file type
+      // it is about to stop being able to open; an untrusted one must not claim anything at all,
+      // because claiming a file type would mean the shell tries to open one with code the user
+      // has not agreed to run.
       setDisabledPlugins(state.disabledPlugins ?? [])
+      setDiskPlugins(
+        installed.map((p) => ({
+          manifest: p.manifest,
+          trusted: p.trust.status === 'trusted',
+          rendererUrl: p.rendererUrl
+        }))
+      )
 
       // Scratch is synthesised, never loaded: it must exist even on a first run, and its
       // definition should follow the app rather than whatever was persisted long ago.

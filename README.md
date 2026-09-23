@@ -108,8 +108,22 @@ watchers die, and the choice survives a restart.
 
 The framework is [cordis](https://github.com/cordiverse/cordis): a plugin gets a Context, and
 everything it registers through that Context — commands, components, listeners, watchers, native
-views — is revoked when the plugin is disposed. See `docs/DEVELOPMENT.md` for the contribution
-points and the traps.
+views — is revoked when the plugin is disposed.
+
+**Plugins do not have to ship with rigee.** The contract is a published package,
+[`@rigee/plugin-api`](packages/plugin-api), and the ones in this repository import it exactly as an
+external plugin would — there is no back door into the shell for the built-in ones. Drop an npm
+package into `<userData>/plugins/<id>/` and it appears in the plugins view, **inert**: nothing of it
+is imported until you have approved that exact build. Approval is pinned to a hash of its contents,
+so an update has to be approved again.
+
+Be clear about what that does and does not buy. It is not a sandbox — a plugin runs with rigee's own
+access to your files, your terminals and the network, and the permission list in its manifest is
+what its author says it needs, not something rigee enforces. What is enforced is that unapproved
+code does not run at all, and that code which changes has to be looked at again.
+
+`examples/hello-plugin/` is a complete one in 80 lines. See `docs/DEVELOPMENT.md` for the
+contribution points and the traps.
 
 ## Terminals
 
