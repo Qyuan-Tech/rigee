@@ -262,7 +262,9 @@ export class PageList {
     clearTimeout(this.rescaleTimer)
     this.nearby.disconnect()
     this.visible.disconnect()
-    this.queue.clear()
+    // Only this column's backlog: the queue is shared by every PDF pane in the window now, and
+    // clearing all of it would leave the pane beside this one with blank pages.
+    this.queue.clear(this)
     // Detached first, not last: the rest of this is asynchronous, and StrictMode's second mount
     // builds its column while this one is still cancelling renders. Two columns in one scroller
     // is a visible double-render in development. Painting into a detached canvas is harmless.
@@ -387,7 +389,7 @@ export class PageList {
       // costs the reader the one frame they are waiting for.
       await this.layText(slot, page, viewport, gen)
       if (slot.gen === gen && !this.disposed) this.onRealized(slot.n)
-    })
+    }, { owner: this })
   }
 
   private async unrealize(slot: Slot): Promise<void> {

@@ -22,6 +22,9 @@ export const manifest: PluginManifest = {
         // Not a document: "Close Other Files" must not throw away navigation state, for the same
         // reason it leaves terminals alone.
         isDocument: false,
+        // The native WebContentsView is keyed by tab id: a copy would either share the live view
+        // or start a second page with none of the session the first one has.
+        split: 'move',
         legacyKind: 'browser',
         creatable: { label: 'New browser tab' }
       }

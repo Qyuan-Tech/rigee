@@ -222,6 +222,20 @@ export const PluginIcon = (p: Props): React.ReactElement => (
 )
 
 /**
+ * Split the editor: two panes, the right one filling.
+ *
+ * Shell-only, so deliberately NOT in `IconName` or `ICONS` — a plugin has no business contributing
+ * something that means "do this to the layout".
+ */
+export const SplitIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M8 3v10" />
+    <path d="M9.5 5h3M9.5 8h3M9.5 11h3" opacity="0.65" />
+  </Svg>
+)
+
+/**
  * The icons a plugin manifest may ask for, by name.
  *
  * A manifest is plain data read in both processes, so it cannot hold a component; it names one

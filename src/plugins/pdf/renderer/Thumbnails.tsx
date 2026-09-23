@@ -136,7 +136,7 @@ function Thumb({
         } finally {
           if (task === started) task = null
         }
-      }, true)
+      }, { low: true })
     }
 
     const detach = (): void => {

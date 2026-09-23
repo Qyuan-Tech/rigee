@@ -1,7 +1,8 @@
 import { liveTabIds } from '@renderer/plugins/api'
+import { rowOf, useApp } from '@renderer/store'
 import { invoke } from './rpc'
 import type { ViewId } from '../protocol'
-import type { TabId, ViewBounds } from '@shared/types'
+import type { TabId, ViewBounds, WorkspaceId } from '@shared/types'
 
 /**
  * Lifecycle for the native WebContentsView backing each browser tab.
@@ -25,7 +26,7 @@ const viewByTab = new Map<TabId, ViewId>()
  * A second caller has to be able to await the first one's result. It used to be a Set and the
  * second caller got `null`, which produced a blank pane every single time in development: React
  * StrictMode mounts, unmounts and remounts every effect, so run #2 asked while run #1 was still
- * awaiting `browser:create`, got null, and called `showOnly(tabId)` against an empty Map — so
+ * awaiting `browser:create`, got null, and went on to show a tab with no view in the Map — so
  * nothing was ever made visible, while the page loaded invisibly behind the toolbar. Run #1 then
  * finished, stored the id, and returned to a cleanup that had already marked it cancelled.
  *
@@ -38,6 +39,21 @@ const creating = new Map<TabId, Promise<ViewId | null>>()
 
 export function viewIdFor(tabId: TabId): ViewId | undefined {
   return viewByTab.get(tabId)
+}
+
+/**
+ * The tab a view belongs to. The reverse of `viewIdFor`, and a linear scan because the map is one
+ * entry per open browser tab — a handful, walked only when a page opens a popup.
+ *
+ * Exists for `tabRequested`: a popup has to land in the group its OPENER is in, and main can only
+ * name the opener by view id. Without this the tab is opened in the active group, so a `window.open`
+ * from a page in the left column puts its popup in the right one, over whatever was there.
+ */
+export function tabIdFor(viewId: ViewId): TabId | undefined {
+  for (const [tabId, id] of viewByTab) {
+    if (id === viewId) return tabId
+  }
+  return undefined
 }
 
 export function ensureView(
@@ -58,6 +74,9 @@ export function ensureView(
       return null
     }
     viewByTab.set(tabId, viewId)
+    // A view that has just come into existence is the one case the reconciler cannot see coming:
+    // the store did not change, so nothing else will ask whether it belongs on screen.
+    scheduleReconcile()
     return viewId
   })().finally(() => { creating.delete(tabId) })
 
@@ -76,6 +95,9 @@ export function ensureView(
  */
 export function adoptView(tabId: TabId, viewId: ViewId): void {
   viewByTab.set(tabId, viewId)
+  // The guest is the textbook orphan: main made it, and if its tab never gets a pane — the popup
+  // opened into a group the user closed the same second, say — nothing else would ever hide it.
+  scheduleReconcile()
 }
 
 export function destroyView(tabId: TabId): void {
@@ -85,18 +107,55 @@ export function destroyView(tabId: TabId): void {
   void invoke('browser:destroy', { viewId })
 }
 
-/** Hide every browser view except the one belonging to `tabId` (pass null to hide all). */
-export function showOnly(tabId: TabId | null): void {
-  const keep = tabId ? viewByTab.get(tabId) : undefined
-  if (keep) {
-    void invoke('browser:setVisible', { viewId: keep, visible: true })
-  } else {
-    // Hiding every browser view also hands keyboard focus back to the shell, which main does as
-    // part of browser:setVisible(false).
-    for (const viewId of viewByTab.values()) {
-      void invoke('browser:setVisible', { viewId, visible: false })
-    }
-  }
+/**
+ * Composite one tab's view over the rectangle its pane measured.
+ *
+ * One tab, never "this one and not the others". The predecessor here was `showOnly`, and with a row
+ * of editor groups it is the bug: two panes mount, the second one's show hides the first, and the
+ * first group is left with a white rectangle and nothing in any log.
+ */
+export function showView(tabId: TabId, bounds: ViewBounds): void {
+  const viewId = viewByTab.get(tabId)
+  if (viewId) void invoke('browser:show', { viewId, bounds })
+}
+
+/** Uncomposite one tab's view. The view outlives it; only the pane is going away. */
+export function hideView(tabId: TabId): void {
+  const viewId = viewByTab.get(tabId)
+  if (viewId) void invoke('browser:hide', { viewId })
+}
+
+/** Ask for the keyboard. Only the active group's active tab may, and main refuses if hidden. */
+export function focusView(tabId: TabId): void {
+  const viewId = viewByTab.get(tabId)
+  if (viewId) void invoke('browser:focus', { viewId })
+}
+
+/** Give the keyboard back to the shell, if this tab's page is the one that has it. */
+export function releaseFocus(tabId: TabId): void {
+  const viewId = viewByTab.get(tabId)
+  if (viewId) void invoke('browser:releaseFocus', { viewId })
+}
+
+/** As much of the shell's state as the focus rule and the reconciler read. */
+type RowState = Parameters<typeof rowOf>[0] & { activeWorkspaceId: WorkspaceId | null }
+
+/**
+ * THE focus rule, written once: the active group's active tab, and nothing else.
+ *
+ * Both callers need it — the pane subscribes to it through a selector, and the create effect asks
+ * it again when the view finally exists — and two copies of a rule this small is how they end up
+ * disagreeing about which of two visible pages should be typing.
+ */
+export function isFocusTarget(state: RowState, tabId: TabId): boolean {
+  if (!state.activeWorkspaceId) return false
+  const row = rowOf(state, state.activeWorkspaceId)
+  return row.groups.find((g) => g.id === row.activeGroupId)?.activeTabId === tabId
+}
+
+/** The same rule, asked from outside a render — after an await, where a captured flag is stale. */
+export function isFocusTargetNow(tabId: TabId): boolean {
+  return isFocusTarget(useApp.getState(), tabId)
 }
 
 /**
@@ -110,4 +169,77 @@ export function reap(live: Set<TabId>): void {
   for (const tabId of [...viewByTab.keys()]) {
     if (!live.has(tabId)) destroyView(tabId)
   }
+}
+
+// ---------------------------------------------------------------------------
+// The reconciler
+// ---------------------------------------------------------------------------
+
+/**
+ * Long enough to lose, on purpose.
+ *
+ * A store write is synchronous, so this fires before React has even rendered the row it describes.
+ * Running it immediately would let it show a moved view at its previous group's rectangle for the
+ * frame before the pane's own `show` corrects it — the flash that `browser:show` carries bounds to
+ * avoid. It is a safety net, not a participant: it must arrive after the panes have had their say.
+ */
+const RECONCILE_DELAY_MS = 50
+
+let reconcileTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Which views main should be compositing: the active tab of every group of the ACTIVE workspace,
+ * where that tab is a browser tab with a view.
+ *
+ * Only the active workspace, because only its row is rendered — the pages of the workspace you
+ * switched away from are still alive, and leaving them composited is the failure the scratch smoke
+ * test watches for: a native view over the whole window makes switching workspaces look like
+ * nothing happened at all.
+ */
+function compositedViewIds(state: RowState): ViewId[] {
+  if (!state.activeWorkspaceId) return []
+  const out: ViewId[] = []
+  for (const group of rowOf(state, state.activeWorkspaceId).groups) {
+    const viewId = group.activeTabId === null ? undefined : viewByTab.get(group.activeTabId)
+    if (viewId) out.push(viewId)
+  }
+  return out
+}
+
+/**
+ * Tell main the whole truth, coalescing a burst of store writes into one message.
+ *
+ * Deliberately NOT gated on "did the set change since last time": the states worth repairing are
+ * the ones where main drifted while the renderer's answer stayed exactly the same, and a gate would
+ * skip precisely those.
+ */
+function scheduleReconcile(): void {
+  if (reconcileTimer !== null) return
+  reconcileTimer = setTimeout(() => {
+    reconcileTimer = null
+    void invoke('browser:syncVisible', { viewIds: compositedViewIds(useApp.getState()) })
+  }, RECONCILE_DELAY_MS)
+}
+
+/**
+ * Watch the row for changes that move a page on or off screen.
+ *
+ * The selector is the mounted set expressed as a string — one active tab id per group — so a title
+ * change, a resize or a keystroke somewhere else in the store costs a comparison and nothing more.
+ * Wrap the returned undo in `ctx.effect` so it dies with the plugin, like `reap` does.
+ */
+export function subscribeVisibleViews(): () => void {
+  const unsubscribe = useApp.subscribe(mountedKey, scheduleReconcile)
+  return () => {
+    if (reconcileTimer !== null) clearTimeout(reconcileTimer)
+    reconcileTimer = null
+    unsubscribe()
+  }
+}
+
+function mountedKey(state: RowState): string {
+  if (!state.activeWorkspaceId) return ''
+  return rowOf(state, state.activeWorkspaceId)
+    .groups.map((g) => g.activeTabId ?? '')
+    .join(' ')
 }

@@ -190,6 +190,27 @@ export interface CustomTab extends TabBase {
 export type Tab = TerminalTab | EditorTab | CustomTab
 
 // ---------------------------------------------------------------------------
+// Editor groups
+// ---------------------------------------------------------------------------
+
+export type GroupId = string
+
+/**
+ * One column of the centre pane: its own strip of tabs, its own active tab.
+ *
+ * The row of groups is what makes a PDF and a terminal visible at the same time. The arithmetic
+ * that maintains it — splitting, closing, dragging a tab across, redistributing the widths — is
+ * pure and lives in src/renderer/src/groups.ts; this is only the shape it persists as, which has
+ * to be here because main migrates the document and cannot import from the renderer.
+ */
+export interface TabGroup {
+  id: GroupId
+  tabs: Tab[]
+  /** Which tab this group shows. Null only while the group is empty. */
+  activeTabId: TabId | null
+}
+
+// ---------------------------------------------------------------------------
 // Terminals
 // ---------------------------------------------------------------------------
 
@@ -250,11 +271,21 @@ export interface PanelLayout {
 
 /** Per-workspace UI state restored on reopen. */
 export interface WorkspaceUiState {
-  tabs: Tab[]
-  activeTabId: TabId | null
+  /** The centre pane, left to right. Always at least one, even when it holds nothing. */
+  groups: TabGroup[]
+  activeGroupId: GroupId
+  /** One fraction per group, parallel to `groups`, summing to 1. */
+  groupSizes: number[]
   layout: PanelLayout
-  /** Expanded directories in the file explorer, absolute paths. */
-  expandedDirs: string[]
+  /**
+   * Expanded directories in the file explorer, absolute paths.
+   *
+   * OPTIONAL, and its absence is load-bearing: it is what tells the explorer this workspace has
+   * never been opened, so it should start with its roots expanded. A record with an empty array
+   * means "everything collapsed" and is authoritative. Anything that manufactures `[]` here makes
+   * every existing workspace open fully collapsed, permanently.
+   */
+  expandedDirs?: string[]
 }
 
 /**
@@ -263,7 +294,7 @@ export interface WorkspaceUiState {
  * rather than mutating the shape in place.
  */
 export interface PersistedState {
-  version: 2
+  version: 3
   workspaces: Workspace[]
   activeWorkspaceId: WorkspaceId | null
   ui: Record<WorkspaceId, WorkspaceUiState>
@@ -278,7 +309,7 @@ export interface PersistedState {
   disabledPlugins?: string[]
 }
 
-export const PERSISTED_STATE_VERSION = 2 as const
+export const PERSISTED_STATE_VERSION = 3 as const
 
 export const DEFAULT_PANEL_LAYOUT: PanelLayout = {
   leftView: null,

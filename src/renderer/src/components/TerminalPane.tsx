@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { groupOfTab } from '../groups'
 import { isMac, onEvent, rpc } from '../ipc'
 import { clipboardAction, formatChord, resolvePrefixKey } from '../keys'
 import { bindPane, leaves, neighbourOf, newLeaf, removeLeaf, setSizes, splitLeaf } from '../paneTree'
@@ -11,10 +12,9 @@ import {
   paneSelection,
   pastePane,
   selectAllInPane,
-  reapPanes,
-  writeToPane
+  reapPanes
 } from '../terminals'
-import { useApp } from '../store'
+import { rowOf, useApp } from '../store'
 import type { PaneNode, TerminalTab } from '@shared/types'
 import '@xterm/xterm/css/xterm.css'
 
@@ -26,12 +26,26 @@ import '@xterm/xterm/css/xterm.css'
  * splitting or dragging a divider never costs scrollback.
  *
  * Bytes arrive over a MessagePort established once per workspace, already demultiplexed by pane
- * id and coalesced in main — never through ipcRenderer.
+ * id and coalesced in main — never through ipcRenderer. Establishing it is terminals.ts's job and
+ * not this component's: it is per-WORKSPACE state, and two terminal tabs in two groups mounting
+ * together would otherwise ask for it twice and drop the frames in flight between the two.
  */
 export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement {
   const workspaceId = useApp((s) => s.activeWorkspaceId)
   const workspace = useApp((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId) ?? null)
   const updateTab = useApp((s) => s.updateTab)
+  /**
+   * Whether this tab is in the column the user is working in.
+   *
+   * Only for deciding whether a pane may take the keyboard on mount. A terminal DRAGGED into the
+   * other group mounts there immediately, and a pane that grabbed focus then would swallow the
+   * next keystrokes of whatever the user was actually typing into.
+   */
+  const inActiveGroup = useApp((s) => {
+    if (!s.activeWorkspaceId) return false
+    const row = rowOf(s, s.activeWorkspaceId)
+    return groupOfTab(row, tab.id)?.id === row.activeGroupId
+  })
   const [error, setError] = useState<string | null>(null)
   const bindings = useApp((s) => s.keybindings)
   const [prefixArmed, setPrefixArmed] = useState(false)
@@ -48,13 +62,6 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     },
     [tab, updateTab, workspaceId]
   )
-
-  // One port per workspace; requesting it again replaces the previous one.
-  useEffect(() => {
-    if (!workspaceId) return
-    void rpc['terminal:requestPort']({ workspaceId })
-    return window.onestop.onTerminalData(workspaceId, (paneId, data) => writeToPane(paneId, data))
-  }, [workspaceId])
 
   const closeLeaf = useCallback(
     (leafId: string) => {
@@ -195,6 +202,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
         tab={tab}
         workspaceId={workspaceId}
         cwd={cwd}
+        inActiveGroup={inActiveGroup}
         onBind={(leafId, paneId) => patch((t) => ({ root: bindPane(t.root, leafId, paneId) }))}
         onFocus={(leafId) => patch(() => ({ activeLeafId: leafId }))}
         onClose={closeLeaf}
@@ -296,6 +304,8 @@ interface NodeProps {
   tab: TerminalTab
   workspaceId: string
   cwd: string
+  /** Whether a pane in this tab may take the keyboard when it mounts. */
+  inActiveGroup: boolean
   onBind: (leafId: string, paneId: string) => void
   onFocus: (leafId: string) => void
   onClose: (leafId: string) => void
@@ -378,6 +388,7 @@ function LeafView({
   tab,
   workspaceId,
   cwd,
+  inActiveGroup,
   onBind,
   onFocus,
   onClose,
@@ -389,6 +400,13 @@ function LeafView({
   const key = paneKey(tab.id, leaf.id)
   const active = tab.activeLeafId === leaf.id
   const spawning = useRef(false)
+  /*
+   * Read at focus time rather than depended on, because the effect below re-parents the xterm
+   * element and rebinds its input: re-running it every time the user clicks into another column
+   * would be churn for nothing. A mirror ref is always current by the time the awaits are done.
+   */
+  const mayFocus = useRef(false)
+  mayFocus.current = active && inActiveGroup
 
   useEffect(() => {
     let cancelled = false
@@ -434,7 +452,9 @@ function LeafView({
         if (handle.paneId) window.onestop.writeTerminal(workspaceId, handle.paneId, data)
       })
 
-      if (active) handle.term.focus()
+      // Only the active pane of the active group. A terminal that arrives in another column —
+      // dragged there, or restored beside the one being typed into — must not steal the keyboard.
+      if (mayFocus.current) handle.term.focus()
     })()
 
     return () => {
@@ -443,6 +463,9 @@ function LeafView({
       const el = host.current?.firstElementChild
       if (el) host.current?.removeChild(el)
     }
+    // `active` is a dependency although the body only reads the ref: becoming the tab's active
+    // pane is what should hand it the keyboard, and dropping it from here would mean clicking
+    // between panes no longer focuses the one you clicked.
   }, [key, leaf.id, leaf.paneId, workspaceId, cwd, onBind, onError, onKey, active])
 
   // The pty's geometry must always match what xterm is showing, or line wrapping goes wrong.

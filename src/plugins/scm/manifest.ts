@@ -21,6 +21,8 @@ export const manifest: PluginManifest = {
         icon: 'diff',
         // A diff is a document: "Close Other Files" should sweep it up, the way it always did.
         isDocument: true,
+        // Two revisions of one file, side by side, is the reason anybody splits an editor.
+        split: 'copy',
         legacyKind: 'diff'
       }
     ],

@@ -110,6 +110,18 @@ export interface TabContribution {
    */
   legacyKind?: string
   /**
+   * What the split button does to a tab of this type: put a copy in the new group, or move it.
+   *
+   * Defaults to 'move', which is the safe answer — a plugin that has not thought about being in two
+   * places at once probably cannot be. A browser tab cannot: its native view is keyed by tab id, so
+   * a copy would either share the view or quietly start a second page with no session. A diff can,
+   * and should, because reading two revisions of the same file side by side is the point.
+   *
+   * The shell reads this from the manifest alone, so pressing split does not activate the plugin
+   * just to ask it.
+   */
+  split?: 'copy' | 'move'
+  /**
    * Offer a button in the tab strip that opens a new one of these.
    *
    * The label is declarative, so the button exists before the plugin does; pressing it activates

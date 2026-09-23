@@ -42,7 +42,6 @@ export interface IpcRequests {
     workspaces: Workspace[]
     activeWorkspaceId: WorkspaceId | null
   }) => void
-  'state:saveUi': (args: { workspaceId: WorkspaceId; ui: WorkspaceUiState }) => void
   /** Persist every workspace's UI in one write, so switching away cannot lose the previous one. */
   'state:saveAllUi': (args: { ui: Record<WorkspaceId, WorkspaceUiState> }) => void
   'state:saveKeybindings': (args: { keybindings: KeyBindings }) => void
@@ -139,7 +138,6 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'app:getPlatformInfo',
   'state:load',
   'state:saveWorkspaces',
-  'state:saveUi',
   'state:saveAllUi',
   'state:saveKeybindings',
   'state:setDisabledPlugins',

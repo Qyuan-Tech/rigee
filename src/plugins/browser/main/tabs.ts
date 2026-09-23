@@ -38,6 +38,15 @@ export class BrowserTabs {
   private readonly views = new Map<string, Entry>()
   private seq = 0
 
+  /**
+   * The view the renderer last nominated to hold the keyboard — the active group's active tab.
+   *
+   * Tracked because the window-focus claim has to answer "which page should be typing into?" with
+   * no renderer on the call stack. Before groups, "the visible one" was that answer; with two
+   * pages on screen it is a coin flip, and the loser silently eats every keystroke.
+   */
+  private nominated: string | null = null
+
   constructor(
     private readonly window: BaseWindow,
     /** Where 'state', 'tabRequested' and 'error' go: the plugin's renderer half. */
@@ -154,35 +163,99 @@ export class BrowserTabs {
     entry.view.setBounds(bounds)
   }
 
-  setVisible(id: string, visible: boolean): void {
+  /**
+   * Composite one view over the shell, at the rectangle its pane just measured.
+   *
+   * Bounds first, then visible, then raise: setting them in the other order shows the view for one
+   * composite at wherever it was last, which for a tab dragged into the group next door is the
+   * column it came from.
+   *
+   * Deliberately no focus here. Two panes can mount in one React commit and the later `show` would
+   * take the keyboard off the earlier one — which is the group the user is actually in exactly half
+   * the time. Focus is `focus()`, said out loud by the one pane entitled to ask.
+   */
+  show(id: string, bounds: ViewBounds): void {
     const entry = this.views.get(id)
     if (!entry) return
-    entry.visible = visible
-    entry.view.setVisible(visible)
-    if (visible) {
-      // Raise above its siblings; addChildView on an existing child re-appends it.
-      this.window.contentView.addChildView(entry.view)
-      // And take keyboard focus, or typing in the page would go to the shell behind it.
-      entry.view.webContents.focus()
-    }
+    entry.bounds = bounds
+    entry.view.setBounds(bounds)
+    entry.visible = true
+    entry.view.setVisible(true)
+    // Raise above its siblings; addChildView on an existing child re-appends it.
+    this.window.contentView.addChildView(entry.view)
   }
 
-  /** Focus the visible browser view, if any. Returns whether one took focus. */
-  focusVisible(): boolean {
-    for (const entry of this.views.values()) {
-      if (entry.visible && !entry.view.webContents.isDestroyed()) {
-        entry.view.webContents.focus()
-        return true
-      }
-    }
-    return false
+  /**
+   * Stop compositing one view. It stays alive, loaded and running.
+   *
+   * No focus side effect, and that is the whole point of splitting the old boolean: hiding the page
+   * in one group used to hand the keyboard to the shell, which with two groups means closing a tab
+   * on the left yanks the cursor out of the page you are reading on the right.
+   */
+  hide(id: string): void {
+    const entry = this.views.get(id)
+    if (!entry) return
+    entry.visible = false
+    entry.view.setVisible(false)
   }
 
-  /** Hide every view except `keepId`. Used on tab switch and when a non-browser tab activates. */
-  showOnly(keepId: string | null): void {
+  /**
+   * Give one view the keyboard and remember it as the one that has it.
+   *
+   * Refused while the view is hidden. A pane asks as soon as its group becomes active, which can
+   * land before its own `show` when the view is still being created — and a hidden page with focus
+   * swallows everything typed with nothing on screen to explain where it went.
+   */
+  focus(id: string): void {
+    const entry = this.views.get(id)
+    if (!entry || !entry.visible || entry.view.webContents.isDestroyed()) return
+    this.nominated = id
+    entry.view.webContents.focus()
+  }
+
+  /**
+   * Let go of the keyboard, if this view is the one holding it. Answers whether it was.
+   *
+   * The caller hands focus back to the shell on a true; on a false another group's page has already
+   * claimed it and must be left alone.
+   */
+  releaseFocus(id: string): boolean {
+    if (this.nominated !== id) return false
+    this.nominated = null
+    return true
+  }
+
+  /**
+   * Focus whichever view the renderer nominated. Returns whether one took focus.
+   *
+   * This is the shell's `claimFocus`, i.e. what happens when the window itself is focused. It used
+   * to focus the first VISIBLE view, which with a row of groups means the oldest one — the page in
+   * a column the user may not have looked at since. A nomination that has since been hidden is no
+   * answer either, so the claim declines and the shell keeps the keyboard.
+   */
+  focusNominated(): boolean {
+    const entry = this.nominated === null ? undefined : this.views.get(this.nominated)
+    if (!entry || !entry.visible || entry.view.webContents.isDestroyed()) return false
+    entry.view.webContents.focus()
+    return true
+  }
+
+  /**
+   * Make the composited set exactly `ids`, showing and hiding to get there.
+   *
+   * The reconciler that `showOnly` used to be by accident. Only the renderer knows which panes are
+   * mounted, and only this can repair a view that is composited with no pane behind it — a
+   * `window.open` guest adopted before its tab existed, or a mount whose cleanup ran before its own
+   * creation resolved. A view it has to show goes back at its last known bounds, which is where its
+   * pane last was.
+   */
+  syncVisible(ids: readonly string[]): void {
+    const wanted = new Set(ids)
     for (const [id, entry] of this.views) {
-      const visible = id === keepId
-      if (entry.visible !== visible) this.setVisible(id, visible)
+      const visible = wanted.has(id)
+      if (entry.visible === visible) continue
+      if (visible) this.show(id, entry.bounds)
+      else this.hide(id)
     }
   }
 
@@ -213,6 +286,9 @@ export class BrowserTabs {
     const entry = this.views.get(id)
     if (!entry) return
     this.views.delete(id)
+    // A nomination naming a view that no longer exists would make the window-focus claim reach
+    // through a destroyed WebContents, which throws rather than declining.
+    if (this.nominated === id) this.nominated = null
     if (!this.window.isDestroyed()) this.window.contentView.removeChildView(entry.view)
     const wc = entry.view.webContents
     if (!wc || wc.isDestroyed()) return
@@ -224,7 +300,12 @@ export class BrowserTabs {
     for (const id of [...this.views.keys()]) this.destroy(id)
   }
 
-  /** Which views are currently composited over the shell. For diagnostics and the smoke tests. */
+  /**
+   * Which views are currently composited over the shell. For diagnostics and the smoke tests.
+   *
+   * Plural since editor groups: one per group whose active tab is a browser tab. Creation order,
+   * not z-order — it answers what is on screen, not what is on top.
+   */
   visibleIds(): string[] {
     return [...this.views.values()].filter((e) => e.visible).map((e) => e.id)
   }

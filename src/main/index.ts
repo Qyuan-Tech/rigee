@@ -15,7 +15,6 @@ import {
   saveAllUi,
   saveDisabledPlugins,
   saveKeybindings,
-  saveUi,
   saveWorkspaces
 } from './store'
 import type { PluginHost } from './plugins/host'
@@ -42,6 +41,10 @@ if (process.env.ONESTOP_SMOKE) {
   mkdirSync(dir, { recursive: true })
   app.setPath('userData', dir)
   console.log(`[smoke] userData = ${dir}`)
+  // The migrate mode's fixture can only be planted here. `loadState()` caches for the life of the
+  // process, so a v2 document written once the window is up would never be read — the mode would
+  // assert against a freshly created v3 document and pass without migrating anything.
+  if (process.env.ONESTOP_SMOKE === 'migrate') plantV2Document(dir)
 }
 
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
@@ -154,10 +157,11 @@ function createWindow(): void {
     else if (process.env.ONESTOP_SMOKE === 'explorer') void runExplorerSmoke()
     else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
     else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
-    // These two must stay ABOVE the catch-all below, which matches any truthy value: a branch
+    // These three must stay ABOVE the catch-all below, which matches any truthy value: a branch
     // added after it silently never runs and the generic check reports a cheerful green.
     else if (process.env.ONESTOP_SMOKE === 'plugins') void runPluginsSmoke()
     else if (process.env.ONESTOP_SMOKE === 'pdf') void runPdfSmoke()
+    else if (process.env.ONESTOP_SMOKE === 'migrate') void runMigrateSmoke()
     else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
   })
 
@@ -221,8 +225,12 @@ async function runSplitSmoke(): Promise<void> {
         const tab = newTerminalTab()
         store.getState().openTab(scratch.id, tab)
 
-        const current = () =>
-          (store.getState().tabsByWorkspace[scratch.id] ?? []).find(t => t.id === tab.id)
+        // Across every group: a tab's id is unique in the whole row, but which column holds it is
+        // not something this check has any business caring about.
+        const current = () => {
+          const row = store.getState().rowsByWorkspace[scratch.id]
+          return row ? row.groups.flatMap(g => g.tabs).find(t => t.id === tab.id) : undefined
+        }
         const leafIds = (n) => n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIds)
 
         /** Wait until every leaf has a pty bound and an xterm instance. */
@@ -344,13 +352,21 @@ async function runMultiRepoSmoke(): Promise<void> {
         // What the panel actually says, on every failure. Source control is a plugin now, so a
         // blank panel can mean the plugin did not load, or loaded and could not reach git — and
         // the difference is written on screen in both cases.
+        const rightPane = () => document.querySelectorAll('.pane')[1]
         const panelText = () =>
-          ((document.querySelectorAll('.pane')[1] || {}).innerText || '(no right pane)')
+          ((rightPane() || {}).innerText || '(no right pane)')
             .replace(/\\s+/g, ' ').trim().slice(0, 200)
         const fail = (stage, extra) =>
           JSON.stringify(Object.assign({ ok: false, stage, trail, panel: panelText() }, extra || {}))
 
         for (let i = 0; i < 60; i++) { if (store.getState().ready) break; await sleep(250) }
+
+        // Positional, and only correct while the editor groups stay .group. A group matched here
+        // would make every measurement below one of the centre pane, which looks like source
+        // control rendering nothing rather than like a selector that moved.
+        if (rightPane() && rightPane().querySelector('.tabstrip')) {
+          return fail('an-editor-group-matched-.pane')
+        }
         const repos = ${JSON.stringify(repos)}
         store.getState().addWorkspace({
           id: 'ws-multi', name: 'multi', createdAt: Date.now(), lastOpenedAt: Date.now(),
@@ -584,6 +600,11 @@ async function runScrollSmoke(): Promise<void> {
         const shell = document.querySelector('.shell')
         const limit = bottom(shell)
 
+        // Positional, and only correct while the editor groups stay .group. A group matched here
+        // would be measured as the source control panel, and every assertion below would be
+        // reporting on the centre of the window instead.
+        if (!right || right.querySelector('.tabstrip')) return fail('an-editor-group-matched-.pane')
+
         trail.push('window bottom: ' + limit)
         // Kept as measurements: on the broken layout the PANE bottoms matched these, which is
         // how the bug was identified in the first place.
@@ -676,6 +697,14 @@ async function runScratchSmoke(): Promise<void> {
 
         const editorTab = (id) => ({ id, kind: 'editor', title: id, pinned: false,
           filePath: '/' + id + '.ts', repoId: null, readOnly: false })
+        const tabsOf = (ws) => {
+          const row = st().rowsByWorkspace[ws]
+          return row ? row.groups.reduce((all, g) => all.concat(g.tabs), []) : []
+        }
+        // EVERY strip, joined. One group's strip would answer "what is in the left column", and a
+        // tab that opened in another column would read as the centre not having changed at all.
+        const stripText = () =>
+          [...document.querySelectorAll('.tabstrip')].map(s => s.textContent || '').join(' | ')
 
         trail.push('workspaces at boot: ' + st().workspaces.map(w => w.id).join(','))
         if (!st().workspaces.some(w => w.id === '__scratch__')) return fail('no-scratch-at-boot')
@@ -700,14 +729,12 @@ async function runScratchSmoke(): Promise<void> {
         if (st().activeWorkspaceId !== '__scratch__') return fail('click-did-not-switch')
 
         trail.push('row marked selected: ' + scratchRow.className.includes('row--selected'))
-        trail.push('centre shows: ' + JSON.stringify(
-          (document.querySelector('.tabstrip')?.textContent || '').slice(0, 40)))
+        trail.push('centre shows: ' + JSON.stringify(stripText().slice(0, 40)))
 
         // And a terminal must actually open there.
         store.getState().openTab('__scratch__', newTerminalTab())
         await sleep(1500)
-        const tabs = st().tabsByWorkspace['__scratch__'] ?? []
-        trail.push('scratch tabs: ' + tabs.length)
+        trail.push('scratch tabs: ' + tabsOf('__scratch__').length)
         const panes = document.querySelectorAll('.term__pane').length
         trail.push('rendered terminal panes: ' + panes)
         if (panes < 1) return fail('no-terminal-in-scratch')
@@ -718,10 +745,10 @@ async function runScratchSmoke(): Promise<void> {
         store.getState().setActiveWorkspace('ws-probe')
         store.getState().openTab('ws-probe', editorTab('probe-only-file'))
         await sleep(600)
-        const onProbe = (document.querySelector('.tabstrip')?.textContent || '')
+        const onProbe = stripText()
         scratchRow.click()
         await sleep(600)
-        const onScratch = (document.querySelector('.tabstrip')?.textContent || '')
+        const onScratch = stripText()
         trail.push('tabstrip on ws-probe: ' + JSON.stringify(onProbe.slice(0, 50)))
         trail.push('tabstrip on scratch:  ' + JSON.stringify(onScratch.slice(0, 50)))
         if (onProbe === onScratch) return fail('centre-did-not-change-between-workspaces')
@@ -820,7 +847,8 @@ async function runMouseSmoke(): Promise<void> {
         let handle = null
         for (let i = 0; i < 60; i++) {
           await sleep(250)
-          const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+          const row = store.getState().rowsByWorkspace[scratch.id]
+          const t = row && row.groups.flatMap(g => g.tabs).find(x => x.id === tab.id)
           if (t) handle = getTerminal(paneKey(tab.id, t.activeLeafId))
           if (handle) break
         }
@@ -900,7 +928,8 @@ async function runCopySmoke(): Promise<void> {
         let handle = null
         for (let i = 0; i < 60; i++) {
           await sleep(250)
-          const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+          const row = store.getState().rowsByWorkspace[scratch.id]
+          const t = row && row.groups.flatMap(g => g.tabs).find(x => x.id === tab.id)
           if (t) handle = getTerminal(paneKey(tab.id, t.activeLeafId))
           if (handle) break
         }
@@ -998,12 +1027,13 @@ async function runQuitSmoke(): Promise<void> {
 }
 
 /**
- * End-to-end check on the tab strip's context menu.
+ * End-to-end check on the tab strip: its context menu, and the split button beside it.
  *
- * The close arithmetic itself is covered by `pnpm panes:selftest`. What only a real window can
+ * The close and row arithmetic is covered by `pnpm panes:selftest`. What only a real window can
  * show is the wiring: that a right-click on a terminal or a browser tab produces no menu at all,
- * that one on a file tab does, and that the buttons reach the store. Driven through DOM events
- * rather than the store so the component is genuinely in the loop.
+ * that one on a file tab does, that the buttons reach the store — and that the split button makes
+ * a SECOND strip whose contents are governed by what the tab is. Driven through DOM events rather
+ * than the store so the components are genuinely in the loop.
  */
 async function runTabsSmoke(): Promise<void> {
   const wc = shellWc()
@@ -1012,7 +1042,7 @@ async function runTabsSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab } = window.__onestop
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
         const trail = []
 
         let scratch = null
@@ -1031,11 +1061,44 @@ async function runTabsSmoke(): Promise<void> {
         const browser = (id) => ({ id, kind: 'custom', viewType: 'browser.page', title: id,
           pinned: false, state: { url: 'about:blank' } })
 
-        // Start from empty. Arriving at Scratch opens a terminal on its own now, so the fixture
-        // below would otherwise be counting someone else's tab.
-        const already = (store.getState().tabsByWorkspace[ws] ?? []).map(t => t.id)
-        if (already.length) store.getState().closeTabs(ws, already)
-        await sleep(400)
+        const row = () => store.getState().rowsByWorkspace[ws]
+        const order = () => row().groups.flatMap(g => g.tabs).map(t => t.id).join(',')
+        const strips = () => [...document.querySelectorAll('.tabstrip')]
+        const tabEls = (i) => {
+          const strip = strips()[i]
+          return strip ? [...strip.querySelectorAll('.tab')] : []
+        }
+        const items = () => [...document.querySelectorAll('.menu .menu__item')]
+        const rightClick = (el) => el.dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 20 }))
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        /*
+         * One empty group, whatever the previous phase left behind.
+         *
+         * Two things make this necessary rather than tidy. Arriving at Scratch opens a terminal on
+         * its own, so the fixtures below would be counting someone else's tab; and a leftover
+         * second group would put those fixtures across two strips, where every count taken from
+         * one of them is quietly short.
+         */
+        const reset = async () => {
+          for (let i = 0; i < 12; i++) {
+            const ids = row().groups.flatMap(g => g.tabs).map(t => t.id)
+            if (ids.length) store.getState().closeTabs(ws, ids)
+            const first = row().groups[0]
+            store.getState().setRow(ws, {
+              groups: [{ id: first.id, tabs: [], activeTabId: null }],
+              sizes: [1],
+              activeGroupId: first.id
+            })
+            await sleep(300)
+            const now = row()
+            if (now.groups.length === 1 && now.groups[0].tabs.length === 0) return true
+          }
+          return false
+        }
+        if (!(await reset())) return fail('could-not-clear-the-row')
 
         const term = newTerminalTab()
         for (const t of [term, editor('e1'), browser('b1'), editor('e2'), editor('e3')]) {
@@ -1043,28 +1106,21 @@ async function runTabsSmoke(): Promise<void> {
         }
         await sleep(600)
 
-        const order = () => (store.getState().tabsByWorkspace[ws] ?? []).map(t => t.id).join(',')
-        const tabEls = () => [...document.querySelectorAll('.tabstrip .tab')]
-        const items = () => [...document.querySelectorAll('.menu .menu__item')]
-        const rightClick = (el) => el.dispatchEvent(
-          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 20 }))
-        const fail = (stage, extra) =>
-          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
-
         trail.push('opened: ' + order())
-        if (tabEls().length !== 5) return fail('wrong-tab-count', { n: tabEls().length })
+        if (strips().length !== 1) return fail('fixture-spread-over-groups', { n: strips().length })
+        if (tabEls(0).length !== 5) return fail('wrong-tab-count', { n: tabEls(0).length })
 
         // Neither a terminal nor a browser tab may offer the menu.
-        rightClick(tabEls()[0])
+        rightClick(tabEls(0)[0])
         await sleep(150)
         if (document.querySelector('.menu')) return fail('menu-on-terminal')
-        rightClick(tabEls()[2])
+        rightClick(tabEls(0)[2])
         await sleep(150)
         if (document.querySelector('.menu')) return fail('menu-on-browser')
         trail.push('no menu on terminal or browser')
 
         // A file tab must, with all four commands.
-        rightClick(tabEls()[1])
+        rightClick(tabEls(0)[1])
         await sleep(150)
         const labels = items().map(b => b.textContent + (b.disabled ? '[off]' : ''))
         trail.push('menu: ' + labels.join(' | '))
@@ -1079,7 +1135,7 @@ async function runTabsSmoke(): Promise<void> {
         store.getState().openTab(ws, editor('e4'))
         store.getState().openTab(ws, editor('e5'))
         await sleep(300)
-        const els = tabEls()
+        const els = tabEls(0)
         rightClick(els[els.length - 2])
         await sleep(150)
         items().find(b => b.textContent.includes('Other Files')).click()
@@ -1087,9 +1143,107 @@ async function runTabsSmoke(): Promise<void> {
         trail.push('after close-others: ' + order())
         if (order() !== [term.id, 'b1', 'e4'].join(',')) return fail('close-others-wrong')
 
-        // Selection must never be left pointing at a tab that is gone.
-        const active = store.getState().activeTabByWorkspace[ws]
+        // Selection must never be left pointing at a tab that is gone. Still singular with several
+        // groups on screen: it is the active group's active tab, and what Cmd+W acts on.
+        const activeGroup = () => row().groups.find(g => g.id === row().activeGroupId) || row().groups[0]
+        const active = activeGroup().activeTabId
         if (!order().split(',').includes(active)) return fail('active-tab-dangling', { active })
+
+        // --- the split button -------------------------------------------------
+        // Found by title rather than by position: the strip's actions grow, and an index would
+        // start pressing "new terminal" the day one is added before it. Two titles, because the
+        // button tells the truth about what it is about to do — "Split right" for a file,
+        // "Move to a new group" for a terminal.
+        const isSplit = (b) => {
+          const title = (b.title || '').toLowerCase()
+          return title.includes('split') || title.includes('new group')
+        }
+        const splitButton = (i) => {
+          const strip = strips()[i]
+          return strip ? ([...strip.querySelectorAll('button')].find(isSplit) || null) : null
+        }
+        const buttonTitles = (i) => {
+          const strip = strips()[i]
+          return strip ? [...strip.querySelectorAll('button')].map(b => b.title).join(' | ') : ''
+        }
+
+        // A file can exist in two columns at once — that is the whole feature — so splitting one
+        // COPIES it, and the copy needs an id of its own: the pty handles, the browser plugin's
+        // native views and the PDF reader's scroll positions are all keyed by tab id.
+        if (!(await reset())) return fail('could-not-clear-the-row')
+        store.getState().openTab(ws, editor('s1'))
+        await sleep(400)
+        if (!splitButton(0)) return fail('no-split-button', { titles: buttonTitles(0) })
+        splitButton(0).click()
+        await sleep(600)
+
+        trail.push('after splitting a file: ' + row().groups.map(g => g.tabs.length).join('+'))
+        if (row().groups.length !== 2) return fail('split-made-no-second-group')
+        if (strips().length !== 2) return fail('second-group-has-no-strip', { n: strips().length })
+        // The class the positional '.pane' lookups in smoke:scroll and smoke:multirepo depend on.
+        if (document.querySelectorAll('.group').length !== 2) {
+          return fail('groups-are-not-.group-elements', { n: document.querySelectorAll('.group').length })
+        }
+        const left = row().groups[0]
+        const right = row().groups[1]
+        if (left.tabs.length !== 1 || right.tabs.length !== 1) {
+          return fail('split-moved-the-file-instead-of-copying-it', { shape: order() })
+        }
+        if (left.tabs[0].filePath !== right.tabs[0].filePath) return fail('copy-is-a-different-file')
+        if (left.tabs[0].id === right.tabs[0].id) {
+          return fail('copy-reuses-the-source-tab-id', { id: left.tabs[0].id })
+        }
+        const sum = row().sizes.reduce((a, b) => a + b, 0)
+        trail.push('sizes after split: ' + row().sizes.join(','))
+        if (row().sizes.length !== 2 || Math.abs(sum - 1) > 0.001) {
+          return fail('sizes-do-not-fill-the-row', { sizes: row().sizes })
+        }
+
+        // A terminal cannot be copied — its ptys are keyed by <tabId>:<leafId>, so two tabs
+        // sharing them would put two xterms on one shell — so splitting one MOVES it instead.
+        if (!(await reset())) return fail('could-not-clear-the-row')
+        store.getState().openTab(ws, editor('m1'))
+        const moving = newTerminalTab()
+        store.getState().openTab(ws, moving)
+        let handle = null
+        for (let i = 0; i < 80; i++) {
+          await sleep(250)
+          handle = getTerminal(paneKey(moving.id, moving.activeLeafId))
+          if (handle && handle.paneId) break
+        }
+        if (!handle || !handle.paneId) return fail('terminal-never-got-a-pty')
+        const ptyBefore = handle.paneId
+        trail.push('terminal pty before the split: ' + ptyBefore)
+
+        if (!splitButton(0)) return fail('no-split-button-with-a-terminal-active', { titles: buttonTitles(0) })
+        splitButton(0).click()
+        await sleep(800)
+        trail.push('after splitting a terminal: ' + row().groups.map(g => g.tabs.map(t => t.id).join('/')).join(' + '))
+        if (row().groups.length !== 2) return fail('terminal-split-made-no-second-group')
+        if (row().groups[0].tabs.some(t => t.id === moving.id)) {
+          return fail('terminal-was-duplicated-not-moved', { shape: order() })
+        }
+        if (!row().groups[1].tabs.some(t => t.id === moving.id)) {
+          return fail('terminal-did-not-arrive-in-the-new-group', { shape: order() })
+        }
+        const after = getTerminal(paneKey(moving.id, moving.activeLeafId))
+        trail.push('terminal pty after the split: ' + (after ? after.paneId : 'no handle'))
+        if (!after || after.paneId !== ptyBefore) {
+          return fail('the-move-respawned-the-shell', { before: ptyBefore, after: after ? after.paneId : null })
+        }
+
+        // And emptying a group takes the group with it: the width goes back to the survivor, or
+        // the row is left not filling the window.
+        const closer = tabEls(1)[0].querySelector('.tab__close')
+        if (!closer) return fail('no-close-button-in-the-second-strip')
+        closer.click()
+        await sleep(600)
+        trail.push('after closing the last tab of group 1: ' + row().groups.length + ' group(s), sizes ' + row().sizes.join(','))
+        if (row().groups.length !== 1) return fail('emptied-group-survived')
+        if (strips().length !== 1) return fail('emptied-group-still-has-a-strip')
+        if (Math.abs(row().sizes[0] - 1) > 0.001) {
+          return fail('survivor-did-not-take-the-width-back', { sizes: row().sizes })
+        }
 
         return JSON.stringify({ ok: true, trail, active })
       })()`,
@@ -1104,8 +1258,14 @@ async function runTabsSmoke(): Promise<void> {
 }
 
 /**
- * End-to-end check that what is on screen survives a restart: build a terminal with splits and a
- * browser tab, let the debounce fire, then read the document main actually wrote to disk.
+ * End-to-end check that what is on screen survives a restart: build a terminal with splits, a
+ * browser tab and a SECOND editor group, let the debounce fire, then read the document main
+ * actually wrote to disk.
+ *
+ * The row is asserted as a whole rather than tab by tab. `groups` and `groupSizes` are parallel
+ * arrays on disk, and a document whose sizes are the wrong length or whose `activeGroupId` names a
+ * group that is not there loads without complaint and then renders a centre pane that does not
+ * fill the window, or one with no focused column at all.
  */
 async function runPersistSmoke(): Promise<void> {
   const wc = shellWc()
@@ -1143,24 +1303,54 @@ async function runPersistSmoke(): Promise<void> {
           title: 'probe', pinned: false, state: { url: 'https://example.com/persisted' }
         })
 
+        // A second group, so the document written below has a real row in it rather than the one
+        // full-width group every migrated document already has.
+        const row = () => store.getState().rowsByWorkspace[scratch.id]
+        store.getState().splitGroup(scratch.id, row().activeGroupId, {
+          id: 'persist-second-group-tab', kind: 'editor', title: 'beside.ts', pinned: false,
+          filePath: '/persist-beside.ts', repoId: null, readOnly: true
+        })
+
         // Longer than the save debounce.
         await sleep(1500)
-        const t = (store.getState().tabsByWorkspace[scratch.id] ?? []).find(x => x.id === tab.id)
+        const t = row().groups.flatMap(g => g.tabs).find(x => x.id === tab.id)
         const count = (n) => n.kind === 'leaf' ? 1 : n.children.reduce((a, c) => a + count(c), 0)
-        return JSON.stringify({ ok: true, terminalTabId: tab.id, leaves: t ? count(t.root) : 0 })
+        return JSON.stringify({
+          ok: true,
+          terminalTabId: tab.id,
+          leaves: t ? count(t.root) : 0,
+          groupsInMemory: row().groups.length,
+          activeGroupId: row().activeGroupId
+        })
       })()`,
       true
     )) as string
-    const info = JSON.parse(built) as { ok: boolean; terminalTabId?: string; leaves?: number }
+    const info = JSON.parse(built) as {
+      ok: boolean
+      terminalTabId?: string
+      leaves?: number
+      groupsInMemory?: number
+      activeGroupId?: string
+    }
     if (!info.ok) { console.log('[smoke:persist]', built); app.exit(1); return }
 
     const file = join(app.getPath('userData'), 'workspaces.json')
     const doc = JSON.parse(readFileSync(file, 'utf8')) as {
       version: number
       keybindings?: { prefix?: string }
-      ui?: Record<string, { tabs?: Array<Record<string, unknown>>; activeTabId?: string | null }>
+      ui?: Record<
+        string,
+        {
+          groups?: Array<{ id?: string; tabs?: Array<Record<string, unknown>>; activeTabId?: string | null }>
+          groupSizes?: number[]
+          activeGroupId?: string
+        }
+      >
     }
-    const tabs = doc.ui?.['__scratch__']?.tabs ?? []
+    const row = doc.ui?.['__scratch__']
+    const groups = row?.groups ?? []
+    const tabs = groups.flatMap((g) => g.tabs ?? [])
+    const sizes = row?.groupSizes ?? []
     const term = tabs.find((t) => t.id === info.terminalTabId)
     // A plugin tab on disk: the shell persisted the envelope, the plugin's own state rode along
     // inside it. Reading the url back out of `state` is the check that both halves survived.
@@ -1180,18 +1370,308 @@ async function runPersistSmoke(): Promise<void> {
       leavesInMemory: info.leaves,
       leavesOnDisk: term ? countLeaves((term as { root?: unknown }).root) : 0,
       browserUrlOnDisk:
-        (browser as { state?: { url?: string } } | undefined)?.state?.url ?? null
+        (browser as { state?: { url?: string } } | undefined)?.state?.url ?? null,
+      groupsOnDisk: groups.length,
+      groupsInMemory: info.groupsInMemory,
+      sizesOnDisk: sizes,
+      activeGroupOnDisk: row?.activeGroupId ?? null
     }
     const ok =
       report.terminalRestored &&
       report.leavesOnDisk === info.leaves &&
       report.leavesOnDisk === 3 &&
       report.browserUrlOnDisk === 'https://example.com/persisted' &&
-      report.keybindingsSaved === 'ctrl+a'
+      report.keybindingsSaved === 'ctrl+a' &&
+      // A version that is merely reported is a version nobody notices going backwards: the
+      // migration in main only runs for documents whose number says they need it.
+      doc.version === 3 &&
+      report.groupsOnDisk === 2 &&
+      report.groupsOnDisk === info.groupsInMemory &&
+      sizes.length === groups.length &&
+      Math.abs(sizes.reduce((a, b) => a + b, 0) - 1) < 0.001 &&
+      groups.every((g) => (g.tabs ?? []).length > 0) &&
+      groups.some((g) => g.id === row?.activeGroupId) &&
+      row?.activeGroupId === info.activeGroupId
     console.log('[smoke:persist]', JSON.stringify({ ok, ...report }))
     app.exit(ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:persist] threw:', err)
+    app.exit(1)
+  }
+}
+
+/** One workspace's UI as v2 wrote it: a single tab list, a single active tab. */
+type V2UiRecord = {
+  tabs: Array<Record<string, unknown> & { id: string }>
+  activeTabId: string
+  layout: Record<string, unknown>
+  /** Deliberately optional — the workspace that leaves it out is the point of the fixture. */
+  expandedDirs?: string[]
+}
+
+/**
+ * A hand-built v2 document, as a user upgrading would have on disk.
+ *
+ * Neither workspace has folders, which is not laziness: the explorer seeds `expandedDirs` on first
+ * sight of a workspace that HAS roots, and that would overwrite the very absence this fixture
+ * exists to watch. Both are still real persisted workspaces, unlike Scratch, so both are restored
+ * and both are written back.
+ */
+function v2Document(dir: string): {
+  version: number
+  activeWorkspaceId: string
+  workspaces: Array<Record<string, unknown>>
+  ui: Record<string, V2UiRecord>
+  keybindings: Record<string, string>
+} {
+  const layout = { leftView: null, leftWidth: 260, rightWidth: 320, leftCollapsed: false, rightCollapsed: false }
+  const workspace = (id: string, name: string): Record<string, unknown> => ({
+    id, name, folders: [], createdAt: 1, lastOpenedAt: 2
+  })
+  const editor = (id: string, filePath: string): Record<string, unknown> & { id: string } => ({
+    id, kind: 'editor', title: id, pinned: false, filePath, repoId: null, readOnly: false
+  })
+
+  return {
+    version: 2,
+    activeWorkspaceId: 'ws-migrate-a',
+    workspaces: [workspace('ws-migrate-a', 'alpha'), workspace('ws-migrate-b', 'beta')],
+    ui: {
+      'ws-migrate-a': {
+        // The MIDDLE tab is the active one, so "the active tab survived" cannot pass by accident
+        // on a migration that simply keeps the first or the last.
+        tabs: v2Files().slice(0, 3).map((name, i) => editor('mig-a' + (i + 1), join(dir, name))),
+        activeTabId: 'mig-a2',
+        layout,
+        expandedDirs: ['/private/tmp']
+      },
+      'ws-migrate-b': {
+        // A terminal, because its pane tree is the most structured thing a tab carries and so the
+        // most likely to be flattened by a migration that rebuilds tabs instead of moving them.
+        tabs: [
+          {
+            id: 'mig-b1',
+            kind: 'terminal',
+            title: 'terminal',
+            pinned: false,
+            root: { kind: 'leaf', id: 'leaf-mig-b1', paneId: 'pty-that-died-with-the-old-process' },
+            activeLeafId: 'leaf-mig-b1'
+          },
+          editor('mig-b2', join(dir, v2Files()[3]!))
+        ],
+        activeTabId: 'mig-b2',
+        layout
+      }
+    },
+    keybindings: { prefix: 'ctrl+a', splitRight: '|', splitDown: '-', closePane: 'x' }
+  }
+}
+
+/**
+ * The files the fixture's editor tabs point at, real ones so the active tab opens rather than
+ * showing the "cannot read this" notice and making the report harder to read.
+ *
+ * A function and not a `const`, because `plantV2Document` runs during module evaluation — before a
+ * module-level binding declared this far down the file has been initialised, which is a
+ * ReferenceError and not the graceful kind.
+ */
+function v2Files(): string[] {
+  return ['one.ts', 'two.ts', 'three.ts', 'beta.ts']
+}
+
+function plantV2Document(dir: string): void {
+  for (const name of v2Files()) {
+    writeFileSync(join(dir, name), `export const openedBeforeTheUpgrade = '${name}'\n`, 'utf8')
+  }
+  writeFileSync(join(dir, 'workspaces.json'), JSON.stringify(v2Document(dir), null, 2), 'utf8')
+  console.log('[smoke:migrate] planted a v2 document in the throwaway userData directory')
+}
+
+/**
+ * The v2 -> v3 document change, end to end, and the only proof that existing users keep their tabs.
+ *
+ * `migrate()` has no unit test and cannot easily get one: it only means anything in the sequence
+ * that surrounds it — main reads the file, the renderer restores from what it was handed, and the
+ * save debounce writes the new shape back over the old. The fixture is therefore planted during
+ * module evaluation (see the top of this file), because `loadState()` caches for the life of the
+ * process and nothing planted after boot would ever be read.
+ *
+ * Three failures, all silent: a dropped tab list loses every file the user had open; a `g0` that
+ * did not survive means the renderer's tolerant fallback ran and main's migration did not; and a
+ * manufactured `expandedDirs: []` tells the explorer the project was deliberately collapsed, so
+ * every upgraded workspace opens shut for ever.
+ */
+async function runMigrateSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  try {
+    const want = v2Document(app.getPath('userData'))
+    // Cloned before the renderer's first save replaces `ui` in the cache: this is what main's
+    // migrate() produced, which is a thing no assertion on the file can see afterwards.
+    const migrated = structuredClone(loadState())
+    const shown = (v: unknown): string => (v === undefined ? 'absent' : JSON.stringify(v))
+
+    const expected = Object.entries(want.ui).map(([workspace, v2]) => ({
+      workspace,
+      tabIds: v2.tabs.map((t) => t.id).join(','),
+      activeTabId: v2.activeTabId,
+      expandedDirs: shown(v2.expandedDirs)
+    }))
+
+    const inMain = expected.map((e) => {
+      const record = migrated.ui[e.workspace]
+      const group = record?.groups?.[0]
+      return {
+        workspace: e.workspace,
+        groups: record?.groups?.length ?? 0,
+        groupId: group?.id ?? null,
+        tabIds: (group?.tabs ?? []).map((t) => t.id).join(','),
+        activeTabId: group?.activeTabId ?? null,
+        expandedDirs: shown(record?.expandedDirs)
+      }
+    })
+    const mainOk =
+      migrated.version === 3 &&
+      inMain.every(
+        (got, i) =>
+          got.groups === 1 &&
+          got.groupId === 'g0' &&
+          got.tabIds === expected[i]!.tabIds &&
+          got.activeTabId === expected[i]!.activeTabId &&
+          got.expandedDirs === expected[i]!.expandedDirs
+      )
+
+    const result = (await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store } = window.__onestop
+        const st = () => store.getState()
+        const trail = []
+        const fail = (stage, extra) =>
+          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+
+        for (let i = 0; i < 80; i++) { if (st().ready) break; await sleep(250) }
+        if (!st().ready) return fail('never-ready')
+
+        for (const want of ${JSON.stringify(expected)}) {
+          const row = st().rowsByWorkspace[want.workspace]
+          if (!row) return fail('workspace-not-restored', { workspace: want.workspace })
+          trail.push(want.workspace + ': ' + row.groups.length + ' group(s) [' +
+            row.groups.map(g => g.id).join(' ') + '] sizes ' + row.sizes.join(','))
+
+          if (row.groups.length !== 1) {
+            return fail('not-one-group-per-workspace', { workspace: want.workspace })
+          }
+          const group = row.groups[0]
+          // g0 is the id main's migration mints. Anything with a grp_ prefix means the renderer's
+          // own tolerant v2 fallback ran, so main handed it a v2 record and migrate() did nothing.
+          if (group.id !== 'g0') return fail('group-did-not-come-from-mains-migration', { id: group.id })
+          if (group.tabs.map(t => t.id).join(',') !== want.tabIds) {
+            return fail('tabs-lost-in-migration',
+              { workspace: want.workspace, got: group.tabs.map(t => t.id).join(','), want: want.tabIds })
+          }
+          if (group.activeTabId !== want.activeTabId) {
+            return fail('active-tab-not-preserved',
+              { workspace: want.workspace, got: group.activeTabId, want: want.activeTabId })
+          }
+          if (row.activeGroupId !== group.id) return fail('active-group-names-nothing')
+          if (row.sizes.length !== 1 || Math.abs(row.sizes[0] - 1) > 0.001) {
+            return fail('migrated-row-does-not-fill-the-width', { sizes: row.sizes })
+          }
+
+          const dirs = st().expandedDirs[want.workspace]
+          const got = dirs === undefined ? 'absent' : JSON.stringify(dirs)
+          trail.push(want.workspace + ' expandedDirs: ' + got)
+          if (got !== want.expandedDirs) {
+            return fail('expanded-dirs-changed-shape',
+              { workspace: want.workspace, got, want: want.expandedDirs })
+          }
+        }
+
+        // The terminal's pane tree came back as a tree, and without the pty id that died with the
+        // previous process — a restored tab pointing at a dead pane never binds to a shell.
+        const term = st().rowsByWorkspace['ws-migrate-b'].groups[0].tabs.find(t => t.id === 'mig-b1')
+        if (!term || term.kind !== 'terminal') return fail('terminal-tab-did-not-survive')
+        if (!term.root || term.root.kind !== 'leaf') return fail('terminal-pane-tree-flattened')
+        if (term.root.paneId !== null) return fail('restored-terminal-kept-a-dead-pty-id')
+        trail.push('terminal tab restored with a cleared pane id')
+
+        // Longer than the save debounce, so the document below is the one this boot wrote.
+        await sleep(2000)
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string
+    const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
+
+    const file = join(app.getPath('userData'), 'workspaces.json')
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as {
+      version?: number
+      ui?: Record<
+        string,
+        {
+          groups?: Array<{ id?: string; tabs?: Array<{ id?: string }>; activeTabId?: string | null }>
+          groupSizes?: number[]
+          activeGroupId?: string
+          expandedDirs?: string[]
+        }
+      >
+    }
+    const onDisk = expected.map((e) => {
+      const record = doc.ui?.[e.workspace]
+      const group = record?.groups?.[0]
+      return {
+        workspace: e.workspace,
+        groups: record?.groups?.length ?? 0,
+        tabIds: (group?.tabs ?? []).map((t) => t.id).join(','),
+        activeTabId: group?.activeTabId ?? null,
+        groupSizes: record?.groupSizes ?? [],
+        activeGroupId: record?.activeGroupId ?? null,
+        expandedDirs: shown(record?.expandedDirs)
+      }
+    })
+    // loadState keeps the pre-migration document beside the new one. A migration that goes wrong
+    // is only recoverable while that copy exists, which makes it part of the contract.
+    let backupBytes = 0
+    try { backupBytes = statSync(`${file}.v2`).size } catch { /* reported as 0 below */ }
+
+    const diskRowOk =
+      doc.version === 3 &&
+      backupBytes > 0 &&
+      onDisk.every(
+        (got, i) =>
+          got.groups === 1 &&
+          got.tabIds === expected[i]!.tabIds &&
+          got.activeTabId === expected[i]!.activeTabId &&
+          got.groupSizes.length === 1 &&
+          Math.abs((got.groupSizes[0] ?? 0) - 1) < 0.001 &&
+          got.activeGroupId === 'g0'
+      )
+    // Reported apart from the row so the log names the culprit. Care taken by the migration is
+    // undone one save later by anything that writes `expandedDirs: … ?? []` for a workspace the
+    // user has not opened yet — and the workspace then opens collapsed for ever.
+    const diskExpandedDirsOk = onDisk.every((got, i) => got.expandedDirs === expected[i]!.expandedDirs)
+
+    const ok = mainOk && info.ok && diskRowOk && diskExpandedDirsOk
+    console.log(
+      '[smoke:migrate]',
+      JSON.stringify({
+        ...info,
+        ok,
+        mainOk,
+        diskRowOk,
+        diskExpandedDirsOk,
+        versionAfterMigration: migrated.version,
+        versionOnDisk: doc.version,
+        v2BackupBytes: backupBytes,
+        expected,
+        inMain,
+        onDisk
+      })
+    )
+    app.exit(ok ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:migrate] threw:', err)
     app.exit(1)
   }
 }
@@ -1224,6 +1704,31 @@ async function captureShot(): Promise<void> {
         true
       )
       await new Promise((r) => setTimeout(r, 600))
+    }
+    // Editor groups are reviewed by looking at them — a row is either obviously two columns or it
+    // is not — and every number this file asserts about them would be identical if the second
+    // group were rendered one pixel wide behind the first.
+    if (process.env.ONESTOP_SHOT_SPLIT) {
+      const shape = (await wc.executeJavaScript(
+        `(async () => {
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+          const { store, newTerminalTab } = window.__onestop
+          const ws = store.getState().activeWorkspaceId
+          if (!ws) return 'no workspace'
+          const row = () => store.getState().rowsByWorkspace[ws]
+          // Something on the left first: splitting an empty group would photograph two copies of
+          // the "Nothing open" state, which shows the row and none of the point of it.
+          if (row().groups.every(g => g.tabs.length === 0)) {
+            store.getState().openTab(ws, newTerminalTab())
+            await sleep(1200)
+          }
+          store.getState().splitGroup(ws, row().activeGroupId, newTerminalTab())
+          await sleep(1800)
+          return row().groups.map(g => g.tabs.length).join('+') + ' @ ' + row().sizes.join(',')
+        })()`,
+        true
+      )) as string
+      console.log(`[shot] split row: ${shape}`)
     }
     const image = await wc.capturePage()
     const out = process.env.ONESTOP_SHOT ?? '/tmp/onestop-shot.png'
@@ -1515,7 +2020,7 @@ async function runPdfSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, plugins } = window.__onestop
+        const { store, plugins, newTerminalTab, getTerminal, paneKey } = window.__onestop
         const trail = []
         const st = () => store.getState()
         const fail = (stage, extra) =>
@@ -1538,10 +2043,13 @@ async function runPdfSmoke(): Promise<void> {
 
         // A rendered page is a canvas with a real backing store. pdf.js fetches its worker, the
         // bytes come over plugin:invoke, and the first page paints; 20 s is generous for all of it.
+        // Scoped to the page column: xterm renders onto canvases too, and once the row is split
+        // below there is a terminal on screen whose canvas would answer every question here.
+        const pageCanvases = () => [...document.querySelectorAll('.pdf__pages canvas')]
         let canvas = null
         for (let i = 0; i < 80; i++) {
           await sleep(250)
-          canvas = [...document.querySelectorAll('canvas')].find(c => c.width > 0 && c.height > 0)
+          canvas = pageCanvases().find(c => c.width > 0 && c.height > 0)
           if (canvas) break
         }
         if (!canvas) {
@@ -1580,7 +2088,116 @@ async function runPdfSmoke(): Promise<void> {
         trail.push('plugins loaded: ' + loaded.join(','))
         if (!loaded.includes('pdf')) return fail('pdf-plugin-not-active')
 
-        return JSON.stringify({ ok: true, trail })
+        /*
+         * And now the reason editor groups exist: a PDF and a terminal on screen AT THE SAME TIME.
+         *
+         * Every assertion above holds just as well for a viewer that is alone in the window, so
+         * none of them would notice the re-layout killing it — a canvas that keeps its pixels but
+         * is measured at zero width, a pdf.js worker torn down when the pane remounted in its new
+         * column, a terminal whose pty never spawned because its group was never rendered. Each of
+         * those looks like an empty half of the window and throws nothing.
+         */
+        const row = () => st().rowsByWorkspace[scratch.id]
+        const strips = () => [...document.querySelectorAll('.tabstrip')]
+        // Two titles: the button says "Split right" for anything that can exist twice and
+        // "Move to a new group" for anything whose resources are keyed by tab id.
+        const splitButton = () => {
+          const strip = strips()[0]
+          if (!strip) return null
+          return [...strip.querySelectorAll('button')].find(b => {
+            const title = (b.title || '').toLowerCase()
+            return title.includes('split') || title.includes('new group')
+          }) || null
+        }
+        if (!splitButton()) {
+          const titles = strips()[0]
+            ? [...strips()[0].querySelectorAll('button')].map(b => b.title).join(' | ')
+            : '(no strip)'
+          return fail('no-split-button', { titles })
+        }
+        splitButton().click()
+        await sleep(800)
+        trail.push('groups after the split: ' + row().groups.length)
+        if (row().groups.length !== 2) return fail('split-made-no-second-group')
+        if (document.querySelectorAll('.group').length !== 2) {
+          return fail('groups-are-not-.group-elements')
+        }
+
+        // Into the OTHER column, by id rather than by whatever happens to be focused.
+        const beside = row().groups[1].id
+        const sideTerm = newTerminalTab()
+        store.getState().openTab(scratch.id, sideTerm, beside)
+        let handle = null
+        for (let i = 0; i < 80; i++) {
+          await sleep(250)
+          handle = getTerminal(paneKey(sideTerm.id, sideTerm.activeLeafId))
+          if (handle && handle.paneId) break
+        }
+        if (!handle || !handle.paneId) return fail('terminal-beside-the-pdf-never-got-a-pty')
+        trail.push('terminal beside the pdf: pty ' + handle.paneId)
+
+        /*
+         * And it must actually RECEIVE. A pty id only proves main spawned a shell; the bytes come
+         * back over a MessagePort established once per workspace, and two terminal tabs in two
+         * groups both asking for one is precisely the case that used to close the live port and
+         * drop whatever was in flight. Typing into the second group and waiting for the echo is
+         * the only assertion that covers the transport end to end.
+         */
+        handle.term.input('echo SPLIT-PTY-$((7*6))' + String.fromCharCode(13), true)
+        const read = () => {
+          const b = handle.term.buffer.active
+          let out = ''
+          for (let i = 0; i < b.length; i++) out += (b.getLine(i)?.translateToString(true) ?? '')
+          return out
+        }
+        let echoed = false
+        for (let i = 0; i < 60; i++) {
+          await sleep(250)
+          if (read().includes('SPLIT-PTY-42')) { echoed = true; break }
+        }
+        trail.push('terminal in the second group echoed: ' + echoed)
+        if (!echoed) return fail('terminal-in-the-second-group-never-echoed')
+
+        // The viewer re-renders at its new width, so both the size and the ink are read again
+        // rather than trusted from before the split.
+        let sideBySide = null
+        for (let i = 0; i < 80; i++) {
+          await sleep(250)
+          const c = pageCanvases().find(x => x.width > 0 && x.height > 0)
+          if (!c) continue
+          const rect = c.getBoundingClientRect()
+          if (rect.width < 1 || rect.height < 1) continue
+          const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data
+          let marks = 0
+          for (let p = 0; p < px.length; p += 4) {
+            if (px[p] < 250 || px[p + 1] < 250 || px[p + 2] < 250) marks++
+          }
+          if (marks > 0) { sideBySide = { w: c.width, h: c.height, css: Math.round(rect.width), ink: marks }; break }
+        }
+        if (!sideBySide) return fail('pdf-went-blank-when-the-row-was-split')
+        trail.push('pdf after the split: ' + sideBySide.w + 'x' + sideBySide.h +
+          ' (' + sideBySide.css + 'px wide on screen), ink ' + sideBySide.ink)
+
+        // Both halves alive at once is the claim; the DOM is where it is either true or not.
+        if (!document.querySelector('.term__pane')) return fail('no-terminal-pane-on-screen')
+        if (!document.querySelector('.textLayer')) return fail('pdf-pane-left-the-screen')
+
+        /*
+         * And geometrically side by side, which none of the above would notice.
+         *
+         * The page canvas is sized from the zoom level, not from the group, so it measures 731px
+         * whether its column is 700px or 2px wide — a row that collapsed one group to nothing
+         * would satisfy every assertion up to here and show the user half a window.
+         */
+        const boxes = [...document.querySelectorAll('.group')].map(g => g.getBoundingClientRect())
+        trail.push('group boxes: ' + boxes.map(b => Math.round(b.left) + '..' + Math.round(b.right)).join(' '))
+        if (boxes.length !== 2) return fail('expected-two-group-boxes')
+        if (boxes[0].width < 80 || boxes[1].width < 80) {
+          return fail('a-group-was-squeezed-to-nothing', { widths: boxes.map(b => Math.round(b.width)) })
+        }
+        if (boxes[1].left < boxes[0].right - 2) return fail('groups-overlap-instead-of-sitting-side-by-side')
+
+        return JSON.stringify({ ok: true, trail, sideBySide })
       })()`,
       true
     )) as string
@@ -1781,10 +2398,12 @@ function registerHandlers(): void {
   handle('state:saveWorkspaces', ({ workspaces, activeWorkspaceId }) => {
     saveWorkspaces(workspaces, activeWorkspaceId)
   })
-  handle('state:saveUi', ({ workspaceId, ui }) => { saveUi(workspaceId, ui) })
   handle('state:saveAllUi', ({ ui }) => {
     if (process.env.ONESTOP_SMOKE) {
-      console.log(`[persist] saveAllUi keys=${Object.keys(ui).join(',')} tabs=${Object.values(ui).map((u) => u.tabs.length).join(',')}`)
+      const shape = Object.values(ui)
+        .map((u) => u.groups.map((g) => g.tabs.length).join('/'))
+        .join(',')
+      console.log(`[persist] saveAllUi keys=${Object.keys(ui).join(',')} groups=${shape}`)
     }
     saveAllUi(ui)
   })

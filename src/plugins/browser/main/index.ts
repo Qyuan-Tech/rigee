@@ -5,7 +5,7 @@ import type { Context, Plugin } from 'cordis'
 import type { EmitBrowserEvent } from '../protocol'
 
 /**
- * The browser's main half: twelve commands, one app-level listener, and the native views.
+ * The browser's main half: sixteen commands, one app-level listener, and the native views.
  *
  * All of it used to be inline in src/main/index.ts. The only structural change is where the
  * WebContentsViews hang: the shell built a `BrowserTabs` inside `createWindow`, so the manager was
@@ -70,15 +70,17 @@ const plugin: Plugin = {
     registerBrowserCommands(register, {
       'browser:create': ({ url, bounds }) => ({ viewId: live().create(url, bounds) }),
       'browser:destroy': ({ viewId }) => { peek()?.destroy(viewId) },
-      'browser:setVisible': ({ viewId, visible }) => {
-        if (visible) {
-          peek()?.showOnly(viewId)
-        } else {
-          peek()?.setVisible(viewId, false)
-          // Hiding the page hands the keyboard back to the shell; nothing else would take it.
-          shellWc()?.focus()
-        }
+      'browser:show': ({ viewId, bounds }) => { peek()?.show(viewId, bounds) },
+      'browser:hide': ({ viewId }) => { peek()?.hide(viewId) },
+      'browser:focus': ({ viewId }) => { peek()?.focus(viewId) },
+      'browser:releaseFocus': ({ viewId }) => {
+        // The shell is the only other surface that can hold the keyboard, and nothing else would
+        // take it — but only when this view really was holding it. A pane leaving the active group
+        // and another arriving is one React commit, so an unconditional hand-back would sometimes
+        // run after the new page's claim and leave the user typing into the tab strip.
+        if (peek()?.releaseFocus(viewId)) shellWc()?.focus()
       },
+      'browser:syncVisible': ({ viewIds }) => { peek()?.syncVisible(viewIds) },
       'browser:setBounds': ({ viewId, bounds }) => { peek()?.setBounds(viewId, bounds) },
       'browser:navigate': ({ viewId, url }) => { peek()?.navigate(viewId, url) },
       'browser:goBack': ({ viewId }) => { peek()?.goBack(viewId) },
@@ -147,8 +149,12 @@ const plugin: Plugin = {
      * page the user is looking at receives nothing they type unless we say so. The shell asks
      * after load and on window focus; without this claim the window looks completely normal while
      * swallowing every keystroke.
+     *
+     * The claim is for the NOMINATED view, not for any visible one. With a row of editor groups
+     * several pages are on screen at once, and "the first visible" means the one created earliest —
+     * so returning to the app would drop the cursor into whichever page happened to be oldest.
      */
-    ctx.shell.claimFocus(() => peek()?.focusVisible() ?? false)
+    ctx.shell.claimFocus(() => peek()?.focusNominated() ?? false)
 
     /**
      * Teardown. `before-quit` disposes the host, which disposes this fiber, which gets here.

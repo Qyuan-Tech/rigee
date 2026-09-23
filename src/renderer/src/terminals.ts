@@ -211,18 +211,70 @@ export function writeToPane(paneId: string, data: string): void {
 }
 
 /**
+ * Workspaces whose byte transport is already up, and how to take their sink down again.
+ *
+ * Per WORKSPACE, which is the thing a MessagePort belongs to — not per tab and emphatically not
+ * per pane component. `PtyManager.establishPort` CLOSES the live port and builds a fresh
+ * MessageChannelMain on every request, so a second request drops whatever frames were in flight:
+ * with two terminal tabs in two groups mounting together, that was a burst of output vanishing on
+ * every layout change. It was only ever harmless because exactly one terminal pane could exist.
+ */
+const transports = new Map<string, () => void>()
+
+/**
+ * Bring up this workspace's terminal transport, once.
+ *
+ * Idempotent by construction, because the ways in are plural: the module-level subscription below
+ * covers a workspace becoming active, and the shell may call this directly — one call, from
+ * App.tsx keyed on `activeWorkspaceId`, is the right shape and costs nothing extra if it arrives.
+ * What must never happen is a per-tab component calling it.
+ */
+export function ensureTerminalTransport(workspaceId: string): void {
+  if (transports.has(workspaceId)) return
+  // The sink is registered BEFORE the port is asked for: preload queues frames that arrive with no
+  // reader, but the queue is bounded, and the first thing a restored terminal does is redraw.
+  transports.set(
+    workspaceId,
+    window.onestop.onTerminalData(workspaceId, (paneId, data) => writeToPane(paneId, data))
+  )
+  void rpc['terminal:requestPort']({ workspaceId })
+}
+
+/** Drop a workspace's transport. For a workspace being closed, not for a tab or a pane. */
+export function releaseTerminalTransport(workspaceId: string): void {
+  transports.get(workspaceId)?.()
+  transports.delete(workspaceId)
+}
+
+// Fires immediately as well as on every change, so the transport is up whether this module loads
+// before or after the workspace is chosen at boot.
+useApp.subscribe(
+  (s) => s.activeWorkspaceId,
+  (workspaceId) => { if (workspaceId) ensureTerminalTransport(workspaceId) },
+  { fireImmediately: true }
+)
+
+/**
  * Reap terminals whose tab has closed.
  *
  * Closing a pane is handled by the component, but closing the whole tab is not — the component
  * unmounts and nothing is left to run the teardown. Subscribing outside React keeps this off the
  * render path, the same arrangement browserViews.ts uses for native views.
+ *
+ * The live set spans every GROUP of every workspace, and getting that wrong is not a leak but a
+ * massacre: a tab absent from the set has its pty killed and its xterm disposed, so a set built
+ * from one group would take down every terminal in the others — scrollback, running processes and
+ * all — on the first store write after a split. A tab dragged between groups keeps its id, so
+ * this correctly sees it as live throughout the move.
  */
 useApp.subscribe(
-  (s) => s.tabsByWorkspace,
-  (tabsByWorkspace) => {
+  (s) => s.rowsByWorkspace,
+  (rowsByWorkspace) => {
     const live = new Set<string>()
-    for (const tabs of Object.values(tabsByWorkspace)) {
-      for (const t of tabs) live.add(t.id)
+    for (const row of Object.values(rowsByWorkspace)) {
+      for (const group of row.groups) {
+        for (const t of group.tabs) live.add(t.id)
+      }
     }
     for (const [key, handle] of handles) {
       const tabId = key.slice(0, key.indexOf(':'))

@@ -8,8 +8,10 @@ import type { ViewBounds } from '@shared/types'
  * error rather than an `undefined` that surfaces three navigations later.
  *
  * The command payloads are the ones the eleven `browser:*` IPC channels carried before the shell
- * handed them over, unchanged. The events are the same three pushes with the `browser:` prefix
- * dropped — `plugin:event` envelopes carry the plugin id already.
+ * handed them over, except for the one the centre pane's editor groups broke: `setVisible` has
+ * become `show`/`hide`/`focus`/`releaseFocus`/`syncVisible`, for the reasons on each. The events
+ * are the same three pushes with the `browser:` prefix dropped — `plugin:event` envelopes carry
+ * the plugin id already.
  */
 
 /** Minted by the main half. Opaque to the renderer, which stores and echoes it, never parses it. */
@@ -39,9 +41,25 @@ export interface ViewArgs {
   viewId: ViewId
 }
 
-/** Only one browser view is visible at a time; the rest stay alive but hidden. */
-export interface SetVisibleArgs extends ViewArgs {
-  visible: boolean
+/**
+ * Show one view, at the rectangle it is to occupy.
+ *
+ * The bounds ride along rather than arriving in a separate `browser:setBounds` because a view
+ * re-mounted into another group would otherwise be composited at its OLD group's rectangle for the
+ * frame between the two messages — a page flashing across the column next door.
+ */
+export interface ShowArgs extends ViewArgs {
+  bounds: ViewBounds
+}
+
+/**
+ * The views that must be composited, as a whole.
+ *
+ * Everything not named here is hidden, which is what makes this a reconciler rather than a bulk
+ * show: see `browser:syncVisible` for the invariant it repairs.
+ */
+export interface SyncVisibleArgs {
+  viewIds: ViewId[]
 }
 
 export interface SetBoundsArgs extends ViewArgs {
@@ -74,7 +92,46 @@ export interface AuthResponseArgs {
 export interface BrowserCommands {
   'browser:create': (args: CreateArgs) => CreateResult
   'browser:destroy': (args: ViewArgs) => void
-  'browser:setVisible': (args: SetVisibleArgs) => void
+  /**
+   * Composite THIS view, and only this one. Nothing else moves.
+   *
+   * Replaces `browser:setVisible`, whose boolean fused three separate questions — what is on
+   * screen, what is on top, and what has the keyboard — and answered all three with "this one, and
+   * nobody else". With a row of editor groups two browser tabs are legitimately on screen at once,
+   * so the old `true` branch (`showOnly`) made the second pane to mount blank the first: a white
+   * rectangle and no error anywhere. Renaming rather than redefining is deliberate; a boolean that
+   * quietly stopped meaning what it used to is how the same regression ships twice.
+   */
+  'browser:show': (args: ShowArgs) => void
+  /** Uncomposite THIS view. No focus side effect: hiding one group must not disturb another. */
+  'browser:hide': (args: ViewArgs) => void
+  /**
+   * Give this view the keyboard, and remember it as the one that has it.
+   *
+   * Separate from `browser:show` because the two have different owners: every mounted pane is
+   * visible, but only the active group's active tab may take the keyboard. Fused, two panes
+   * mounting in one React commit would settle it by whichever IPC arrived last.
+   */
+  'browser:focus': (args: ViewArgs) => void
+  /**
+   * Hand the keyboard back to the shell, but ONLY if this view is the one holding it.
+   *
+   * Conditional on purpose. Leaving a group and entering another happens in a single commit, and
+   * the two panes' effects run in DOM order, not in the order the user's attention moved — so an
+   * unconditional release would, half the time, run after the new group's claim and leave the
+   * keyboard on the shell instead of on the page the user just clicked into.
+   */
+  'browser:releaseFocus': (args: ViewArgs) => void
+  /**
+   * Make the composited set exactly `viewIds`. The generalisation of the old `showOnly`.
+   *
+   * Not redundant with per-view show/hide: `showOnly` was silently maintaining an invariant the
+   * per-view calls cannot — "exactly the views whose panes are mounted are composited" — and a view
+   * can end up visible with no pane behind it. An adopted `window.open` guest whose tab never got
+   * a pane, or a StrictMode double-mount whose cleanup lost the race against its own creation, both
+   * leave a page nailed over the shell that nothing will ever hide.
+   */
+  'browser:syncVisible': (args: SyncVisibleArgs) => void
   'browser:setBounds': (args: SetBoundsArgs) => void
   'browser:navigate': (args: NavigateArgs) => void
   'browser:goBack': (args: ViewArgs) => void
@@ -84,11 +141,16 @@ export interface BrowserCommands {
   'browser:openDevTools': (args: ViewArgs) => void
   'browser:authResponse': (args: AuthResponseArgs) => void
   /**
-   * Which views are actually composited over the window.
+   * Which views are actually composited over the window, in creation order.
    *
    * A command rather than a diagnostic method because only main can see it, and the scratch smoke
    * test — "switching workspaces must not leave another workspace's page on screen" — needs the
    * answer from outside the plugin.
+   *
+   * SEVERAL may be composited now, one per editor group, so this is a set and not "the visible
+   * one". It says what is on screen, not what is on top of what: raising reorders main's child
+   * views, not this list. The assertions worth making on it are about membership — an id that is
+   * still here after its workspace was left, or the empty list the scratch smoke test wants.
    */
   'browser:visibleIds': (args: Record<string, never>) => ViewId[]
 }

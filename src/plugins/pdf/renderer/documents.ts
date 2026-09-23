@@ -52,10 +52,27 @@ export interface ViewState {
   scrollTop: number
   scale: number
   page: number
+  /**
+   * Whether `scale` is a fit-to-width rather than a number the reader chose.
+   *
+   * Carried with the position so that returning to a tab — or landing in a split copy, which is a
+   * narrower column by definition — keeps fitting if it was fitting, instead of inheriting a
+   * percentage computed for a pane of a different size.
+   */
+  fitted?: boolean
 }
 
 const entries = new Map<string, Entry>()
 const viewStates = new Map<string, ViewState>()
+/**
+ * Where each MOUNTED pane is right now, asked rather than stored.
+ *
+ * `viewStates` is only written when a pane unmounts, which is the wrong moment for the one caller
+ * that needs somebody else's position: the pane being split from is still on screen in the other
+ * column, so its entry is whatever it had at the last tab switch — or nothing at all, for a
+ * document that has never been left since it opened.
+ */
+const liveViewers = new Map<string, () => ViewState>()
 let sweepTimer: ReturnType<typeof setTimeout> | undefined
 
 export function acquireDocument(path: string, tabId: string): Promise<PDFDocumentProxy> {
@@ -123,6 +140,36 @@ export function readViewState(tabId: string): ViewState | undefined {
 }
 
 /**
+ * Let a mounted pane be asked where it is. Returns its own undo, for the unmount.
+ *
+ * The undo compares before deleting because StrictMode mounts the replacement before it tears the
+ * first one down; an unconditional delete there would unregister the live pane.
+ */
+export function registerViewer(tabId: string, snapshot: () => ViewState): () => void {
+  liveViewers.set(tabId, snapshot)
+  return () => {
+    if (liveViewers.get(tabId) === snapshot) liveViewers.delete(tabId)
+  }
+}
+
+/**
+ * Give a tab the reading position of the tab it was split from.
+ *
+ * Splitting a book you are 143 pages into should give you page 143 in the new column. Without
+ * this the copy has no state of its own, falls into the first-open branch, and opens fitted to
+ * width at page one — the reader asked for a second view of what they were reading, not for the
+ * front cover.
+ *
+ * Copied, not moved: the original is still open beside it and still wants its own place. Never
+ * overwrites, because an existing entry is the newer answer — the copy has been read since.
+ */
+export function seedViewState(fromTabId: string, toTabId: string): void {
+  if (viewStates.has(toTabId)) return
+  const from = liveViewers.get(fromTabId)?.() ?? viewStates.get(fromTabId)
+  if (from) viewStates.set(toTabId, { ...from })
+}
+
+/**
  * Drop every document and reading position whose tab no longer exists.
  *
  * Deferred by a turn, and that is not superstition: zustand notifies subscribers synchronously
@@ -157,6 +204,7 @@ export async function closeAllDocuments(): Promise<void> {
   const all = [...entries.values()]
   entries.clear()
   viewStates.clear()
+  liveViewers.clear()
   await Promise.all(all.map(destroy))
 }
 

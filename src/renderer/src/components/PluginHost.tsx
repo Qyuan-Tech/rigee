@@ -18,7 +18,8 @@ import {
   viewsIn
 } from '../plugins/registry'
 import { selectedLeftView } from './ActivityBar'
-import { useApp } from '../store'
+import { allTabs } from '../groups'
+import { rowOf, useApp } from '../store'
 import { Notice } from './Notice'
 import type { CustomTab, EditorTab } from '@shared/types'
 
@@ -116,10 +117,10 @@ export function PluginTabPane({ tab }: { tab: CustomTab }): React.ReactElement {
     (patch: Record<string, unknown>) => {
       if (!workspaceId) return
       // Read the tab back out of the store rather than closing over `tab.state`: two patches in
-      // one turn would otherwise both merge into the state as it was before either.
-      const current = (useApp.getState().tabsByWorkspace[workspaceId] ?? []).find(
-        (t) => t.id === tab.id
-      )
+      // one turn would otherwise both merge into the state as it was before either. Searched
+      // across every group, because a tab id is unique in the workspace but its column is not
+      // something this component tracks.
+      const current = allTabs(rowOf(useApp.getState(), workspaceId)).find((t) => t.id === tab.id)
       if (!current || current.kind !== 'custom') return
       updateTab(workspaceId, tab.id, { state: { ...current.state, ...patch } })
     },

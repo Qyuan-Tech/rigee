@@ -161,6 +161,16 @@ export const isDocumentViewType = (viewType: string): boolean =>
   tabs.find((c) => c.viewType === viewType)?.isDocument === true
 
 /**
+ * Whether splitting a tab of this type should COPY it rather than move it.
+ *
+ * Fails closed, and the default in the manifest is 'move' for the same reason: a plugin that has
+ * not said it survives being in two places probably does not. The failure on the other side is not
+ * cosmetic — a second native browser view with no session, or two panes sharing one.
+ */
+export const isDuplicableViewType = (viewType: string): boolean =>
+  tabs.find((c) => c.viewType === viewType)?.split === 'copy'
+
+/**
  * The view type a tab kind from an older persisted state becomes.
  *
  * Before the plugin system the shell had `diff` and `browser` tab kinds of its own. It does not

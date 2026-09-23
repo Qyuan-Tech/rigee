@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { CloseIcon, FileIcon, ICONS, TerminalIcon } from '../icons'
+import { canDuplicate, groupById } from '../groups'
+import { CloseIcon, FileIcon, ICONS, SplitIcon, TerminalIcon } from '../icons'
 import { ensurePlugin } from '../plugins/activate'
 import { tabFactory } from '../plugins/bindings'
 import {
@@ -7,11 +8,12 @@ import {
   displayNameOf,
   iconFor,
   isDocumentViewType,
+  isDuplicableViewType,
   ownerOf
 } from '../plugins/registry'
-import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useTabs } from '../store'
+import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useRow } from '../store'
 import { isFileTab, tabsToClose } from '../tabs'
-import type { Tab, TabId } from '@shared/types'
+import type { GroupId, Tab, TabId } from '@shared/types'
 
 /**
  * A tab's icon, asked for by name in the owning plugin's manifest.
@@ -19,6 +21,9 @@ import type { Tab, TabId } from '@shared/types'
  * Manifest data only — looking this up must never activate anything, or the strip would load
  * every plugin whose tab is merely restored from disk.
  */
+/** Stable identity, so a group that has not been created yet cannot cause a render loop. */
+const EMPTY_TABS: Tab[] = []
+
 function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
   if (tab.kind === 'terminal') return <TerminalIcon size={13} />
   const name = iconFor(tab.kind === 'editor' ? tab.viewType : tab.viewType)
@@ -26,18 +31,30 @@ function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
   return <Icon size={13} />
 }
 
-export function TabStrip(): React.ReactElement {
+/**
+ * The strip belonging to ONE editor group.
+ *
+ * Everything it does is scoped to that group: which tabs it shows, which one is active, where a new
+ * terminal goes, and what "Close Other Files" reaches. That scoping is the whole difference from
+ * the single strip this replaced — with two groups on screen, a bulk close that swept both would be
+ * astonishing, and VS Code scopes it the same way.
+ */
+export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement {
   const workspace = useActiveWorkspace()
-  const tabs = useTabs()
-  const activeId = useApp((s) =>
-    s.activeWorkspaceId ? s.activeTabByWorkspace[s.activeWorkspaceId] : null
-  )
+  const row = useRow()
+  const group = groupById(row, groupId)
+  const tabs = group?.tabs ?? EMPTY_TABS
+  const activeId = group?.activeTabId ?? null
+  const isActiveGroup = row.activeGroupId === groupId
+
   const setActiveTab = useApp((s) => s.setActiveTab)
   const closeTab = useApp((s) => s.closeTab)
   const closeTabs = useApp((s) => s.closeTabs)
   const openTab = useApp((s) => s.openTab)
-  const reorderTabs = useApp((s) => s.reorderTabs)
+  const moveTab = useApp((s) => s.moveTab)
+  const splitTab = useApp((s) => s.splitTab)
 
+  const activeTab = tabs.find((t) => t.id === activeId) ?? null
   const dragFrom = useRef<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; tabId: TabId } | null>(null)
 
@@ -62,8 +79,12 @@ export function TabStrip(): React.ReactElement {
 
   const addTerminal = useCallback(() => {
     if (!workspace) return
-    openTab(workspace.id, newTerminalTab())
-  }, [openTab, workspace])
+    openTab(workspace.id, newTerminalTab(), groupId)
+  }, [groupId, openTab, workspace])
+
+  const split = useCallback(() => {
+    if (workspace) splitTab(workspace.id, groupId)
+  }, [groupId, splitTab, workspace])
 
   /**
    * Open a fresh tab of a plugin-owned type.
@@ -85,29 +106,53 @@ export function TabStrip(): React.ReactElement {
       // the closed-over id would then put the tab in the workspace the user just left, where it
       // silently becomes the active tab. Worse, if that workspace was closed, `openTab` would
       // recreate its entries in a store that had just deleted them.
-      const workspaceId = useApp.getState().activeWorkspaceId
+      // Re-read the GROUP as well, and not just the workspace: a group can be closed while a
+      // plugin chunk loads, and opening into one that is gone is a button that does nothing.
+      const state0 = useApp.getState()
+      const workspaceId = state0.activeWorkspaceId
       if (!workspaceId) return
+      const stillThere = groupById(state0.rowsByWorkspace[workspaceId] ?? row, groupId)
       const { title, state, key } = create()
-      openTab(workspaceId, {
-        id: nextTabId(), kind: 'custom', title, pinned: false, viewType, state, key
-      })
+      openTab(
+        workspaceId,
+        { id: nextTabId(), kind: 'custom', title, pinned: false, viewType, state, key },
+        stillThere ? groupId : undefined
+      )
     },
-    [openTab]
+    [groupId, openTab, row]
   )
 
   if (!workspace) return <div className="tabstrip" />
 
   return (
-    <div className="tabstrip">
+    <div
+      className={`tabstrip${isActiveGroup ? '' : ' tabstrip--inactive'}`}
+      // A tab dropped on the strip's empty space joins this group at the end. Without it, the only
+      // drop target is another tab, so an empty group could never receive anything.
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        const tabId = e.dataTransfer.getData('text/onestop-tab')
+        if (tabId) moveTab(workspace.id, tabId, groupId, tabs.length)
+        dragFrom.current = null
+      }}
+    >
       {tabs.map((tab, i) => (
         <div
           key={tab.id}
           draggable
           className={`tab${tab.id === activeId ? ' tab--active' : ''}`}
-          onDragStart={() => { dragFrom.current = i }}
+          // The tab id travels on the drag, not just the index: a drop may land in ANOTHER group,
+          // where an index from this strip would mean something entirely different.
+          onDragStart={(e) => {
+            dragFrom.current = i
+            e.dataTransfer.setData('text/onestop-tab', tab.id)
+            e.dataTransfer.effectAllowed = 'move'
+          }}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={() => {
-            if (dragFrom.current !== null) reorderTabs(workspace.id, dragFrom.current, i)
+          onDrop={(e) => {
+            e.stopPropagation()
+            const dragged = e.dataTransfer.getData('text/onestop-tab')
+            if (dragged) moveTab(workspace.id, dragged, groupId, i)
             dragFrom.current = null
           }}
           onMouseDown={(e) => {
@@ -162,6 +207,20 @@ export function TabStrip(): React.ReactElement {
             </button>
           )
         })}
+        <button
+          className="icon-button"
+          onClick={split}
+          disabled={!activeTab}
+          // The truth per kind, because the two behaviours look different on screen and a button
+          // that says "split" while moving your terminal away is a small betrayal.
+          title={
+            activeTab && !canDuplicate(activeTab, isDuplicableViewType)
+              ? 'Move to a new group'
+              : 'Split right'
+          }
+        >
+          <SplitIcon size={14} />
+        </button>
       </div>
 
       {menu && (

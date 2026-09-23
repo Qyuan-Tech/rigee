@@ -2,7 +2,7 @@ import { openPluginTab, subscribeTabs } from '@renderer/plugins/api'
 import { AuthDialog } from './AuthDialog'
 import { BrowserPane, HOME_URL } from './BrowserPane'
 import { bindRpc, dispatch } from './rpc'
-import { adoptView, reap } from './views'
+import { adoptView, reap, subscribeVisibleViews, tabIdFor } from './views'
 import './browser.css'
 import type {
   AuthRequestedEvent,
@@ -56,13 +56,19 @@ const plugin: Plugin = {
      * cannot mount until React commits, which is after this handler returns. So `adoptView` always
      * wins the race against the pane's `ensureView`, which would otherwise create a SECOND view
      * and leave the adopted one composited over the window with nothing referencing it.
+     *
+     * The popup belongs to the group its OPENER is in, which is why the opener is looked up rather
+     * than ignored. A page in the left column that opens a login window would otherwise put it in
+     * whichever group happens to be active — over the file the user was reading in the right one,
+     * while the page that is waiting for the popup sits in the column they are no longer looking at.
      */
-    rpc.on<TabRequestedEvent>('tabRequested', ({ viewId, url }) => {
+    rpc.on<TabRequestedEvent>('tabRequested', ({ viewId, url, openerViewId }) => {
       const tabId = openPluginTab('browser', {
         viewType: 'browser.page',
         title: url,
         tooltip: url,
-        state: { url }
+        state: { url },
+        nearTabId: tabIdFor(openerViewId)
       })
       if (tabId) adoptView(tabId, viewId)
     })
@@ -79,6 +85,12 @@ const plugin: Plugin = {
     // Reap the native views of tabs that have been closed. Through ctx.effect so the store
     // subscription dies with the plugin rather than reaping on behalf of a dead one.
     ctx.effect(() => subscribeTabs(reap), 'reap views of closed tabs')
+
+    // And keep what is composited equal to what is mounted. The panes show and hide their own
+    // views; this is the net under them, for a view that ends up on screen with no pane behind it
+    // — an adopted popup whose tab never got one, a mount whose cleanup lost its own race. A page
+    // is a native view over the whole window, so an orphan is not a glitch, it is the app gone.
+    ctx.effect(subscribeVisibleViews, 'reconcile composited views')
   }
 }
 

@@ -30,6 +30,20 @@ import {
   resolvePrefixKey
 } from '../src/renderer/src/keys.ts'
 import { isFileTab, nextActiveTab, tabsToClose } from '../src/renderer/src/tabs.ts'
+import {
+  activateTab,
+  allTabs,
+  closeGroup,
+  closeTabs as closeTabsInRow,
+  focusGroup,
+  groupOfTab,
+  moveTab,
+  moveTabToNewGroup,
+  openInGroup,
+  resizeAt,
+  singleGroupRow,
+  splitGroup
+} from '../src/renderer/src/groups.ts'
 import { parseWorkspaceFile, serializeWorkspaceFile } from '../src/main/workspaceFile.ts'
 import type { PaneNode, Tab } from '../src/shared/types.ts'
 
@@ -383,6 +397,93 @@ console.log('\ntab strip')
   eq('closing everything leaves no selection',
     nextActiveTab(mixed, 'e1', ids(...mixed.map((t) => t.id))), null)
   eq('no selection stays no selection', nextActiveTab(mixed, null, ids('e1')), null)
+}
+
+console.log('\neditor groups')
+{
+  const editor = (id: string): Tab =>
+    ({ id, kind: 'editor', title: id, pinned: false, filePath: `/${id}.ts`, repoId: null, readOnly: false })
+  const sameTarget = (a: Tab, b: Tab): boolean =>
+    a.kind === 'editor' && b.kind === 'editor' && a.filePath === b.filePath
+
+  const sums = (row: { sizes: number[] }): number =>
+    Math.round(row.sizes.reduce((a, b) => a + b, 0) * 1000) / 1000
+
+  // One group to start with, holding everything the workspace had before groups existed.
+  const one = singleGroupRow('g1', [editor('a'), editor('b')])
+  eq('a fresh row has one group', one.groups.length, 1)
+  eq('and it is active', one.activeGroupId, 'g1')
+  eq('its last tab is showing', one.groups[0].activeTabId, 'b')
+  eq('it fills the row', sums(one), 1)
+
+  // Split: the new group takes half of the SOURCE's width, not an equal share of the row.
+  const two = splitGroup(one, 'g1', 'g2', editor('b-copy'))
+  eq('split adds a group', two.groups.length, 2)
+  eq('the new group is active', two.activeGroupId, 'g2')
+  eq('halves are equal', two.sizes.map((s) => Math.round(s * 100)).join(','), '50,50')
+  const three = splitGroup(two, 'g1', 'g3', editor('c'))
+  eq('splitting the left group again', three.groups.map((g) => g.id).join(','), 'g1,g3,g2')
+  eq('takes width from the left group only',
+    three.sizes.map((s) => Math.round(s * 100)).join(','), '25,25,50')
+  eq('and the row still fills', sums(three), 1)
+
+  // Per-group de-duplication: the same file in two groups is the whole point of the feature.
+  // A real caller mints a fresh id; what makes the two tabs "the same file" is the path.
+  const dupA = openInGroup(two, 'g2', { ...editor('a-copy'), filePath: '/a.ts' } as Tab, sameTarget)
+  eq('the same file opens in a second group', groupOfTab(dupA, 'a-copy').id, 'g2')
+  eq('and the original stays where it was', groupOfTab(dupA, 'a').id, 'g1')
+  const reopened = openInGroup(dupA, 'g1', { ...editor('a2'), filePath: '/a.ts' } as Tab, sameTarget)
+  eq('reopening it in its own group re-activates rather than duplicating',
+    reopened.groups[0].tabs.length, 2)
+  eq('and shows the existing tab', reopened.groups[0].activeTabId, 'a')
+
+  // Closing the last tab in a group takes the group with it, and gives back its width.
+  const closed = closeTabsInRow(two, ['b-copy'])
+  eq('emptying a group removes it', closed.groups.length, 1)
+  eq('the survivor takes the whole row', sums(closed), 1)
+  eq('and becomes active', closed.activeGroupId, 'g1')
+
+  // ...but never the last one: an empty row has nowhere to put the next file you open.
+  const emptied = closeTabsInRow(closed, ['a', 'b'])
+  eq('the last group survives empty', emptied.groups.length, 1)
+  eq('showing nothing', emptied.groups[0].activeTabId, null)
+
+  // Cross-group drag.
+  const moved = moveTab(three, 'b', 'g2', 0)
+  eq('a dragged tab leaves its group', groupOfTab(moved, 'b').id, 'g2')
+  eq('and lands at the requested index', moved.groups[2].tabs[0].id, 'b')
+  eq('its new group takes focus', moved.activeGroupId, 'g2')
+  eq('nothing is lost', allTabs(moved).length, allTabs(three).length)
+
+  const drained = moveTab(two, 'b-copy', 'g1', 0)
+  eq('draining a group closes it', drained.groups.length, 1)
+  eq('and the row still fills', sums(drained), 1)
+
+  eq('dragging within a group reorders',
+    moveTab(one, 'b', 'g1', 0).groups[0].tabs.map((t) => t.id).join(','), 'b,a')
+  eq('dropping a tab where it already is changes nothing',
+    moveTab(one, 'a', 'g1', 0), one)
+
+  // Dragging out to a group of its own.
+  const pulled = moveTabToNewGroup(one, 'a', 'g9')
+  eq('the tab gets its own group', groupOfTab(pulled, 'a').id, 'g9')
+  eq('and leaves the old one', pulled.groups[0].tabs.map((t) => t.id).join(','), 'b')
+  eq('a lone tab cannot be pulled out of its own group',
+    moveTabToNewGroup(singleGroupRow('g1', [editor('only')]), 'only', 'g2').groups.length, 1)
+
+  // Selection.
+  eq('activating a tab focuses its group', activateTab(three, 'b-copy').activeGroupId, 'g2')
+  eq('focusing a group leaves tabs alone', focusGroup(three, 'g1').groups, three.groups)
+  eq('focusing an unknown group is a no-op', focusGroup(three, 'nope'), three)
+
+  // Resizing moves only the two groups either side of the handle.
+  const resized = resizeAt(three, 0, 0.1)
+  eq('the pair either side of the handle move',
+    resized.sizes.map((s) => Math.round(s * 100)).join(','), '35,15,50')
+  eq('and the row still fills', sums(resized), 1)
+  eq('a group cannot be squeezed away',
+    resizeAt(three, 0, -1).sizes[0] > 0.05, true)
+  eq('an out-of-range handle is a no-op', resizeAt(three, 5, 0.1), three)
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

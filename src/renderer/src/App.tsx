@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
-import { TabStrip } from './components/TabStrip'
 import { CenterPane } from './components/CenterPane'
 import { PluginOverlays, PluginViewSlot, slotLabel } from './components/PluginHost'
 import { StatusBar } from './components/StatusBar'
@@ -9,8 +8,16 @@ import { Splitter } from './components/Splitter'
 import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
+import { activeGroup, allTabs } from './groups'
 import { setDisabledPlugins } from './plugins/registry'
-import { newTerminalTab, sanitizeTabs, useActiveWorkspace, useApp } from './store'
+import {
+  nextGroupId,
+  newTerminalTab,
+  rowOf,
+  sanitizeGroups,
+  useActiveWorkspace,
+  useApp
+} from './store'
 import {
   SCRATCH_WORKSPACE_ID,
   scratchWorkspace,
@@ -46,15 +53,11 @@ export function App(): React.ReactElement {
       store.setActiveWorkspace(state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID)
 
       for (const [wsId, ui] of Object.entries(state.ui)) {
-        // Tabs on disk may predate the current shape; repair or drop them rather than render one.
-        const tabs = sanitizeTabs(ui.tabs)
-        const ids = new Set(tabs.map((t) => t.id))
+        // The row on disk may predate the current shape; repair it rather than render a broken
+        // one. Written in ONE setState per workspace: the groups and their widths are a single
+        // invariant, and a render landing between two writes would see a row it cannot lay out.
         useApp.setState((s) => ({
-          tabsByWorkspace: { ...s.tabsByWorkspace, [wsId]: tabs },
-          activeTabByWorkspace: {
-            ...s.activeTabByWorkspace,
-            [wsId]: ui.activeTabId && ids.has(ui.activeTabId) ? ui.activeTabId : (tabs[0]?.id ?? null)
-          },
+          rowsByWorkspace: { ...s.rowsByWorkspace, [wsId]: sanitizeGroups(ui, nextGroupId) },
           // Only when the record has one. Leaving it absent is what tells the explorer this
           // workspace has never been opened, so it should start with its roots expanded.
           expandedDirs: Array.isArray(ui.expandedDirs)
@@ -111,7 +114,6 @@ export function App(): React.ReactElement {
         )}
 
         <div className="center">
-          <TabStrip />
           <CenterPane />
         </div>
 
@@ -215,8 +217,22 @@ function useShortcuts(): void {
         s.openTab(ws, newTerminalTab())
       } else if (e.key === 'w') {
         e.preventDefault()
-        const active = s.activeTabByWorkspace[ws]
+        // The active group's active tab — the one the user is looking at. Closing it may take the
+        // group with it, which `closeTabs` handles.
+        const active = activeGroup(rowOf(s, ws)).activeTabId
         if (active) s.closeTab(ws, active)
+      } else if (e.key === '\\') {
+        // Cmd/Ctrl+\ is VS Code's Split Editor, and the fingers that reach for it are the same
+        // ones this feature is for. The strip's button does the same thing with the mouse.
+        e.preventDefault()
+        s.splitTab(ws)
+      } else if (e.key >= '1' && e.key <= '9') {
+        // Cmd/Ctrl+1..9 jumps to a column, as VS Code does. Swallowed even when the column does
+        // not exist: half-pressing your way to a group that is not there should do nothing, not
+        // fall through to whatever the terminal would have made of the digit.
+        e.preventDefault()
+        const group = rowOf(s, ws).groups[Number(e.key) - 1]
+        if (group) s.focusGroup(ws, group.id)
       } else if (e.key === 'b') {
         e.preventDefault()
         s.setLayout({ leftCollapsed: !s.layout.leftCollapsed })
@@ -268,7 +284,9 @@ function useScratchTerminal(): void {
     if (!arrived || activeId !== SCRATCH_WORKSPACE_ID) return
 
     const s = useApp.getState()
-    if ((s.tabsByWorkspace[SCRATCH_WORKSPACE_ID] ?? []).length > 0) return
+    // Across every group, not just the active one: with the terminal sitting in the right-hand
+    // column, counting only group 0 would spawn a second one on every arrival, forever.
+    if (allTabs(rowOf(s, SCRATCH_WORKSPACE_ID)).length > 0) return
     s.openTab(SCRATCH_WORKSPACE_ID, newTerminalTab())
   }, [ready, activeId])
 }
@@ -282,11 +300,24 @@ function usePersistence(): void {
 
     const ui: Record<string, WorkspaceUiState> = {}
     for (const ws of s.workspaces) {
+      const row = rowOf(s, ws.id)
       ui[ws.id] = {
-        tabs: s.tabsByWorkspace[ws.id] ?? [],
-        activeTabId: s.activeTabByWorkspace[ws.id] ?? null,
+        groups: row.groups,
+        activeGroupId: row.activeGroupId,
+        // Genuinely per workspace, unlike `layout` — which is one global written into every
+        // record and only ever read back from the active one.
+        groupSizes: row.sizes,
         layout: s.layout,
-        expandedDirs: s.expandedDirs[ws.id] ?? []
+        /*
+         * Written only when there IS a record, never defaulted to [].
+         *
+         * Absence means "this workspace has never been opened, so show its roots expanded"; an
+         * empty array means "the user collapsed everything" and is authoritative. Defaulting here
+         * turns the first into the second on the very first save — so every workspace migrated
+         * from an older document would open fully collapsed, for ever. `pnpm smoke:migrate`
+         * caught exactly this.
+         */
+        ...(s.expandedDirs[ws.id] ? { expandedDirs: s.expandedDirs[ws.id] } : {})
       }
     }
     rpc['state:saveAllUi']({ ui }).catch((e: unknown) => console.error('[persist] saveAllUi failed', e))
@@ -304,8 +335,7 @@ function usePersistence(): void {
 
     const unsub = useApp.subscribe(
       (s) =>
-        [s.tabsByWorkspace, s.activeTabByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces,
-         s.expandedDirs] as const,
+        [s.rowsByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces, s.expandedDirs] as const,
       schedule
     )
     const interval = setInterval(save, SAVE_INTERVAL_MS)

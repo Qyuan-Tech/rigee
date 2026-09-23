@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { BackIcon, DevToolsIcon, ForwardIcon, ReloadIcon, StopIcon } from '@renderer/icons'
+import { useApp } from '@renderer/store'
 import { invoke, on } from './rpc'
-import { ensureView, showOnly, viewIdFor } from './views'
+import {
+  ensureView,
+  focusView,
+  hideView,
+  isFocusTarget,
+  isFocusTargetNow,
+  releaseFocus,
+  showView,
+  viewIdFor
+} from './views'
 import type { PluginTabProps } from '@renderer/plugins/bindings'
 import type { ViewBounds } from '@shared/types'
 
@@ -16,11 +26,15 @@ import type { ViewBounds } from '@shared/types'
  * fire before paint. During a splitter drag the native view still trails the DOM by roughly a
  * frame; that is inherent to compositing a separate view and cannot be fully removed.
  *
- * Hiding the view is this component's job alone. The shell used to run `showOnly(null)` for every
- * non-browser tab so a page could not cover the editor; it does not know what a browser view is
- * any more, and it does not need to — the centre pane renders only the active tab, so every way
- * out of a browser tab (switching tabs, closing the last one, switching workspaces) unmounts this
- * component and runs the cleanup below.
+ * Showing and hiding are this component's job, and strictly for ITS OWN view. The predecessor
+ * showed one view and hid every other, which is the same statement while only one pane can be
+ * mounted and a silent disaster once the centre pane is a row of editor groups: a PDF beside a page
+ * is fine, two pages side by side and the second one to mount blanks the first. Each group renders
+ * its own active tab, so every way out of a browser tab — switching tabs, closing the last one,
+ * closing the group, switching workspaces — unmounts this component and hides exactly one view.
+ *
+ * Keyboard focus is NOT part of that. It goes to the active group's active tab and to nothing else;
+ * a page being hidden in one column must not pull the cursor out of the page in the next one.
  */
 export function BrowserPane({
   tabId,
@@ -81,7 +95,7 @@ export function BrowserPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Create on first activation, then show it and hide the others.
+  // Create on first activation, then composite it over this pane's rectangle. This view only.
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -89,15 +103,42 @@ export function BrowserPane({
       if (!bounds) return
       await ensureView(tabId, openAt.current, bounds)
       if (cancelled) return
-      showOnly(tabId)
-      pushBounds()
+      // Re-measured rather than reused: creating the view took a round trip to main, and a splitter
+      // drag or a window resize in the meantime would show the page at the old rectangle.
+      showView(tabId, measure() ?? bounds)
+      // Asked again HERE, not read off the effect below's flag, because the view did not exist when
+      // that one ran — a browser tab opened into the active group would otherwise come up with the
+      // keyboard still on the tab strip, and the fix is not to await inside a focus effect that
+      // has to stay synchronous to release in the right order.
+      if (isFocusTargetNow(tabId)) focusView(tabId)
     })()
     return () => {
       cancelled = true
-      // Leaving the tab hides the view; the view itself outlives this component.
-      showOnly(null)
+      // Leaving the tab hides this view, and only this one; it outlives the component.
+      hideView(tabId)
     }
-  }, [tabId, measure, pushBounds])
+  }, [tabId, measure])
+
+  /**
+   * The keyboard, claimed and given back.
+   *
+   * Separate from the effect above because the two answer to different things: every mounted pane
+   * is visible, only the active group's active tab may type. Fusing them is the bug this split
+   * exists to kill — two panes mounting in one commit would have settled the keyboard by whichever
+   * IPC arrived last, and hiding one group's page would have taken focus off another's.
+   *
+   * The release is conditional in main: leaving one group and entering another is a single commit,
+   * and React runs the two panes' cleanups and effects in DOM order rather than in the order the
+   * user's attention moved, so an unconditional hand-back would half the time undo the new group's
+   * claim and leave the keyboard on the shell.
+   */
+  const focusTarget = useApp((s) => isFocusTarget(s, tabId))
+  useEffect(() => {
+    if (!focusTarget) return
+    // A no-op while the view is still being created; the create effect focuses it on arrival.
+    focusView(tabId)
+    return () => { releaseFocus(tabId) }
+  }, [tabId, focusTarget])
 
   useLayoutEffect(() => {
     pushBounds()

@@ -16,12 +16,14 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
-| `pnpm panes:selftest` | 102 checks on the split tree, key chords and the tab strip, pure functions |
+| `pnpm panes:selftest` | 139 checks on the split tree, the group row, key chords and the tab strip |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not |
-| `pnpm smoke:pdf` | renders a PDF the app prints for itself and checks pixels reached the canvas |
+| `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys |
-| `pnpm smoke:persist` | builds tabs and splits, then reads back what was written to disk |
+| `pnpm smoke:tabs` | the tab strip's menu and its split button: copy a file, move a terminal |
+| `pnpm smoke:persist` | builds tabs, splits and a two-group row, then reads back what reached disk |
+| `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
@@ -46,6 +48,26 @@ source control panel keys statuses by repository root, the two never match, and 
 **`smoke:scroll` needs a repository big enough to overflow both panels**: dozens of dirty files and
 dozens of top-level entries. Against a tidy repo it fails with `explorer-fixture-too-small`, which
 is the check refusing to pass vacuously rather than a regression.
+
+`smoke:migrate` needs no fixture directory: it writes its own v2 `workspaces.json` into the
+throwaway userData directory during module evaluation, which is the only moment early enough —
+`loadState()` caches for the life of the process, so a document planted after boot is never read.
+
+### Screenshots
+
+```bash
+env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=shot ONESTOP_SHOT=/tmp/a.png electron .
+```
+
+Three environment variables change what is in the frame, and they compose:
+
+| variable | what it does before the capture |
+|---|---|
+| `ONESTOP_SHOT_VIEW` | clicks that activity bar item, by title — `Explorer`, `Plugins`, … |
+| `ONESTOP_SHOT_COLLAPSED` | shuts both side panels |
+| `ONESTOP_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one |
+
+`ONESTOP_SHOT` also works with `smoke:pdf`, which leaves a PNG of the viewer it just asserted on.
 
 ## Layout
 
@@ -219,6 +241,38 @@ symptom is a `warn()` inside the worker.
 Also: pass `useWorkerFetch: true` explicitly. pdf.js infers it with `/https?:/.test(protocol)`,
 which is true in dev and false under a packaged `file://` renderer — two different code paths — and
 `false` additionally hard-disables ICC colour management.
+
+### Editor groups
+
+The centre of the window is a ROW of groups, left to right, each with its own tab strip, its own
+tab list and its own active tab — so a PDF can sit beside a terminal. The arithmetic is pure and
+lives in `src/renderer/src/groups.ts`; the store holds one `GroupRow` per workspace
+(`rowsByWorkspace`), and it persists as `groups` + `groupSizes` + `activeGroupId`.
+
+A flat row, not a tree. Groups only ever sit side by side, and nesting would turn every operation
+into a walk for a layout nobody asked for. Terminals keep their tree, because panes inside one
+terminal tab genuinely nest.
+
+Three rules a plugin author has to know:
+
+- **De-duplication is per group.** The same file open in two columns is the entire feature, so
+  `openTab` only re-activates an equal tab within the group it is opening into. A plugin tab's
+  `key` is what "equal" means, and a copy inherits it.
+- **Some tabs copy, some move.** The split button duplicates anything that can exist twice and
+  MOVES anything whose renderer-side resources are keyed by tab id — a terminal's ptys, a browser
+  tab's native view. A file always copies; a plugin's own tab type says which with `split: 'copy'`
+  in its `tabs` contribution, and the default is `'move'` because a plugin that has not said it
+  survives being in two places probably does not. The button's title tells the user which it will
+  be, so the gesture never lies about moving your terminal away.
+- **A copy gets a NEW tab id**, because those same module-level maps are keyed by it. If the view
+  keeps per-tab state worth carrying over — the PDF reader's page and zoom — call the shell API's
+  `duplicatedFrom(tabId)` on first mount. It answers once, for a tab that really was split from
+  another, so it belongs in a `useState` initialiser rather than in an effect body.
+
+Emptying a group removes it and gives its width back, except for the last one, which stays to hold
+the "Nothing open" state. `pnpm panes:selftest` covers the arithmetic, `pnpm smoke:tabs` covers the
+button and `pnpm smoke:pdf` covers the whole point of it: a PDF still rendering, with ink, beside a
+terminal that got its own pty.
 
 ## Things that will bite you
 

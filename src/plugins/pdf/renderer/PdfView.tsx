@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronIcon, CloseIcon, FileIcon } from '@renderer/icons'
-import { Notice } from '@renderer/plugins/api'
+import { duplicatedFrom, Notice } from '@renderer/plugins/api'
 import {
   acquireDocument,
   readViewState,
+  registerViewer,
   retireViewer,
   saveViewState,
-  searchIndexFor
+  searchIndexFor,
+  seedViewState
 } from './documents'
 import { Outline } from './Outline'
 import { createPageList, type PageList } from './pages'
@@ -40,19 +42,49 @@ const MAX_ZOOM = 6
 /** Long enough to finish typing a word, short enough that it feels like it is keeping up. */
 const QUERY_DEBOUNCE = 250
 
+/**
+ * ONE queue for every PDF pane in the window, page columns and thumbnail rails alike.
+ *
+ * Module scope, not per pane, because the limit is a budget for the whole window and a per-pane
+ * limit caps nothing: two PDFs side by side — the case editor groups exist for — allowed two of
+ * these at 2 renders each, so four pdf.js renders ran concurrently against one worker and the cap
+ * that stops a scroll from eating the frame budget was gone exactly when it was needed.
+ *
+ * Panes still cancel only their own work: `clear` takes the owner that queued the jobs, so one
+ * pane closing cannot drop the pages another pane is waiting on. See queue.ts.
+ */
+const queue = new RenderQueue(2)
+
 export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElement {
   const viewport = useRef<HTMLDivElement>(null)
   const list = useRef<PageList | null>(null)
-  // One queue for the page column and the thumbnail rail together — see queue.ts. Built on the
-  // first render rather than through useState, because nothing ever replaces it.
-  const held = useRef<RenderQueue | null>(null)
-  const queue = (held.current ??= new RenderQueue(2))
+  /*
+   * The tab this one was split from, read ONCE. `duplicatedFrom` is consume-once, and the effect
+   * below is double-invoked by StrictMode — asking there would hand the second pass nothing. A
+   * lazy initialiser runs on the first render of each mount, which is the only moment the answer
+   * exists.
+   */
+  const [splitFrom] = useState(() => duplicatedFrom(tabId))
 
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [draft, setDraft] = useState('1')
   const [scale, setScale] = useState(1)
+  /**
+   * Whether the current zoom came from fitting the page to the pane, rather than from the reader
+   * choosing a number.
+   *
+   * It has to be remembered, not inferred: 119% may be a fit or a deliberate choice, and the two
+   * must behave differently when the pane changes width. Splitting the editor is exactly that —
+   * the column halves, and a page still drawn at the old fit is clipped with a horizontal
+   * scrollbar, which is the first thing you see after splitting a PDF beside a terminal.
+   */
+  const [fitted, setFitted] = useState(true)
+  // Mirrored, because the two places that record the reading position — the live snapshot another
+  // pane may ask for, and the save on unmount — are closures created once and would otherwise
+  // report whatever `fitted` was when they were made.
+  const fittedRef = useRef(true)
   const [sidebar, setSidebar] = useState<Sidebar>('none')
   const [hasOutline, setHasOutline] = useState(false)
 
@@ -111,12 +143,16 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
 
   useEffect(() => {
     let disposed = false
+    let unregister: (() => void) | null = null
 
     void (async () => {
       try {
         const [pdfjs, opened] = await Promise.all([loadPdfjs(), acquireDocument(filePath, tabId)])
         if (disposed || !viewport.current) return
 
+        // Before our own state is read, and only ever a seed: a split copy has none of its own
+        // yet, so without this it takes the first-open path below and starts at page 1.
+        if (splitFrom) seedViewState(splitFrom, tabId)
         const saved = readViewState(tabId)
         const built = await createPageList({
           pdfjs,
@@ -133,6 +169,9 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
         if (disposed) { retireViewer(filePath, built.destroy()); return }
 
         list.current = built
+        // Answerable while mounted, so the pane a split copies FROM can be asked where it is
+        // rather than guessed at from whatever it saved the last time it was unmounted.
+        unregister = registerViewer(tabId, () => ({ ...built.snapshot(), fitted: fittedRef.current }))
         // Asked for, not constructed: the document cache owns it, so the text extracted by a
         // search survives the unmount that every tab switch puts this pane through.
         index.current = searchIndexFor(filePath, opened)
@@ -140,6 +179,7 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
         // and the scroll position they left. The observers have not fired yet — their callbacks
         // are always asynchronous — so nothing is re-rendered by this.
         if (!saved) built.setScale(clamp(built.fitWidth()))
+        setFitted(saved?.fitted ?? true)
         setDoc(opened)
         setScale(built.currentScale)
         if (saved) {
@@ -159,6 +199,7 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
 
     return () => {
       disposed = true
+      unregister?.()
       const live = list.current
       list.current = null
       // The SCAN stops; the index does not. It is the document cache's, and the text it has
@@ -169,16 +210,36 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
       index.current = null
       if (live) {
         // Where the reader was, so returning to this tab does not start at page 1.
-        saveViewState(tabId, live.snapshot())
+        saveViewState(tabId, { ...live.snapshot(), fitted: fittedRef.current })
         // The document itself stays: it dies with the TAB, not with the pane. `retireViewer` gives
         // the eventual destroy something to wait for, because `loadingTask.destroy()` must not run
         // until every render task here has been cancelled.
         retireViewer(filePath, live.destroy())
       }
     }
-  }, [filePath, tabId, paint])
+  }, [filePath, tabId, paint, splitFrom])
 
+  useEffect(() => { fittedRef.current = fitted }, [fitted])
   useEffect(() => { list.current?.setScale(scale) }, [scale])
+
+  /**
+   * Re-fit when the pane changes width, but only while the zoom IS a fit.
+   *
+   * Splitting the editor, dragging the divider between two groups and collapsing a side panel all
+   * resize this container; a reader who asked for 200% means 200% through all of it, and a reader
+   * on fit-width means fit-width. Observing the element rather than the window because the window
+   * is not what changes when a group is split.
+   */
+  useEffect(() => {
+    const el = viewport.current
+    if (!el || !fitted) return
+    const observer = new ResizeObserver(() => {
+      const live = list.current
+      if (live) setScale(clamp(live.fitWidth()))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [fitted])
   useEffect(() => { setDraft(String(page)) }, [page])
   useEffect(() => { repaint() }, [matches, active, repaint])
 
@@ -336,17 +397,30 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
 
         <span className="pdf__sep" />
 
-        <button className="btn" disabled={!doc} onClick={() => setScale((s) => clamp(step(s, -1)))}>
-          −
-        </button>
-        <span className="pdf__zoom">{Math.round(scale * 100)}%</span>
-        <button className="btn" disabled={!doc} onClick={() => setScale((s) => clamp(step(s, 1)))}>
-          +
-        </button>
         <button
           className="btn"
           disabled={!doc}
-          onClick={() => { const live = list.current; if (live) setScale(clamp(live.fitWidth())) }}
+          onClick={() => { setFitted(false); setScale((s) => clamp(step(s, -1))) }}
+        >
+          −
+        </button>
+        <span className="pdf__zoom">{Math.round(scale * 100)}%</span>
+        <button
+          className="btn"
+          disabled={!doc}
+          onClick={() => { setFitted(false); setScale((s) => clamp(step(s, 1))) }}
+        >
+          +
+        </button>
+        <button
+          className={doc && fitted ? 'btn btn--primary' : 'btn'}
+          disabled={!doc}
+          onClick={() => {
+            const live = list.current
+            if (!live) return
+            setFitted(true)
+            setScale(clamp(live.fitWidth()))
+          }}
         >
           Fit
         </button>

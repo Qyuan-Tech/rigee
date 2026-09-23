@@ -4,8 +4,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { join } from 'node:path'
 import {
   DEFAULT_KEYBINDINGS,
+  DEFAULT_PANEL_LAYOUT,
   PERSISTED_STATE_VERSION,
+  type PanelLayout,
   type PersistedState,
+  type Tab,
+  type TabId,
   type Workspace,
   type WorkspaceId,
   type WorkspaceUiState,
@@ -65,24 +69,70 @@ function migrate(raw: unknown): PersistedState {
   let version = typeof doc.version === 'number' ? doc.version : 0
   if (version === 0) return { ...EMPTY }
 
+  const workspaces = Array.isArray(doc.workspaces) ? (doc.workspaces as Workspace[]) : []
+  const keybindings = { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) }
+  let ui =
+    doc.ui && typeof doc.ui === 'object' ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>) : {}
+
   // v1 -> v2: key bindings joined the document. Everything else carries over, so a user's
   // workspaces and layouts survive the upgrade instead of being reset.
   if (version === 1) version = 2
 
-  if (version !== PERSISTED_STATE_VERSION) return { ...EMPTY }
+  // v2 -> v3: the centre pane became a ROW of editor groups. A v2 record held one tab list and one
+  // active tab, which is precisely one group filling the whole width.
+  //
+  // This is the first step that transforms data rather than relabelling a number, and it has to be
+  // a version rather than a tolerated absence. `groups ?? []` on a v2 record would produce an empty
+  // centre pane, and the renderer's 400 ms save debounce would write that emptiness back over the
+  // user's real tabs within half a second of boot.
+  if (version === 2) {
+    ui = Object.fromEntries(Object.entries(ui).map(([id, record]) => [id, toGroups(record)]))
+    version = 3
+  }
+
+  if (version !== PERSISTED_STATE_VERSION) {
+    // A document from the FUTURE — an older build reading what a newer one wrote. Keep the
+    // workspaces and the key bindings, which are version-stable and expensive to recreate, and
+    // drop only the UI, whose shape is the thing we cannot read. Wiping everything here is how a
+    // developer swapping branches against their real userData loses every project they had open.
+    return { ...EMPTY, workspaces, activeWorkspaceId: (doc.activeWorkspaceId as WorkspaceId | null) ?? null, keybindings }
+  }
 
   return {
     version: PERSISTED_STATE_VERSION,
-    workspaces: Array.isArray(doc.workspaces) ? (doc.workspaces as Workspace[]) : [],
+    workspaces,
     activeWorkspaceId: (doc.activeWorkspaceId as WorkspaceId | null) ?? null,
-    ui:
-      doc.ui && typeof doc.ui === 'object'
-        ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>)
-        : {},
-    keybindings: { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) },
+    ui,
+    keybindings,
     // No version bump for this one: an absent field means "nothing disabled", which is exactly
     // what every document written before the plugins view existed means.
     disabledPlugins: Array.isArray(doc.disabledPlugins) ? (doc.disabledPlugins as string[]) : []
+  }
+}
+
+/**
+ * A v2 UI record as one full-width group.
+ *
+ * Total by construction: a record with no tabs, or no `tabs` key at all, still yields one empty
+ * group, because the shell's invariant is that a workspace always has somewhere to put a tab.
+ *
+ * `expandedDirs` is copied only when it was there. Manufacturing `[]` would tell the explorer the
+ * workspace has been visited and everything in it was deliberately collapsed, so every migrated
+ * project would open with its roots shut — see the comment on the field.
+ */
+const MIGRATED_GROUP_ID = 'g0'
+
+function toGroups(raw: unknown): WorkspaceUiState {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const tabs = Array.isArray(record.tabs) ? (record.tabs as Tab[]) : []
+  const activeTabId = typeof record.activeTabId === 'string' ? (record.activeTabId as TabId) : null
+
+  return {
+    groups: [{ id: MIGRATED_GROUP_ID, tabs, activeTabId }],
+    activeGroupId: MIGRATED_GROUP_ID,
+    groupSizes: [1],
+    layout: (record.layout as PanelLayout | undefined) ?? { ...DEFAULT_PANEL_LAYOUT },
+    ...(Array.isArray(record.expandedDirs) ? { expandedDirs: record.expandedDirs as string[] } : {})
   }
 }
 
@@ -96,7 +146,14 @@ export function loadState(): PersistedState {
     return cache
   }
   try {
-    cache = migrate(JSON.parse(readFileSync(file, 'utf8')))
+    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    const onDisk = (raw as { version?: number } | null)?.version
+    // Keep the old document before the first flush overwrites it in the new shape. Migrations are
+    // meant to be total, but "meant to be" is not a recovery plan for somebody's workspaces.
+    if (typeof onDisk === 'number' && onDisk !== PERSISTED_STATE_VERSION) {
+      try { writeFileSync(`${file}.v${onDisk}`, readFileSync(file)) } catch { /* best effort */ }
+    }
+    cache = migrate(raw)
   } catch {
     // A corrupt document must not brick startup. Keep the bad file for forensics and start clean.
     try { renameSync(file, `${file}.corrupt-${Date.now()}`) } catch { /* best effort */ }
@@ -118,12 +175,6 @@ export function saveWorkspaces(workspaces: Workspace[], activeWorkspaceId: Works
   // absent from this list by design, and pruning "workspaces not in the list" deleted the UI
   // that saveAllUi had just written. Pruning belongs to saveAllUi, which sees every live
   // workspace including the synthetic ones.
-  flush()
-}
-
-export function saveUi(workspaceId: WorkspaceId, ui: WorkspaceUiState): void {
-  const state = loadState()
-  state.ui[workspaceId] = ui
   flush()
 }
 

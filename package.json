@@ -49,7 +49,8 @@
     "smoke:explorer": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=explorer electron .",
     "perf:check": "esbuild scripts/perf-check.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/perf-check.mjs --log-level=warning && node node_modules/.tmp/perf-check.mjs",
     "smoke:plugins": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=plugins electron .",
-    "smoke:pdf": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=pdf electron ."
+    "smoke:pdf": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=pdf electron .",
+    "smoke:migrate": "env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=migrate electron ."
   },
   "dependencies": {
     "@parcel/watcher": "2.6.0",

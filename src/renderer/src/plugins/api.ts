@@ -1,8 +1,9 @@
 import { SCRATCH_WORKSPACE_ID } from '@shared/types'
 import type { PluginId, ViewType } from '@shared/plugin'
 import type { CustomTab, TabId, Workspace, WorkspaceFolder, WorkspaceId } from '@shared/types'
+import { allTabs, groupById, groupOfTab } from '../groups'
 import { rpc } from '../ipc'
-import { nextTabId, nextWorkspaceId, useApp } from '../store'
+import { nextTabId, nextWorkspaceId, rowOf, takeDuplicateOrigin, useApp } from '../store'
 import { ownerOf } from './registry'
 
 /**
@@ -32,8 +33,20 @@ export interface PluginTabRequest {
   /**
    * Identity for de-duplication. Opening the same key twice re-activates the existing tab rather
    * than adding a second one; leave it out when duplicates are legitimate.
+   *
+   * De-duplication is PER EDITOR GROUP: the same key open in two columns is two tabs, because the
+   * same document side by side is what splitting is for.
    */
   key?: string
+  /**
+   * Open beside this tab — in whichever group holds it — instead of in the active group.
+   *
+   * For a tab opened BY another tab rather than by the user. A `window.open` popup from a page in
+   * the right-hand group belongs in the right-hand group: the user's focus may be anywhere by the
+   * time the page gets round to opening it, and landing in the wrong column looks like the click
+   * did something else entirely. Ignored when the tab is gone or lives in another workspace.
+   */
+  nearTabId?: TabId
 }
 
 /** The workspace a plugin's UI is currently looking at, or null before one is chosen. */
@@ -98,7 +111,7 @@ export async function addWorkspaceFolders(paths: string[]): Promise<void> {
 }
 
 /**
- * Open (or re-activate) a tab this plugin owns.
+ * Open (or re-activate) a tab this plugin owns, in the active workspace's ACTIVE GROUP.
  *
  * Returns the tab's id, or null when there is no workspace to put it in. The view type must be
  * one this plugin declared — the same rule as `contributions`, enforced here too because this is
@@ -113,6 +126,10 @@ export function openPluginTab(pluginId: PluginId, request: PluginTabRequest): Ta
   const workspaceId = store.activeWorkspaceId
   if (!workspaceId) return null
 
+  const before = rowOf(store, workspaceId)
+  const near = request.nearTabId ? groupOfTab(before, request.nearTabId) : undefined
+  const groupId = near?.id ?? before.activeGroupId
+
   const tab: CustomTab = {
     id: nextTabId(),
     kind: 'custom',
@@ -123,11 +140,28 @@ export function openPluginTab(pluginId: PluginId, request: PluginTabRequest): Ta
     state: request.state,
     key: request.key
   }
-  store.openTab(workspaceId, tab)
-  // openTab re-activates an existing tab with the same key instead of adding this one, so the id
-  // that ended up active is the honest answer to "which tab is this?".
-  const after = useApp.getState()
-  return after.activeTabByWorkspace[workspaceId] ?? tab.id
+  store.openTab(workspaceId, tab, groupId)
+  // openTab re-activates an existing tab with the same key instead of adding this one, so the tab
+  // the TARGET GROUP ended up showing is the honest answer to "which tab is this?". Read from that
+  // group rather than the row's active one: they are usually the same, but with `nearTabId` they
+  // deliberately are not, and the caller would be handed a tab it never opened.
+  const after = rowOf(useApp.getState(), workspaceId)
+  return groupById(after, groupId)?.activeTabId ?? tab.id
+}
+
+/**
+ * The tab this one was split from, or null.
+ *
+ * The split button gives the copy a FRESH tab id — ptys, native views and reading positions are
+ * all keyed by tab id, and a shared id would alias two live panes — so a viewer that keeps
+ * per-tab state has no other way to find out where the reader was.
+ *
+ * CONSUME-ONCE. Read it on first mount and keep what you got; the second caller, and every render
+ * after the first, gets null. StrictMode's double-invoked effect counts as a second caller, so
+ * this belongs in a `useState` initialiser or a ref, never in the effect body.
+ */
+export function duplicatedFrom(tabId: TabId): TabId | null {
+  return takeDuplicateOrigin(tabId)
 }
 
 /** Change a tab's title, tooltip, dedup key and/or merge into its state. No-op if it is gone. */
@@ -138,7 +172,7 @@ export function patchPluginTab(
   const store = useApp.getState()
   const workspaceId = workspaceOf(tabId)
   if (!workspaceId) return
-  const tab = (store.tabsByWorkspace[workspaceId] ?? []).find((t) => t.id === tabId)
+  const tab = groupOfTab(rowOf(store, workspaceId), tabId)?.tabs.find((t) => t.id === tabId)
   if (!tab || tab.kind !== 'custom') return
 
   store.updateTab(workspaceId, tabId, {
@@ -162,8 +196,11 @@ export function pluginTabs(
   viewType: ViewType
 ): { tabId: TabId; state: Record<string, unknown>; key?: string }[] {
   const out: { tabId: TabId; state: Record<string, unknown>; key?: string }[] = []
-  for (const tabs of Object.values(useApp.getState().tabsByWorkspace)) {
-    for (const tab of tabs) {
+  // Every group of every workspace — see `liveTabIds` for why a tab missed here is not merely a
+  // tab missed. A restored diff in the right-hand column that never gets its dedup key backfilled
+  // opens a second copy of itself the next time it is clicked.
+  for (const row of Object.values(useApp.getState().rowsByWorkspace)) {
+    for (const tab of allTabs(row)) {
       if (tab.kind === 'custom' && tab.viewType === viewType) {
         out.push({ tabId: tab.id, state: tab.state, key: tab.key })
       }
@@ -178,16 +215,25 @@ export function closePluginTab(tabId: TabId): void {
 }
 
 /**
- * Every tab id that exists, in every workspace.
+ * Every tab id that exists: every GROUP of every workspace.
  *
  * For plugins holding a resource per tab — a native browser view, a parsed document — that has to
- * be released when the tab goes. Across all workspaces, not just the active one: switching
- * workspaces must not look like every tab was closed.
+ * be released when the tab goes. The callers treat anything absent from this set as closed, so the
+ * flattening must span every dimension the tabs are spread across or it is a destroy order for
+ * tabs that are still on screen: the browser plugin would tear down the native view of a page the
+ * user is reading in the second column, and the PDF plugin would free the document and the reading
+ * position out from under a pane mid-render. Both fail silently.
+ *
+ * Across all workspaces, not just the active one: switching workspaces must not look like every
+ * tab was closed. Across all groups, not just the active one, for exactly the same reason — and
+ * that half is new, because until groups existed a workspace's tabs were one flat list.
  */
 export function liveTabIds(): Set<TabId> {
   const out = new Set<TabId>()
-  for (const tabs of Object.values(useApp.getState().tabsByWorkspace)) {
-    for (const tab of tabs) out.add(tab.id)
+  for (const row of Object.values(useApp.getState().rowsByWorkspace)) {
+    for (const group of row.groups) {
+      for (const tab of group.tabs) out.add(tab.id)
+    }
   }
   return out
 }
@@ -195,19 +241,22 @@ export function liveTabIds(): Set<TabId> {
 /**
  * Watch for tabs disappearing. Subscribing outside React keeps this off the render path.
  *
+ * Watches the whole row map, which also fires on a split, a drag between groups and a resize. That
+ * is deliberate over-notification: the alternative is deriving the id set on every store write to
+ * compare it, and the listeners here are all idempotent sweeps.
+ *
  * Wrap the returned undo in `ctx.effect` so it dies with the plugin.
  */
 export function subscribeTabs(listener: (live: Set<TabId>) => void): () => void {
   return useApp.subscribe(
-    (s) => s.tabsByWorkspace,
+    (s) => s.rowsByWorkspace,
     () => listener(liveTabIds())
   )
 }
 
 function workspaceOf(tabId: TabId): WorkspaceId | null {
-  const { tabsByWorkspace } = useApp.getState()
-  for (const [workspaceId, tabs] of Object.entries(tabsByWorkspace)) {
-    if (tabs.some((t) => t.id === tabId)) return workspaceId
+  for (const [workspaceId, row] of Object.entries(useApp.getState().rowsByWorkspace)) {
+    if (groupOfTab(row, tabId)) return workspaceId
   }
   return null
 }
