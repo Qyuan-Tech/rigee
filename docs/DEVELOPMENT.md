@@ -81,21 +81,27 @@ src/
     store.ts   atomic JSON persistence
   preload/     the contextBridge surface (compiled to CJS — see below)
   renderer/    React shell — window, workspaces, the activity bar, tabs, terminals
-    src/plugins/  the renderer-side host, the manifest registry and the component bindings
-  plugins/     the features, one folder each
-    text-editor/  Monaco, and the editor of last resort for every file
-    explorer/     the file tree
-    pdf/          the PDF reader
-    scm/          git: status, staging by line, commits, diffs
-    browser/      Chromium tabs as native WebContentsViews
-    shared/       what more than one plugin needs (the Monaco loader). Not a plugin.
+    plugins/   the renderer-side host, the manifest registry and the component bindings
+plugins/       the features, one folder each — OUTSIDE src/, see below
+  text-editor/   Monaco, and the editor of last resort for every file
+  explorer/      the file tree
+  pdf/           the PDF reader
+  scm/           git: status, staging by line, commits, diffs
+  browser/       Chromium tabs as native WebContentsViews
+  shared/        what more than one plugin needs (the Monaco loader). Not a plugin.
 scripts/       self-tests, the startup budget check and the local installer
 ```
+
+`plugins/` sits beside `src/` rather than inside it, and that is a statement of intent: a plugin is
+not part of the application's source, it is something the application loads. The ones here are
+bundled because they ship with the app, but they are written against the same contract a plugin
+from somebody else's repository would be, and the directory boundary is what keeps "reaches into
+the shell" from being the path of least resistance.
 
 Three tsconfig projects, because the three targets genuinely differ: `tsconfig.node.json` (main,
 no DOM), `tsconfig.preload.json` (DOM **and** Node — the preload straddles both), and
 `tsconfig.web.json` (renderer, no Node). Plugins straddle two of them by file name:
-`src/plugins/*/main/**` belongs to the node project, `src/plugins/*/renderer/**` to the web
+`plugins/*/main/**` belongs to the node project, `plugins/*/renderer/**` to the web
 project, and `manifest.ts` / `protocol.ts` to both. That split is mandatory, not tidiness — see
 the plugin section below.
 
@@ -103,21 +109,21 @@ the plugin section below.
 
 The shell is a window, a workspace model, a tab framework, terminals, persistence and an IPC
 spine. Everything else is a plugin: the text editor, the PDF reader, source control and the
-browser all live in `src/plugins/<id>/` and reach the shell only through the contract in
+browser all live in `plugins/<id>/` and reach the shell only through the contract in
 `src/shared/plugin.ts`. The framework underneath is [cordis](https://github.com/cordiverse/cordis).
 
 A plugin is up to two halves, because Electron leaves no choice — a PDF renders in the sandboxed
 renderer and the bytes it renders can only be read in main:
 
 ```
-src/plugins/pdf/
+plugins/pdf/
   manifest.ts          what exists: id, version, contributions. Plain data, read in both realms.
   protocol.ts          the command and event types the two halves share. Realm-free.
   main/index.ts        default-exports a cordis Plugin. Node only.
   renderer/index.tsx   default-exports a cordis Plugin. DOM only.
 ```
 
-`src/plugins/index.ts` lists the manifests; `registry.main.ts` and `registry.renderer.ts` hold the
+`plugins/index.ts` lists the manifests; `registry.main.ts` and `registry.renderer.ts` hold the
 dynamic-import thunks, one file per realm.
 
 **Contribution points.** `editors` (a viewer for files matching a selector), `tabs` (a tab type the
@@ -191,7 +197,7 @@ take it off one.** Measured per call on this install:
 The third row is the trap: cordis substitutes the shadow context only when the receiver is the
 proxy itself, so a detached method reference has no `this` at all — and it fails at the first call,
 not at capture. Bind at activation. This is also why the renderer keeps its component registry in
-plain Maps (`src/renderer/src/plugins/bindings.ts`) and the shell never touches cordis while
+plain Maps (`src/renderer/plugins/bindings.ts`) and the shell never touches cordis while
 rendering.
 
 **Service methods must be prototype methods, never arrow-function fields.** `this.ctx` means "the

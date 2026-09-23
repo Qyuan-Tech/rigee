@@ -3,7 +3,7 @@
  *
  * PDF.JS MUST NEVER BE A TOP-LEVEL IMPORT. Measured: `await import('pdfjs-dist')` becomes its own
  * 437 kB chunk with no modulepreload, so a session that never opens a PDF pays nothing. The same
- * discipline `src/plugins/shared/monaco.ts` applies to Monaco, for the same reason.
+ * discipline `plugins/shared/monaco.ts` applies to Monaco, for the same reason.
  *
  * Everything below about workers and asset URLs was verified against pdfjs-dist 6.3.289 and a real
  * Electron 44 probe in all three worlds the app runs in: the http dev origin, a packaged file://

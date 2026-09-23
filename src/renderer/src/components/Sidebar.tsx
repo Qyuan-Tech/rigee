@@ -18,7 +18,7 @@ import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFold
 /**
  * The workspace list, and nothing else.
  *
- * The file tree that used to sit under it is a plugin now (src/plugins/explorer). What is left is
+ * The file tree that used to sit under it is a plugin now (plugins/explorer). What is left is
  * the workspace model's own UI — opening folders and `.code-workspace` files, switching between
  * them, saving one out — which is the shell's, because the workspace model is the shell's. It
  * stays pinned above the activity bar's panel rather than becoming one of the switchable views:

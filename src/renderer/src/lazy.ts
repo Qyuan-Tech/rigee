@@ -6,7 +6,7 @@
  * terminal tab opens costs nothing the user notices.
  *
  * Monaco used to be here too. It is not the shell's concern any more — the text editor and the
- * source control diff are plugins, and they share `src/plugins/shared/monaco.ts`. The shell owns
+ * source control diff are plugins, and they share `plugins/shared/monaco.ts`. The shell owns
  * terminals, so it owns this loader and nothing else.
  */
 

@@ -114,8 +114,8 @@ export interface IpcRequests {
    * Every renderer→main plugin call, on one channel.
    *
    * Source control and the browser used to own twenty-two channels between them here. They are
-   * plugins now, and their commands are typed beside them — see src/plugins/scm/protocol.ts and
-   * src/plugins/browser/protocol.ts. The allowlist below grew by two entries and stops there,
+   * plugins now, and their commands are typed beside them — see plugins/scm/protocol.ts and
+   * plugins/browser/protocol.ts. The allowlist below grew by two entries and stops there,
    * which is the whole point: it stays a literal that can be read and audited.
    */
   'plugin:invoke': (args: PluginInvocation) => unknown

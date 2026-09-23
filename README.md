@@ -94,7 +94,7 @@ an app launched from Finder inherits almost none of it.
 rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
 the text editor, the PDF reader, source control and the browser are each a folder under
-`src/plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+`plugins/`, loaded on demand through two IPC channels and a declarative manifest.
 
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
 open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.

@@ -3,11 +3,11 @@
     "electron.vite.config.ts",
     "src/main/**/*",
     "src/shared/**/*",
-    "src/plugins/index.ts",
-    "src/plugins/registry.main.ts",
-    "src/plugins/*/manifest.ts",
-    "src/plugins/*/protocol.ts",
-    "src/plugins/*/main/**/*"
+    "plugins/index.ts",
+    "plugins/registry.main.ts",
+    "plugins/*/manifest.ts",
+    "plugins/*/protocol.ts",
+    "plugins/*/main/**/*"
   ],
   "compilerOptions": {
     "composite": true,
@@ -24,6 +24,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "baseUrl": ".",
-    "paths": { "@shared/*": ["src/shared/*"], "@plugins/*": ["src/plugins/*"] }
+    "paths": { "@shared/*": ["src/shared/*"], "@plugins/*": ["plugins/*"] }
   }
 }

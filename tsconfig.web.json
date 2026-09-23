@@ -2,12 +2,12 @@
   "include": [
     "src/renderer/**/*",
     "src/shared/**/*",
-    "src/plugins/index.ts",
-    "src/plugins/registry.renderer.ts",
-    "src/plugins/shared/**/*",
-    "src/plugins/*/manifest.ts",
-    "src/plugins/*/protocol.ts",
-    "src/plugins/*/renderer/**/*"
+    "plugins/index.ts",
+    "plugins/registry.renderer.ts",
+    "plugins/shared/**/*",
+    "plugins/*/manifest.ts",
+    "plugins/*/protocol.ts",
+    "plugins/*/renderer/**/*"
   ],
   "compilerOptions": {
     "composite": true,
@@ -28,7 +28,7 @@
     "paths": {
       "@shared/*": ["src/shared/*"],
       "@renderer/*": ["src/renderer/src/*"],
-      "@plugins/*": ["src/plugins/*"]
+      "@plugins/*": ["plugins/*"]
     }
   }
 }

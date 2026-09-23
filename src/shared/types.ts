@@ -218,7 +218,7 @@ export interface TabGroup {
 export type TerminalError = { kind: 'spawn-failed'; message: string }
 
 // Source control types used to live here. They are the source control PLUGIN's contract now, and
-// live beside it in src/plugins/scm/protocol.ts — nothing in the shell needs to know what a hunk
+// live beside it in plugins/scm/protocol.ts — nothing in the shell needs to know what a hunk
 // is. `RepoId` stays because a workspace folder records whether it is a work tree, which is how
 // the explorer decides what to show before any plugin has loaded.
 

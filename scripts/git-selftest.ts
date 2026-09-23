@@ -16,8 +16,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { GitService } from '../src/plugins/scm/main/git/service.ts'
-import { parsePorcelainV2 } from '../src/plugins/scm/main/git/status.ts'
+import { GitService } from '../plugins/scm/main/git/service.ts'
+import { parsePorcelainV2 } from '../plugins/scm/main/git/status.ts'
 
 /**
  * A private directory per run, NOT a fixed path.

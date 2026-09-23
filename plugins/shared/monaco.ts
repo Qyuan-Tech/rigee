@@ -2,7 +2,7 @@
  * Monaco, loaded once and themed once, for whichever plugins need it.
  *
  * Two do: the text editor and the source control diff. They live in different folders and load in
- * different chunks, so the loader has to sit somewhere they can both reach — `src/plugins/shared/`
+ * different chunks, so the loader has to sit somewhere they can both reach — `plugins/shared/`
  * is that place, and it is not a plugin. Nothing here may be imported by the shell.
  *
  * MONACO MUST NEVER BE A TOP-LEVEL IMPORT. Measured on this project's stack: eager imports cost

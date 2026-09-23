@@ -107,7 +107,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@shared': resolve(__dirname, 'src/shared'),
-        '@plugins': resolve(__dirname, 'src/plugins')
+        '@plugins': resolve(__dirname, 'plugins')
       }
     }
   },
@@ -135,7 +135,7 @@ export default defineConfig({
     // build/pdf.mjs is one self-contained 860 kB ESM file with zero static imports. Pre-bundling
     // it buys nothing and rewrites the /*@vite-ignore*/ dynamic import inside it.
     optimizeDeps: { exclude: ['pdfjs-dist'] },
-    // `root` is src/renderer, but the plugins live in src/plugins — outside it. Vite's default
+    // `root` is src/renderer, but the plugins live in plugins/ at the repo root — outside it. Vite's default
     // allowlist walks up to the workspace root and would usually cover that; saying so explicitly
     // means `pnpm dev` cannot start refusing to serve a plugin with "outside of Vite serving
     // allow list", which reads like a missing file rather than a policy.
@@ -175,7 +175,7 @@ export default defineConfig({
         '@renderer': resolve(__dirname, 'src/renderer/src'),
         // Plugins live outside `root` (src/renderer), which Vite's dev server allows because its
         // fs allowlist walks up to the workspace root. Keep them out of `manualChunks`.
-        '@plugins': resolve(__dirname, 'src/plugins')
+        '@plugins': resolve(__dirname, 'plugins')
       }
     }
   }
