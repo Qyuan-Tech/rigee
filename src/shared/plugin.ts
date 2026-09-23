@@ -1,7 +1,7 @@
 /**
  * The plugin contract, shared by main / preload / renderer.
  *
- * onestop's core is a shell: a window, workspaces, a tab framework, terminals, persistence and the
+ * rigee's core is a shell: a window, workspaces, a tab framework, terminals, persistence and the
  * IPC spine. Everything that shows a document or a panel — the text editor, source control, the
  * browser, the PDF viewer — is a plugin. This file is the contract they are written against.
  *

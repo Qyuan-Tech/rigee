@@ -23,7 +23,7 @@ export function loadMonaco(): Promise<typeof import('monaco-editor')> {
   return monacoP
 }
 
-export const MONACO_THEME = 'onestop-dark'
+export const MONACO_THEME = 'rigee-dark'
 
 /**
  * Monaco's built-in vs-dark paints #1e1e1e, which sits visibly lighter than the panes around it.

@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
-import { REQUEST_CHANNELS, EVENT_CHANNELS, type OnestopBridge } from '@shared/ipc'
+import { REQUEST_CHANNELS, EVENT_CHANNELS, type RigeeBridge } from '@shared/ipc'
 import type { Platform } from '@shared/types'
 
 /**
  * Compiled to CJS (`index.cjs`) on purpose — see electron.vite.config.ts. An ESM preload under
- * sandbox:true fails with "Cannot use import statement outside a module" and window.onestop
+ * sandbox:true fails with "Cannot use import statement outside a module" and window.rigee
  * silently never appears.
  */
 
@@ -50,7 +50,7 @@ ipcRenderer.on('terminal:port', (e: IpcRendererEvent, meta: { workspaceId: strin
   port.start()
 })
 
-const api: OnestopBridge = {
+const api: RigeeBridge = {
   platform: process.platform as Platform,
 
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -108,4 +108,4 @@ const api: OnestopBridge = {
   }
 }
 
-contextBridge.exposeInMainWorld('onestop', api)
+contextBridge.exposeInMainWorld('rigee', api)

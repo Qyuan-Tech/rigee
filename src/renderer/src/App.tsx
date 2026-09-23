@@ -175,7 +175,7 @@ function TitleBar({ onSettings }: { onSettings: () => void }): React.ReactElemen
     <div className="titlebar" style={{ paddingLeft: isMac() ? 80 : 12 }}>
       <span className="titlebar__brand">
         <span className="titlebar__mark" />
-        onestop
+        rigee
       </span>
       {workspace && <span className="titlebar__context">{workspace.name}</span>}
       <button

@@ -144,29 +144,29 @@ jobs:
           case "${{ runner.os }}" in
             macOS)
               # Boot the arch native to the runner; Rosetta may not be installed.
-              APP="$DIR/mac-arm64/onestop.app"
-              [ -d "$APP" ] || APP="$DIR/mac/onestop.app"
-              BIN="$APP/Contents/MacOS/onestop"
+              APP="$DIR/mac-arm64/rigee.app"
+              [ -d "$APP" ] || APP="$DIR/mac/rigee.app"
+              BIN="$APP/Contents/MacOS/rigee"
               [ -x "$BIN" ] || { echo "no macOS build at $APP"; exit 1; }
               echo "booting $APP"
-              ONESTOP_SMOKE=1 "$BIN"
+              RIGEE_SMOKE=1 "$BIN"
               ;;
             Windows)
               # x64 only: the arm64 installer is built here but cannot run on an x64 runner.
-              BIN="$DIR/win-unpacked/onestop.exe"
+              BIN="$DIR/win-unpacked/rigee.exe"
               [ -f "$BIN" ] || { echo "no Windows build at $BIN"; exit 1; }
               echo "booting $BIN"
-              ONESTOP_SMOKE=1 "$BIN"
+              RIGEE_SMOKE=1 "$BIN"
               ;;
             Linux)
-              BIN="$DIR/linux-unpacked/onestop"
+              BIN="$DIR/linux-unpacked/rigee"
               [ -x "$BIN" ] || { echo "no Linux build at $BIN"; exit 1; }
               if ! command -v xvfb-run >/dev/null; then
                 echo "::warning::xvfb not present on this runner, cannot boot-test the packaged app"
                 exit 0
               fi
               echo "booting $BIN"
-              ONESTOP_SMOKE=1 xvfb-run -a "$BIN" --no-sandbox
+              RIGEE_SMOKE=1 xvfb-run -a "$BIN" --no-sandbox
               ;;
           esac
 
@@ -213,7 +213,7 @@ jobs:
           Builds are ad-hoc signed, not notarised, so the first launch needs one extra step:
 
           - **macOS** — right-click the app and choose *Open*, or
-            `xattr -dr com.apple.quarantine /Applications/onestop.app`
+            `xattr -dr com.apple.quarantine /Applications/rigee.app`
           - **Windows** — SmartScreen: *More info → Run anyway*
           - **Linux** — `chmod +x` the AppImage
           EOT

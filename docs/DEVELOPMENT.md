@@ -1,4 +1,4 @@
-# Developing onestop
+# Developing rigee
 
 ```bash
 pnpm install
@@ -35,9 +35,9 @@ Three modes need a directory to point at, and two of them fail confusingly if yo
 one:
 
 ```bash
-ONESTOP_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:multirepo   # a directory OF git repos
-ONESTOP_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:explorer    # two or more folders
-ONESTOP_SMOKE_REPO=/private/tmp/bigrepo    pnpm smoke:scroll      # one repo, see below
+RIGEE_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:multirepo   # a directory OF git repos
+RIGEE_SMOKE_MULTIREPO=/private/tmp/repos pnpm smoke:explorer    # two or more folders
+RIGEE_SMOKE_REPO=/private/tmp/bigrepo    pnpm smoke:scroll      # one repo, see below
 ```
 
 **Use `/private/tmp`, not `/tmp`.** On macOS `/tmp` is a symlink, so `git rev-parse
@@ -56,18 +56,18 @@ throwaway userData directory during module evaluation, which is the only moment 
 ### Screenshots
 
 ```bash
-env -u ELECTRON_RUN_AS_NODE ONESTOP_SMOKE=shot ONESTOP_SHOT=/tmp/a.png electron .
+env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=shot RIGEE_SHOT=/tmp/a.png electron .
 ```
 
 Three environment variables change what is in the frame, and they compose:
 
 | variable | what it does before the capture |
 |---|---|
-| `ONESTOP_SHOT_VIEW` | clicks that activity bar item, by title — `Explorer`, `Plugins`, … |
-| `ONESTOP_SHOT_COLLAPSED` | shuts both side panels |
-| `ONESTOP_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one |
+| `RIGEE_SHOT_VIEW` | clicks that activity bar item, by title — `Explorer`, `Plugins`, … |
+| `RIGEE_SHOT_COLLAPSED` | shuts both side panels |
+| `RIGEE_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one |
 
-`ONESTOP_SHOT` also works with `smoke:pdf`, which leaves a PNG of the viewer it just asserted on.
+`RIGEE_SHOT` also works with `smoke:pdf`, which leaves a PNG of the viewer it just asserted on.
 
 ## Layout
 
@@ -278,9 +278,21 @@ terminal that got its own pty.
 
 Each of these cost real debugging time. They are commented at the site too; this is the index.
 
+**The app was called onestop, and `src/main/index.ts` still says so once.** Electron derives
+`userData` from the app's name, so the rename moved it from `<appData>/onestop` to
+`<appData>/rigee` — and every workspace, every restored tab, the key bindings, the disabled-plugin
+set and every site signed into in a browser tab went quiet at the same moment. Nothing was deleted,
+which somehow makes it worse: the data is right there and the app cannot see it.
+`adoptLegacyUserData()` copies the two things worth keeping — `workspaces.json` and `Partitions/` —
+on first launch, guarded on our own document not existing yet, and renames the partition directory
+because Chromium looks that storage up by the partition string (`persist:rigee-browser`), so
+copying the cookies without renaming the folder would sign everybody out anyway. The old directory
+is left alone: an upgrade that deletes the previous version's data has no way back. That literal
+`onestop` is load-bearing; it is not a rename that was missed.
+
 **The preload must compile to CJS.** `package.json` sets `"type": "module"`, so electron-vite
 would emit an ESM preload, and an ESM preload under `sandbox: true` fails with *"Cannot use import
-statement outside a module"* — `window.onestop` then silently never appears and the renderer dies
+statement outside a module"* — `window.rigee` then silently never appears and the renderer dies
 on `undefined.invoke`. `electron.vite.config.ts` forces `format: 'cjs'` and `index.cjs`.
 
 **Never name a dynamically-imported package in `manualChunks`.** Doing so pulls it into the
@@ -335,7 +347,7 @@ receives the already-created guest on `options.webContents` — a field that is 
 **The `login` event has four different arities.** On `app` it takes five arguments, on
 `WebContents` four, on `ClientRequest` two, on `UtilityProcess` three, and `Session` has no such
 event at all. Dropping `authenticationResponseDetails` from the `WebContents` form binds
-`callback` to the `authInfo` object and you get *"cb is not a function"*. onestop registers once on
+`callback` to the `authInfo` object and you get *"cb is not a function"*. rigee registers once on
 `app` and routes by the `webContents` argument.
 
 **Pin the dependency versions.** electron-vite 5 constrains vite to ≤7, `@vitejs/plugin-react` 6
@@ -369,7 +381,7 @@ before the copy and `-f` after fixes it; `pnpm install:local` does both.
 
 **Verify installs with `open`, not by running the binary.** Both of the bundle-corruption bugs
 above reproduce only through LaunchServices; invoking
-`onestop.app/Contents/MacOS/onestop` directly works perfectly in each case, which is exactly why
+`rigee.app/Contents/MacOS/rigee` directly works perfectly in each case, which is exactly why
 they survived several rounds of "it works here".
 
 **Never run `codesign --force --deep --sign -` on the built app.** `--deep` is deprecated and

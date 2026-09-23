@@ -235,7 +235,7 @@ export function ensureTerminalTransport(workspaceId: string): void {
   // reader, but the queue is bounded, and the first thing a restored terminal does is redraw.
   transports.set(
     workspaceId,
-    window.onestop.onTerminalData(workspaceId, (paneId, data) => writeToPane(paneId, data))
+    window.rigee.onTerminalData(workspaceId, (paneId, data) => writeToPane(paneId, data))
   )
   void rpc['terminal:requestPort']({ workspaceId })
 }

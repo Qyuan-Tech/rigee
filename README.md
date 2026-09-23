@@ -1,9 +1,9 @@
-# onestop
+# rigee
 
 One window for the whole loop: terminals, code, diffs and the web.
 
 If you write code mostly by directing AI agents, your attention is probably split across a
-terminal multiplexer, an editor you use to read diffs, and a browser full of docs. onestop puts
+terminal multiplexer, an editor you use to read diffs, and a browser full of docs. rigee puts
 those three in one window without pretending any of them is something it isn't — the editor is
 the real VS Code editor, the browser is real Chromium, and the terminal is a real pseudo-terminal
 running your own shell.
@@ -17,7 +17,7 @@ running your own shell.
 ```
 ┌────────────────┬──────────────────────────────────────────┬──────────────────┐
 │  WORKSPACES    │  ❯ terminal   ◧ App.tsx   ◎ docs    + ❯ ◎│  SOURCE CONTROL  │
-│  ▸ onestop     │ ─────────────────────────────────────────│                  │
+│  ▸ rigee     │ ─────────────────────────────────────────│                  │
 │  ▸ api         │                                          │  Message…        │
 │  ▸ infra       │                                          │                  │
 │                │                                          │  STAGED      2   │
@@ -39,20 +39,20 @@ running your own shell.
 ## Install
 
 Download the build for your platform from the
-[latest release](https://github.com/Jason-Chang_citrix/onestop/releases/latest).
+[latest release](https://github.com/Jason-Chang_citrix/rigee/releases/latest).
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple Silicon) | `onestop-<version>-arm64.dmg` | |
-| macOS (Intel) | `onestop-<version>-x64.dmg` | |
-| Windows | `onestop-<version>-x64-setup.exe` | Installs per-user, no admin prompt |
-| Linux | `onestop-<version>-x86_64.AppImage` | `chmod +x` then run |
-| Linux (Debian/Ubuntu) | `onestop_<version>_amd64.deb` | `sudo dpkg -i …` |
+| macOS (Apple Silicon) | `rigee-<version>-arm64.dmg` | |
+| macOS (Intel) | `rigee-<version>-x64.dmg` | |
+| Windows | `rigee-<version>-x64-setup.exe` | Installs per-user, no admin prompt |
+| Linux | `rigee-<version>-x86_64.AppImage` | `chmod +x` then run |
+| Linux (Debian/Ubuntu) | `rigee_<version>_amd64.deb` | `sudo dpkg -i …` |
 
 Builds are currently **unsigned**, so every OS will object the first time:
 
 - **macOS** — right-click the app and choose *Open*, or
-  `xattr -dr com.apple.quarantine /Applications/onestop.app`.
+  `xattr -dr com.apple.quarantine /Applications/rigee.app`.
   Do **not** try to "fix" it with `codesign --deep`; see the note in
   [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 - **Windows** — SmartScreen shows "Windows protected your PC"; choose *More info → Run anyway*.
@@ -64,7 +64,7 @@ None. Terminals run your login shell directly — `$SHELL` on macOS and Linux, P
 Windows — so there is nothing to install and no WSL requirement. The status bar shows which shell
 is in use.
 
-onestop recovers your real `PATH` at startup, so Homebrew, nvm, asdf and friends work even though
+rigee recovers your real `PATH` at startup, so Homebrew, nvm, asdf and friends work even though
 an app launched from Finder inherits almost none of it.
 
 ## What works today
@@ -91,7 +91,7 @@ an app launched from Finder inherits almost none of it.
 
 ## Plugins
 
-onestop's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
+rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
 the text editor, the PDF reader, source control and the browser are each a folder under
 `src/plugins/`, loaded on demand through two IPC channels and a declarative manifest.
@@ -116,7 +116,7 @@ points and the traps.
 Each pane is its own pseudo-terminal running your login shell, and each terminal tab holds a tree
 of panes you can split and resize.
 
-They do not outlive the app: quitting onestop ends the shells and whatever they were running. If
+They do not outlive the app: quitting rigee ends the shells and whatever they were running. If
 you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
 `screen` works exactly as it would in any other terminal.
 
@@ -138,13 +138,13 @@ the title bar.
 Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
 collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.
 
-## Where onestop keeps your data
+## Where rigee keeps your data
 
 | | |
 |---|---|
-| macOS | `~/Library/Application Support/onestop` |
-| Linux | `~/.config/onestop` |
-| Windows | `%APPDATA%\onestop` |
+| macOS | `~/Library/Application Support/rigee` |
+| Linux | `~/.config/rigee` |
+| Windows | `%APPDATA%\rigee` |
 
 `workspaces.json` holds your workspaces, open tabs, split layouts and key bindings. It is written
 when things change, every 15 seconds, and on close, so an unexpected quit loses at most the last

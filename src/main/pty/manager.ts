@@ -99,7 +99,7 @@ export class PtyManager {
         TERM: 'xterm-256color',
         // Tells anything that cares which terminal it is running under, the way iTerm and
         // VS Code both do.
-        TERM_PROGRAM: 'onestop',
+        TERM_PROGRAM: 'rigee',
         COLORTERM: 'truecolor'
       } as Record<string, string>
     })

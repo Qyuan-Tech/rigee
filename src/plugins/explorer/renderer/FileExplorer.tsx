@@ -70,7 +70,7 @@ export function FileExplorer(): React.ReactElement {
     setDropping(false)
 
     const paths = [...e.dataTransfer.files]
-      .map((f) => window.onestop.pathForFile(f))
+      .map((f) => window.rigee.pathForFile(f))
       .filter(Boolean)
     // The rules for what a dropped folder DOES — join this workspace, or become one because you
     // are on Scratch — belong to the workspace model, which is the shell's. The tree only knows

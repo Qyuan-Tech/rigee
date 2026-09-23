@@ -46,7 +46,7 @@ function pdfjsAssets(): Plugin {
   let outDir = resolve(__dirname, 'out/renderer')
 
   return {
-    name: 'onestop:pdfjs-assets',
+    name: 'rigee:pdfjs-assets',
     configResolved(config) {
       outDir = config.build.outDir
     },
@@ -122,7 +122,7 @@ export default defineConfig({
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
         // MANDATORY. package.json has type:module, so electron-vite would emit an ESM preload,
         // and an ESM preload under sandbox:true fails hard with
-        // "Cannot use import statement outside a module" -> window.onestop is undefined.
+        // "Cannot use import statement outside a module" -> window.rigee is undefined.
         output: { format: 'cjs', entryFileNames: '[name].cjs' }
       }
     },

@@ -22,7 +22,7 @@ import { parsePorcelainV2 } from '../src/plugins/scm/main/git/status.ts'
 /**
  * A private directory per run, NOT a fixed path.
  *
- * This used to be `/tmp/onestop-git-selftest`. `liveTests` wipes and recreates that path on the
+ * This used to be `/tmp/rigee-git-selftest`. `liveTests` wipes and recreates that path on the
  * way in, so two overlapping runs — a second terminal, another agent, a watch loop — have one of
  * them delete the other's repo from under it mid-test. What that looks like is
  *
@@ -32,7 +32,7 @@ import { parsePorcelainV2 } from '../src/plugins/scm/main/git/status.ts'
  * run twice at once. Since this is the job gating every release, it is worth the one call to
  * mkdtemp to make the question never come up.
  */
-const DIR = mkdtempSync(join(tmpdir(), 'onestop-git-selftest-'))
+const DIR = mkdtempSync(join(tmpdir(), 'rigee-git-selftest-'))
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -127,8 +127,8 @@ async function liveTests(): Promise<void> {
   mkdirSync(DIR, { recursive: true })
 
   g('init', '-q', '-b', 'main')
-  g('config', 'user.email', 'selftest@onestop.local')
-  g('config', 'user.name', 'onestop selftest')
+  g('config', 'user.email', 'selftest@rigee.local')
+  g('config', 'user.name', 'rigee selftest')
   g('config', 'commit.gpgsign', 'false')
 
   writeFileSync(join(DIR, 'a.txt'), 'one\ntwo\nthree\n')

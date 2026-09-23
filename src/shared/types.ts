@@ -1,5 +1,5 @@
 /**
- * The onestop domain model.
+ * The rigee domain model.
  *
  * This file is the contract shared by main, preload and renderer. It deliberately contains no
  * behaviour and no imports so it can be pulled into any of the three build targets.

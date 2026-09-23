@@ -37,9 +37,9 @@ const EMPTY: PersistedState = {
 }
 
 function statePath(): string {
-  // macOS  ~/Library/Application Support/onestop/workspaces.json
-  // Linux  ~/.config/onestop/workspaces.json
-  // Win    %APPDATA%\onestop\workspaces.json
+  // macOS  ~/Library/Application Support/rigee/workspaces.json
+  // Linux  ~/.config/rigee/workspaces.json
+  // Win    %APPDATA%\rigee\workspaces.json
   return join(app.getPath('userData'), 'workspaces.json')
 }
 

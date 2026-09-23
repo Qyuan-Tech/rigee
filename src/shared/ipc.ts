@@ -167,13 +167,13 @@ export const EVENT_CHANNELS: readonly IpcEventChannel[] = [
 ] as const
 
 /**
- * What the preload puts on window.onestop.
+ * What the preload puts on window.rigee.
  *
  * MUST stay flat and structured-clonable. contextBridge cannot clone exotic objects; exposing a
  * Proxy here fails at load time with "An object could not be cloned." The ergonomic typed facade
  * is built on the renderer side instead, where a Proxy is legal.
  */
-export interface OnestopBridge {
+export interface RigeeBridge {
   platform: Platform
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
   on(channel: string, cb: (payload: unknown) => void): () => void

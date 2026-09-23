@@ -1,5 +1,5 @@
-appId: dev.onestop.app
-productName: onestop
+appId: dev.rigee.app
+productName: rigee
 directories:
   output: release/${version}
   buildResources: build
@@ -87,13 +87,13 @@ linux:
     - target: deb
       arch: [x64, arm64]
   category: Development
-  maintainer: onestop <dev@onestop.local>
+  maintainer: rigee <dev@rigee.local>
   synopsis: Agentic IDE
   # Without this, desktop environments cannot associate running windows with the .desktop entry.
   syncDesktopName: true
   desktop:
     entry:
-      StartupWMClass: onestop
+      StartupWMClass: rigee
 
 appImage:
   artifactName: ${productName}-${version}-${arch}.${ext}

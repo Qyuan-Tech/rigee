@@ -126,7 +126,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
           setPrefixArmed(false)
           const handle = getTerminal(paneKey(tab.id, leafId))
           if (handle?.paneId && workspaceId) {
-            window.onestop.writeTerminal(workspaceId, handle.paneId, outcome.bytes)
+            window.rigee.writeTerminal(workspaceId, handle.paneId, outcome.bytes)
           }
           return false
         }
@@ -449,7 +449,7 @@ function LeafView({
       // Rebind rather than stack: this effect re-runs once the pane id is assigned.
       handle.input?.dispose()
       handle.input = handle.term.onData((data) => {
-        if (handle.paneId) window.onestop.writeTerminal(workspaceId, handle.paneId, data)
+        if (handle.paneId) window.rigee.writeTerminal(workspaceId, handle.paneId, data)
       })
 
       // Only the active pane of the active group. A terminal that arrives in another column —

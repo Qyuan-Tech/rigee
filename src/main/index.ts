@@ -1,6 +1,15 @@
 import { app, BrowserWindow, clipboard, dialog, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,15 +45,15 @@ mark('main module evaluated')
  * persistence test in particular would overwrite their actual open tabs with its fixtures. Has to
  * happen before anything calls getPath('userData').
  */
-if (process.env.ONESTOP_SMOKE) {
-  const dir = process.env.ONESTOP_SMOKE_DATA ?? join(tmpdir(), `onestop-smoke-${process.pid}`)
+if (process.env.RIGEE_SMOKE) {
+  const dir = process.env.RIGEE_SMOKE_DATA ?? join(tmpdir(), `rigee-smoke-${process.pid}`)
   mkdirSync(dir, { recursive: true })
   app.setPath('userData', dir)
   console.log(`[smoke] userData = ${dir}`)
   // The migrate mode's fixture can only be planted here. `loadState()` caches for the life of the
   // process, so a v2 document written once the window is up would never be read — the mode would
   // assert against a freshly created v3 document and pass without migrating anything.
-  if (process.env.ONESTOP_SMOKE === 'migrate') plantV2Document(dir)
+  if (process.env.RIGEE_SMOKE === 'migrate') plantV2Document(dir)
 }
 
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
@@ -145,24 +154,24 @@ function createWindow(): void {
     mark('shell did-finish-load')
     window?.show()
     focusActiveView()
-    if (process.env.ONESTOP_SMOKE === 'terminal') void runTerminalSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'split') void runSplitSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'persist') void runPersistSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'tabs') void runTabsSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'quit') void runQuitSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'copy') void runCopySmoke()
-    else if (process.env.ONESTOP_SMOKE === 'mouse') void runMouseSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'scratch') void runScratchSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'scroll') void runScrollSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'explorer') void runExplorerSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'multirepo') void runMultiRepoSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'shot') void captureShot()
+    if (process.env.RIGEE_SMOKE === 'terminal') void runTerminalSmoke()
+    else if (process.env.RIGEE_SMOKE === 'split') void runSplitSmoke()
+    else if (process.env.RIGEE_SMOKE === 'persist') void runPersistSmoke()
+    else if (process.env.RIGEE_SMOKE === 'tabs') void runTabsSmoke()
+    else if (process.env.RIGEE_SMOKE === 'quit') void runQuitSmoke()
+    else if (process.env.RIGEE_SMOKE === 'copy') void runCopySmoke()
+    else if (process.env.RIGEE_SMOKE === 'mouse') void runMouseSmoke()
+    else if (process.env.RIGEE_SMOKE === 'scratch') void runScratchSmoke()
+    else if (process.env.RIGEE_SMOKE === 'scroll') void runScrollSmoke()
+    else if (process.env.RIGEE_SMOKE === 'explorer') void runExplorerSmoke()
+    else if (process.env.RIGEE_SMOKE === 'multirepo') void runMultiRepoSmoke()
+    else if (process.env.RIGEE_SMOKE === 'shot') void captureShot()
     // These three must stay ABOVE the catch-all below, which matches any truthy value: a branch
     // added after it silently never runs and the generic check reports a cheerful green.
-    else if (process.env.ONESTOP_SMOKE === 'plugins') void runPluginsSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'pdf') void runPdfSmoke()
-    else if (process.env.ONESTOP_SMOKE === 'migrate') void runMigrateSmoke()
-    else if (process.env.ONESTOP_SMOKE) void runSmokeTest()
+    else if (process.env.RIGEE_SMOKE === 'plugins') void runPluginsSmoke()
+    else if (process.env.RIGEE_SMOKE === 'pdf') void runPdfSmoke()
+    else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
+    else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
   window.on('focus', focusActiveView)
@@ -210,7 +219,7 @@ async function runSplitSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, getTerminal, paneKey, newTerminalTab } = window.__onestop
+        const { store, getTerminal, paneKey, newTerminalTab } = window.__rigee
         const trail = []
 
         let scratch = null
@@ -332,13 +341,13 @@ async function runSplitSmoke(): Promise<void> {
  * Nothing overflows and nothing throws; the sections just silently squash, which is why the
  * assertion here is on the RENDERED HEIGHT of each section rather than on the panel's geometry.
  *
- * Point ONESTOP_SMOKE_MULTIREPO at a directory of git repos.
+ * Point RIGEE_SMOKE_MULTIREPO at a directory of git repos.
  */
 async function runMultiRepoSmoke(): Promise<void> {
   const wc = shellWc()
   if (!wc) { app.exit(1); return }
-  const dir = process.env.ONESTOP_SMOKE_MULTIREPO
-  if (!dir) { console.error('[smoke:multirepo] set ONESTOP_SMOKE_MULTIREPO'); app.exit(1); return }
+  const dir = process.env.RIGEE_SMOKE_MULTIREPO
+  if (!dir) { console.error('[smoke:multirepo] set RIGEE_SMOKE_MULTIREPO'); app.exit(1); return }
   const repos = readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => join(dir, e.name))
@@ -347,7 +356,7 @@ async function runMultiRepoSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store } = window.__onestop
+        const { store } = window.__rigee
         const trail = []
         // What the panel actually says, on every failure. Source control is a plugin now, so a
         // blank panel can mean the plugin did not load, or loaded and could not reach git — and
@@ -450,13 +459,13 @@ async function runMultiRepoSmoke(): Promise<void> {
  * state went with it and coming back re-expanded everything from defaults — losing exactly the
  * arrangement you had set up in the project you were working in.
  *
- * Point ONESTOP_SMOKE_MULTIREPO at a directory of folders; two of them become two workspaces.
+ * Point RIGEE_SMOKE_MULTIREPO at a directory of folders; two of them become two workspaces.
  */
 async function runExplorerSmoke(): Promise<void> {
   const wc = shellWc()
   if (!wc) { app.exit(1); return }
-  const dir = process.env.ONESTOP_SMOKE_MULTIREPO
-  if (!dir) { console.error('[smoke:explorer] set ONESTOP_SMOKE_MULTIREPO'); app.exit(1); return }
+  const dir = process.env.RIGEE_SMOKE_MULTIREPO
+  if (!dir) { console.error('[smoke:explorer] set RIGEE_SMOKE_MULTIREPO'); app.exit(1); return }
   const roots = readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory()).map((e) => join(dir, e.name)).sort().slice(0, 2)
   if (roots.length < 2) { console.error('[smoke:explorer] need two folders'); app.exit(1); return }
@@ -464,7 +473,7 @@ async function runExplorerSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store } = window.__onestop
+        const { store } = window.__rigee
         const trail = []
         const st = () => store.getState()
         const fail = (stage, extra) =>
@@ -558,7 +567,7 @@ async function runExplorerSmoke(): Promise<void> {
  * scroll — the thumb was 8% white and simply invisible — so what this guards is the surrounding
  * claim rather than the one reported: that the panes remain clipped to the window and that their
  * scroll containers really are scroll containers. Worth keeping, because a short list looks
- * correct under any layout and only a full one can tell the difference. Hence ONESTOP_SMOKE_REPO.
+ * correct under any layout and only a full one can tell the difference. Hence RIGEE_SMOKE_REPO.
  *
  * Note it asserts on the CONTAINERS, not the rows. Rows below the fold legitimately have bottoms
  * past the window — that is what scrolling is — and an assertion on row geometry would only hold
@@ -567,13 +576,13 @@ async function runExplorerSmoke(): Promise<void> {
 async function runScrollSmoke(): Promise<void> {
   const wc = shellWc()
   if (!wc) { app.exit(1); return }
-  const repo = process.env.ONESTOP_SMOKE_REPO
-  if (!repo) { console.error('[smoke:scroll] set ONESTOP_SMOKE_REPO'); app.exit(1); return }
+  const repo = process.env.RIGEE_SMOKE_REPO
+  if (!repo) { console.error('[smoke:scroll] set RIGEE_SMOKE_REPO'); app.exit(1); return }
   try {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store } = window.__onestop
+        const { store } = window.__rigee
         const trail = []
         const fail = (stage, extra) =>
           JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
@@ -684,7 +693,7 @@ async function runScratchSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab } = window.__onestop
+        const { store, newTerminalTab } = window.__rigee
         const trail = []
         const st = () => store.getState()
 
@@ -828,7 +837,7 @@ async function runMouseSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__rigee
         const trail = []
         const fail = (stage, extra) =>
           JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
@@ -911,7 +920,7 @@ async function runCopySmoke(): Promise<void> {
     const setup = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__rigee
 
         let scratch = null
         for (let i = 0; i < 60; i++) {
@@ -1042,7 +1051,7 @@ async function runTabsSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab, getTerminal, paneKey } = window.__onestop
+        const { store, newTerminalTab, getTerminal, paneKey } = window.__rigee
         const trail = []
 
         let scratch = null
@@ -1274,7 +1283,7 @@ async function runPersistSmoke(): Promise<void> {
     const built = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, newTerminalTab } = window.__onestop
+        const { store, newTerminalTab } = window.__rigee
 
         let scratch = null
         for (let i = 0; i < 60; i++) {
@@ -1544,7 +1553,7 @@ async function runMigrateSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store } = window.__onestop
+        const { store } = window.__rigee
         const st = () => store.getState()
         const trail = []
         const fail = (stage, extra) =>
@@ -1677,7 +1686,7 @@ async function runMigrateSmoke(): Promise<void> {
 }
 
 /**
- * Render the shell to a PNG at ONESTOP_SHOT (default /tmp/onestop-shot.png). For looking at the
+ * Render the shell to a PNG at RIGEE_SHOT (default /tmp/rigee-shot.png). For looking at the
  * interface while working on it — capturePage grabs exactly the shell's own surface, so it needs
  * no screen recording permission and cannot catch anything else on the desktop.
  */
@@ -1687,20 +1696,20 @@ async function captureShot(): Promise<void> {
   try {
     // Give the boot sequence and any tab it restores a moment to paint.
     await new Promise((r) => setTimeout(r, 4000))
-    if (process.env.ONESTOP_SHOT_VIEW) {
+    if (process.env.RIGEE_SHOT_VIEW) {
       await wc.executeJavaScript(
         `(async () => {
           const item = [...document.querySelectorAll('.activitybar__item')]
-            .find(b => b.title === ${JSON.stringify(process.env.ONESTOP_SHOT_VIEW)})
+            .find(b => b.title === ${JSON.stringify(process.env.RIGEE_SHOT_VIEW)})
           if (item) item.click()
           await new Promise(r => setTimeout(r, 600))
         })()`,
         true
       )
     }
-    if (process.env.ONESTOP_SHOT_COLLAPSED) {
+    if (process.env.RIGEE_SHOT_COLLAPSED) {
       await wc.executeJavaScript(
-        `window.__onestop.store.getState().setLayout({ leftCollapsed: true, rightCollapsed: true })`,
+        `window.__rigee.store.getState().setLayout({ leftCollapsed: true, rightCollapsed: true })`,
         true
       )
       await new Promise((r) => setTimeout(r, 600))
@@ -1708,11 +1717,11 @@ async function captureShot(): Promise<void> {
     // Editor groups are reviewed by looking at them — a row is either obviously two columns or it
     // is not — and every number this file asserts about them would be identical if the second
     // group were rendered one pixel wide behind the first.
-    if (process.env.ONESTOP_SHOT_SPLIT) {
+    if (process.env.RIGEE_SHOT_SPLIT) {
       const shape = (await wc.executeJavaScript(
         `(async () => {
           const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-          const { store, newTerminalTab } = window.__onestop
+          const { store, newTerminalTab } = window.__rigee
           const ws = store.getState().activeWorkspaceId
           if (!ws) return 'no workspace'
           const row = () => store.getState().rowsByWorkspace[ws]
@@ -1731,7 +1740,7 @@ async function captureShot(): Promise<void> {
       console.log(`[shot] split row: ${shape}`)
     }
     const image = await wc.capturePage()
-    const out = process.env.ONESTOP_SHOT ?? '/tmp/onestop-shot.png'
+    const out = process.env.RIGEE_SHOT ?? '/tmp/rigee-shot.png'
     writeFileSync(out, image.toPNG())
     console.log(`[shot] ${out} ${image.getSize().width}x${image.getSize().height}`)
     app.exit(0)
@@ -1775,7 +1784,7 @@ async function runPluginsSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, plugins } = window.__onestop
+        const { store, plugins } = window.__rigee
         const trail = []
         const st = () => store.getState()
         const fail = (stage, extra) =>
@@ -2007,7 +2016,7 @@ function minimalPdf(marker: string): Buffer {
  * embedding a CID font. That path is guarded instead by `pnpm perf:check` asserting the cmaps were
  * emitted into the packaged build, which is the way it actually breaks.
  */
-const PDF_SMOKE_MARKER = 'ONESTOP-PDF-SMOKE'
+const PDF_SMOKE_MARKER = 'RIGEE-PDF-SMOKE'
 
 async function runPdfSmoke(): Promise<void> {
   const wc = shellWc()
@@ -2020,7 +2029,7 @@ async function runPdfSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, plugins, newTerminalTab, getTerminal, paneKey } = window.__onestop
+        const { store, plugins, newTerminalTab, getTerminal, paneKey } = window.__rigee
         const trail = []
         const st = () => store.getState()
         const fail = (stage, extra) =>
@@ -2203,12 +2212,12 @@ async function runPdfSmoke(): Promise<void> {
     )) as string
     const info = JSON.parse(result) as { ok: boolean; trail?: string[] }
 
-    // A viewer is a visual thing and the assertions above are all numeric. Setting ONESTOP_SHOT
+    // A viewer is a visual thing and the assertions above are all numeric. Setting RIGEE_SHOT
     // leaves a PNG of what was actually on screen, which is the difference between "a canvas had
     // ink in it" and "this looks like a PDF reader".
-    if (process.env.ONESTOP_SHOT) {
-      writeFileSync(process.env.ONESTOP_SHOT, (await wc.capturePage()).toPNG())
-      console.log(`[smoke:pdf] shot ${process.env.ONESTOP_SHOT}`)
+    if (process.env.RIGEE_SHOT) {
+      writeFileSync(process.env.RIGEE_SHOT, (await wc.capturePage()).toPNG())
+      console.log(`[smoke:pdf] shot ${process.env.RIGEE_SHOT}`)
     }
 
     const commands = pluginHost?.commands() ?? []
@@ -2234,17 +2243,17 @@ async function runSmokeTest(): Promise<void> {
     const report = (await wc.executeJavaScript(
       `(async () => {
         const root = document.getElementById('root')
-        const bridge = typeof window.onestop === 'object' && window.onestop !== null
+        const bridge = typeof window.rigee === 'object' && window.rigee !== null
         // Goes through the real preload bridge and the real IPC handler, so this also proves
         // PATH recovery worked: a packaged app launched from Finder starts with a PATH that
         // cannot see Homebrew.
         let platform = null
-        try { platform = await window.onestop.invoke('app:getPlatformInfo') } catch (e) {
+        try { platform = await window.rigee.invoke('app:getPlatformInfo') } catch (e) {
           platform = { error: String(e) }
         }
         return JSON.stringify({
           bridge,
-          bridgeKeys: bridge ? Object.keys(window.onestop) : [],
+          bridgeKeys: bridge ? Object.keys(window.rigee) : [],
           rootChildren: root ? root.children.length : -1,
           elements: document.querySelectorAll('*').length,
           platform,
@@ -2280,7 +2289,7 @@ async function runTerminalSmoke(): Promise<void> {
     const result = (await wc.executeJavaScript(
       `(async () => {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-        const { store, getTerminal, paneKey, newTerminalTab } = window.__onestop
+        const { store, getTerminal, paneKey, newTerminalTab } = window.__rigee
         const trail = []
 
         // The shell boots asynchronously (state load + platform probe) after did-finish-load.
@@ -2325,14 +2334,14 @@ async function runTerminalSmoke(): Promise<void> {
 
         let onDataFired = 0
         const probe = handle.term.onData(() => { onDataFired++ })
-        handle.term.input('echo ONESTOP-E2E-$((6*7))' + String.fromCharCode(13), true)
+        handle.term.input('echo RIGEE-E2E-$((6*7))' + String.fromCharCode(13), true)
         probe.dispose()
         trail.push('onData fired ' + onDataFired + 'x')
         if (onDataFired !== 1) return JSON.stringify({ ok: false, stage: 'onData-not-1', trail })
 
         for (let i = 0; i < 40; i++) {
           await sleep(250)
-          if (read().includes('ONESTOP-E2E-42')) {
+          if (read().includes('RIGEE-E2E-42')) {
             return JSON.stringify({ ok: true, stage: 'echoed', trail })
           }
         }
@@ -2354,8 +2363,60 @@ async function runTerminalSmoke(): Promise<void> {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Carry the old app's data across, once, after the rename from onestop to rigee.
+ *
+ * Electron derives `userData` from the app's name, so renaming moved it from
+ * `<appData>/onestop` to `<appData>/rigee` — and everything the user had went quiet at the same
+ * moment: every workspace, the tabs and splits in each, the key bindings, which plugins they had
+ * switched off, and every site they were signed into in a browser tab. Nothing was deleted, which
+ * somehow makes it worse: the data is right there and the app cannot see it.
+ *
+ * Only two things are worth carrying. `workspaces.json` is the document; `Partitions/` holds the
+ * browser plugin's cookies and storage, and its directory is named after the partition string, so
+ * it has to be renamed in step with it or every tab is signed out anyway. Everything else in the
+ * old directory is Chromium cache that is cheaper to rebuild than to copy.
+ *
+ * Runs once and never again: the guard is the presence of OUR document, so a user who deletes
+ * their workspaces on purpose does not find them restored on the next launch. The old directory is
+ * left alone — an app that deletes the previous version's data on upgrade has no way back if this
+ * goes wrong.
+ */
+function adoptLegacyUserData(): void {
+  // Smoke modes run against a throwaway directory and must not inherit anybody's real state.
+  if (process.env.RIGEE_SMOKE) return
+
+  try {
+    const dir = app.getPath('userData')
+    if (existsSync(join(dir, 'workspaces.json'))) return
+
+    const legacy = join(dir, '..', 'onestop')
+    if (!existsSync(join(legacy, 'workspaces.json'))) return
+
+    mkdirSync(dir, { recursive: true })
+    cpSync(join(legacy, 'workspaces.json'), join(dir, 'workspaces.json'))
+
+    const partitions = join(legacy, 'Partitions')
+    if (existsSync(partitions)) {
+      cpSync(partitions, join(dir, 'Partitions'), { recursive: true })
+      // The partition string went from `persist:onestop-browser` to `persist:rigee-browser`, and
+      // Chromium looks the storage up by that name. Without the rename the cookies would be
+      // copied and then ignored.
+      const was = join(dir, 'Partitions', 'onestop-browser')
+      const now = join(dir, 'Partitions', 'rigee-browser')
+      if (existsSync(was) && !existsSync(now)) renameSync(was, now)
+    }
+    console.log(`[migrate] adopted the previous app's data from ${legacy}`)
+  } catch (err) {
+    // Never fatal. Starting with an empty workspace list is a bad morning; refusing to start is
+    // worse, and the old directory is still there to copy by hand.
+    console.error('[migrate] could not adopt the previous data directory:', err)
+  }
+}
+
 app.whenReady().then(() => {
   mark('app ready')
+  adoptLegacyUserData()
   // Kick off PATH recovery immediately but do not block first paint on it; the handlers that
   // actually need a resolved PATH await the same promise.
   void ensureShellPath().then(() => mark('shell PATH resolved'))
@@ -2399,7 +2460,7 @@ function registerHandlers(): void {
     saveWorkspaces(workspaces, activeWorkspaceId)
   })
   handle('state:saveAllUi', ({ ui }) => {
-    if (process.env.ONESTOP_SMOKE) {
+    if (process.env.RIGEE_SMOKE) {
       const shape = Object.values(ui)
         .map((u) => u.groups.map((g) => g.tabs.length).join('/'))
         .join(',')

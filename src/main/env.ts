@@ -21,7 +21,7 @@ import { execFile } from 'node:child_process'
  */
 
 /** Framing so shell banners, MOTDs and rc-file chatter cannot be mistaken for the value. */
-const DELIMITER = '__onestop_path_delimiter__'
+const DELIMITER = '__rigee_path_delimiter__'
 
 /** A slow rc file should degrade to the fallback, not hang startup. */
 const TIMEOUT_MS = 5000

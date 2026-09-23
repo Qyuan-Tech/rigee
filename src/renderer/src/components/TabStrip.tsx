@@ -131,7 +131,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
       // drop target is another tab, so an empty group could never receive anything.
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
-        const tabId = e.dataTransfer.getData('text/onestop-tab')
+        const tabId = e.dataTransfer.getData('text/rigee-tab')
         if (tabId) moveTab(workspace.id, tabId, groupId, tabs.length)
         dragFrom.current = null
       }}
@@ -145,13 +145,13 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           // where an index from this strip would mean something entirely different.
           onDragStart={(e) => {
             dragFrom.current = i
-            e.dataTransfer.setData('text/onestop-tab', tab.id)
+            e.dataTransfer.setData('text/rigee-tab', tab.id)
             e.dataTransfer.effectAllowed = 'move'
           }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.stopPropagation()
-            const dragged = e.dataTransfer.getData('text/onestop-tab')
+            const dragged = e.dataTransfer.getData('text/rigee-tab')
             if (dragged) moveTab(workspace.id, dragged, groupId, i)
             dragFrom.current = null
           }}

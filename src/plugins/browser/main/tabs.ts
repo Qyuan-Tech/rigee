@@ -17,7 +17,7 @@ import type { ViewBounds } from '@shared/types'
  * against 0.22 us bound — and an unbound capture does not merely cost more, it throws.
  */
 
-const PARTITION = 'persist:onestop-browser'
+const PARTITION = 'persist:rigee-browser'
 
 interface Entry {
   id: string

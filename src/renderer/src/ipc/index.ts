@@ -1,9 +1,9 @@
-import type { IpcEvents, IpcRequests, OnestopBridge } from '@shared/ipc'
+import type { IpcEvents, IpcRequests, RigeeBridge } from '@shared/ipc'
 import type { Platform } from '@shared/types'
 
 declare global {
   interface Window {
-    onestop: OnestopBridge
+    rigee: RigeeBridge
   }
 }
 
@@ -24,15 +24,15 @@ export const rpc = new Proxy({} as Client, {
   get:
     (_target, channel: string) =>
     (...args: unknown[]) =>
-      window.onestop.invoke(channel, ...args)
+      window.rigee.invoke(channel, ...args)
 })
 
 export function onEvent<K extends keyof IpcEvents>(
   channel: K,
   cb: (payload: IpcEvents[K]) => void
 ): () => void {
-  return window.onestop.on(channel, cb as (p: unknown) => void)
+  return window.rigee.on(channel, cb as (p: unknown) => void)
 }
 
-export const platform = (): Platform => window.onestop.platform
-export const isMac = (): boolean => window.onestop.platform === 'darwin'
+export const platform = (): Platform => window.rigee.platform
+export const isMac = (): boolean => window.rigee.platform === 'darwin'

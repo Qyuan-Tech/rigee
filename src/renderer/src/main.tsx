@@ -21,7 +21,7 @@ import './theme.css'
  */
 declare global {
   interface Window {
-    __onestop: {
+    __rigee: {
       store: typeof useApp
       getTerminal: typeof getTerminal
       paneKey: typeof paneKey
@@ -30,7 +30,7 @@ declare global {
     }
   }
 }
-window.__onestop = {
+window.__rigee = {
   store: useApp,
   getTerminal,
   paneKey,

@@ -36,7 +36,7 @@ function wire(): void {
  *
  * Deliberately narrow: a plugin can call its own commands and subscribe to its own events, and
  * nothing else. The prefix check is not a security boundary — the renderer is our own trusted
- * shell, and anything running here could call `window.onestop.invoke` directly — it is a
+ * shell, and anything running here could call `window.rigee.invoke` directly — it is a
  * correctness one. It turns "I typo'd another plugin's command name" from a confusing remote
  * error into a local throw naming both plugins.
  *

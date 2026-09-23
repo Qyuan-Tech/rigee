@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build onestop and install it into /Applications, then prove it actually launches.
+# Build rigee and install it into /Applications, then prove it actually launches.
 #
 #   ./scripts/install-local.sh
 #
@@ -82,9 +82,9 @@ for attempt in 1 2; do
   # Bounded: a smoke run that never exits would hang the install with no output at all, which
   # is exactly how this script wedged once.
   if command -v timeout >/dev/null; then
-    ONESTOP_SMOKE=1 timeout 90 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
+    RIGEE_SMOKE=1 timeout 90 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
   else
-    ONESTOP_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
+    RIGEE_SMOKE=1 "$DEST/Contents/MacOS/${APP_NAME}" >"$SMOKE_LOG" 2>&1 || true
   fi
   if grep -qE '\[smoke\]' "$SMOKE_LOG"; then smoke_ok=1; break; fi
   echo "   attempt $attempt produced no smoke report; retrying"
