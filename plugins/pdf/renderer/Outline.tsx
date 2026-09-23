@@ -1,5 +1,5 @@
+import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronIcon } from '@renderer/icons'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 /**
@@ -124,7 +124,7 @@ function OutlineRow({
             onClick={() => setOpen((v) => !v)}
             title={open ? 'Collapse' : 'Expand'}
           >
-            <ChevronIcon open={open} />
+            <icons.Chevron open={open} />
           </button>
         ) : (
           <span className="pdf__twisty" />

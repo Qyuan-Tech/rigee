@@ -1,5 +1,5 @@
 import type { Context, Plugin } from 'cordis'
-import { patchPluginTab, pluginTabs } from '@renderer/plugins/api'
+import { patchPluginTab, pluginTabs } from '@rigee/plugin-api'
 import { scmSubscriber } from '../protocol'
 import { DiffPane } from './DiffPane'
 import { diffTabKey, readDiffTabState } from './diffTab'

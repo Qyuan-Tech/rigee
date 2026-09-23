@@ -1,6 +1,6 @@
+import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronIcon, CloseIcon, FileIcon } from '@renderer/icons'
-import { duplicatedFrom, Notice } from '@renderer/plugins/api'
+import { duplicatedFrom, Notice } from '@rigee/plugin-api'
 import {
   acquireDocument,
   readViewState,
@@ -16,7 +16,7 @@ import { loadPdfjs } from './pdfjs'
 import { RenderQueue } from './queue'
 import { hitOffset, paintHits, type PdfMatch, type SearchIndex, type SearchScan } from './search'
 import { Thumbnails } from './Thumbnails'
-import type { PluginEditorProps } from '@renderer/plugins/bindings'
+import type { PluginEditorProps } from '@rigee/plugin-api'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import './pdf.css'
 
@@ -478,7 +478,7 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
               ›
             </button>
             <button className="btn" onClick={closeFind} title="Close (Esc)">
-              <CloseIcon />
+              <icons.Close />
             </button>
           </div>
         ) : (
@@ -494,7 +494,7 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
             <div className="pdf__side-head">
               <span>{sidebar === 'outline' ? 'Outline' : 'Pages'}</span>
               <button className="pdf__twisty" onClick={() => setSidebar('none')} title="Hide">
-                <ChevronIcon />
+                <icons.Chevron />
               </button>
             </div>
             {sidebar === 'outline' ? (
@@ -517,7 +517,7 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
 
         {!doc && (
           <div className="pdf__opening">
-            <FileIcon />
+            <icons.File />
             <span className="muted">Opening {basename(filePath)}…</span>
           </div>
         )}

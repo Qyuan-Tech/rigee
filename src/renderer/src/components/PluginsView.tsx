@@ -5,7 +5,7 @@ import { activatedPlugins, deactivatePlugin } from '../plugins/activate'
 import { disabledPlugins, setDisabledPlugins } from '../plugins/registry'
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import { rpc } from '../ipc'
-import type { PluginContributions, PluginManifest } from '@shared/plugin'
+import type { PluginContributions, PluginManifest } from '@rigee/plugin-api/manifest'
 import type { PluginViewProps } from '../plugins/bindings'
 
 /**

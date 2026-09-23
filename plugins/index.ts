@@ -1,4 +1,4 @@
-import type { PluginManifest } from '@shared/plugin'
+import type { PluginManifest } from '@rigee/plugin-api/manifest'
 import { manifest as browser } from './browser/manifest'
 import { manifest as explorer } from './explorer/manifest'
 import { manifest as pdf } from './pdf/manifest'

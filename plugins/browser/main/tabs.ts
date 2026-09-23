@@ -1,6 +1,6 @@
 import { WebContentsView, type BaseWindow, type WebContents } from 'electron'
 import type { EmitBrowserEvent } from '../protocol'
-import type { ViewBounds } from '@shared/types'
+import type { ViewBounds } from '@rigee/plugin-api/data'
 
 /**
  * Manager for the in-app Chromium browser tabs.

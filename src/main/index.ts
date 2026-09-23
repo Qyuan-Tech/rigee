@@ -20,6 +20,7 @@ import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
 import {
   disabledPlugins,
+  EXPLORER_PLUGIN_ID,
   loadState,
   saveAllUi,
   saveDisabledPlugins,
@@ -27,7 +28,7 @@ import {
   saveWorkspaces
 } from './store'
 import type { PluginHost } from './plugins/host'
-import type { FileStat } from '@shared/types'
+import { PERSISTED_STATE_VERSION, type FileStat } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -488,7 +489,13 @@ async function runExplorerSmoke(): Promise<void> {
         }))
         await sleep(1200)
 
-        const expandedOf = (ws) => (st().expandedDirs[ws] ?? []).slice().sort()
+        // Read where a PLUGIN's state lives, because the explorer is one: the shell no longer has
+        // an \`expandedDirs\` of its own to look at.
+        const EXPLORER = '${EXPLORER_PLUGIN_ID}'
+        const expandedOf = (ws) =>
+          ((st().pluginStateByWorkspace[ws] || {})[EXPLORER]?.expandedDirs ?? []).slice().sort()
+        const setExpanded = (ws, paths) =>
+          st().setPluginState(ws, EXPLORER, { expandedDirs: paths })
 
         // A first visit opens the roots.
         store.getState().setActiveWorkspace('ws-exp0')
@@ -497,7 +504,7 @@ async function runExplorerSmoke(): Promise<void> {
         if (expandedOf('ws-exp0').length !== 1) return fail('roots-not-open-on-first-visit')
 
         // Collapse everything in A, so its state is distinctive and not just the default.
-        store.getState().setExpandedDirs('ws-exp0', [])
+        setExpanded('ws-exp0', [])
         await sleep(400)
         const rowsCollapsed = document.querySelectorAll('.explorer__body .row').length
         trail.push('ws-exp0 rows while collapsed: ' + rowsCollapsed)
@@ -535,7 +542,7 @@ async function runExplorerSmoke(): Promise<void> {
         trail.push('toggle works both ways')
 
         // And it reaches disk, so a restart keeps it.
-        store.getState().setExpandedDirs('ws-exp0', [roots[0]])
+        setExpanded('ws-exp0', [roots[0]])
         await sleep(2000)
         return JSON.stringify({ ok: true, trail, expectOnDisk: roots[0] })
       })()`,
@@ -547,9 +554,9 @@ async function runExplorerSmoke(): Promise<void> {
       const file = join(app.getPath('userData'), 'workspaces.json')
       try {
         const doc = JSON.parse(readFileSync(file, 'utf8')) as {
-          ui?: Record<string, { expandedDirs?: string[] }>
+          ui?: Record<string, { pluginState?: Record<string, { expandedDirs?: string[] }> }>
         }
-        persisted = doc.ui?.['ws-exp0']?.expandedDirs ?? []
+        persisted = doc.ui?.['ws-exp0']?.pluginState?.[EXPLORER_PLUGIN_ID]?.expandedDirs ?? []
       } catch { /* reported below */ }
     }
     const ok = info.ok && persisted.length === 1 && persisted[0] === info.expectOnDisk
@@ -1586,8 +1593,13 @@ function plantV2Document(dir: string): void {
  *
  * Three failures, all silent: a dropped tab list loses every file the user had open; a `g0` that
  * did not survive means the renderer's tolerant fallback ran and main's migration did not; and a
- * manufactured `expandedDirs: []` tells the explorer the project was deliberately collapsed, so
- * every upgraded workspace opens shut for ever.
+ * manufactured empty expansion record tells the explorer the project was deliberately collapsed,
+ * so every upgraded workspace opens shut for ever.
+ *
+ * The fixture is a v2 document, so it exercises BOTH steps in one run: v2 -> v3 turns one tab list
+ * into one group, v3 -> v4 moves `expandedDirs` under `pluginState.explorer`. The explorer is a
+ * plugin, so the assertions below read it where a plugin's state lives, not where the shell used
+ * to keep it.
  */
 async function runMigrateSmoke(): Promise<void> {
   const wc = shellWc()
@@ -1615,11 +1627,11 @@ async function runMigrateSmoke(): Promise<void> {
         groupId: group?.id ?? null,
         tabIds: (group?.tabs ?? []).map((t) => t.id).join(','),
         activeTabId: group?.activeTabId ?? null,
-        expandedDirs: shown(record?.expandedDirs)
+        expandedDirs: shown(record?.pluginState?.[EXPLORER_PLUGIN_ID]?.expandedDirs)
       }
     })
     const mainOk =
-      migrated.version === 3 &&
+      migrated.version === PERSISTED_STATE_VERSION &&
       inMain.every(
         (got, i) =>
           got.groups === 1 &&
@@ -1667,7 +1679,7 @@ async function runMigrateSmoke(): Promise<void> {
             return fail('migrated-row-does-not-fill-the-width', { sizes: row.sizes })
           }
 
-          const dirs = st().expandedDirs[want.workspace]
+          const dirs = st().pluginStateByWorkspace[want.workspace]?.['${EXPLORER_PLUGIN_ID}']?.expandedDirs
           const got = dirs === undefined ? 'absent' : JSON.stringify(dirs)
           trail.push(want.workspace + ' expandedDirs: ' + got)
           if (got !== want.expandedDirs) {
@@ -1701,7 +1713,7 @@ async function runMigrateSmoke(): Promise<void> {
           groups?: Array<{ id?: string; tabs?: Array<{ id?: string }>; activeTabId?: string | null }>
           groupSizes?: number[]
           activeGroupId?: string
-          expandedDirs?: string[]
+          pluginState?: Record<string, { expandedDirs?: string[] }>
         }
       >
     }
@@ -1715,7 +1727,7 @@ async function runMigrateSmoke(): Promise<void> {
         activeTabId: group?.activeTabId ?? null,
         groupSizes: record?.groupSizes ?? [],
         activeGroupId: record?.activeGroupId ?? null,
-        expandedDirs: shown(record?.expandedDirs)
+        expandedDirs: shown(record?.pluginState?.[EXPLORER_PLUGIN_ID]?.expandedDirs)
       }
     })
     // loadState keeps the pre-migration document beside the new one. A migration that goes wrong
@@ -1724,7 +1736,7 @@ async function runMigrateSmoke(): Promise<void> {
     try { backupBytes = statSync(`${file}.v2`).size } catch { /* reported as 0 below */ }
 
     const diskRowOk =
-      doc.version === 3 &&
+      doc.version === PERSISTED_STATE_VERSION &&
       backupBytes > 0 &&
       onDisk.every(
         (got, i) =>
@@ -1736,8 +1748,8 @@ async function runMigrateSmoke(): Promise<void> {
           got.activeGroupId === 'g0'
       )
     // Reported apart from the row so the log names the culprit. Care taken by the migration is
-    // undone one save later by anything that writes `expandedDirs: … ?? []` for a workspace the
-    // user has not opened yet — and the workspace then opens collapsed for ever.
+    // undone one save later by anything that writes an empty record for a workspace the user has
+    // not opened yet — and the workspace then opens collapsed for ever.
     const diskExpandedDirsOk = onDisk.every((got, i) => got.expandedDirs === expected[i]!.expandedDirs)
 
     const ok = mainOk && info.ok && diskRowOk && diskExpandedDirsOk

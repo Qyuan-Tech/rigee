@@ -1,4 +1,4 @@
-import { liveTabIds, subscribeTabs } from '@renderer/plugins/api'
+import { liveTabIds, subscribeTabs } from '@rigee/plugin-api'
 import { closeAllDocuments, scheduleSweep } from './documents'
 import { PdfView } from './PdfView'
 import { connect } from './rpc'

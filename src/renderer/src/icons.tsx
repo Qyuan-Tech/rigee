@@ -7,7 +7,7 @@
  * 16x16 grid with a 1.5px stroke so the weights match at the sizes the chrome actually uses.
  */
 
-import type { IconName } from '@shared/plugin'
+import type { IconName } from '@rigee/plugin-api/manifest'
 
 interface Props {
   size?: number

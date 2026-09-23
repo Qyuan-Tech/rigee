@@ -1,8 +1,9 @@
 /**
  * The rigee domain model.
  *
- * This file is the contract shared by main, preload and renderer. It deliberately contains no
- * behaviour and no imports so it can be pulled into any of the three build targets.
+ * This file is the contract shared by main, preload and renderer. It contains no behaviour, and
+ * its only imports are types from `@rigee/plugin-api` — which is itself runtime-free — so it can
+ * still be pulled into any of the three build targets.
  *
  * Identifier conventions:
  *   - Ids we mint ourselves are opaque strings (`ws_1`, `tab_7`, ...).
@@ -31,23 +32,36 @@ export type Platform =
 // Workspaces
 // ---------------------------------------------------------------------------
 
-export type WorkspaceId = string
-export type RepoId = string
-export type TabId = string
+/**
+ * The types that also appear on the plugin boundary are DEFINED in `@rigee/plugin-api` and
+ * re-exported here, not declared twice.
+ *
+ * The shell keeps importing them from `@shared/types` as it always did — nothing below this line
+ * reads differently — but there is one definition, and a plugin compiled against the package is
+ * looking at the same `TabId` the shell is rather than a structurally similar one that happens to
+ * match today.
+ */
+import type {
+  FileStat,
+  RepoId,
+  TabId,
+  ViewBounds,
+  Workspace,
+  WorkspaceFolder,
+  WorkspaceId
+} from '@rigee/plugin-api/data'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 
-/** One root folder inside a workspace. A workspace may hold several, VSCode-style. */
-export interface WorkspaceFolder {
-  /** Absolute path. */
-  path: string
-  /** Display name; defaults to basename(path) but the user may rename it. */
-  name: string
-  /** Whether `path` is (or is inside) a git work tree. Resolved at add time and on refresh. */
-  isGitRepo: boolean
-  /**
-   * Absolute path to the repository root, when `isGitRepo`. May differ from `path` if the user
-   * added a subdirectory of a repo. This, not `path`, is the identity of a repo.
-   */
-  repoRoot: string | null
+// Imported above so the rest of this file can keep saying `TabId`, re-exported here so every
+// existing `from '@shared/types'` in the shell keeps working.
+export type {
+  FileStat,
+  RepoId,
+  TabId,
+  ViewBounds,
+  Workspace,
+  WorkspaceFolder,
+  WorkspaceId
 }
 
 /**
@@ -71,24 +85,6 @@ export function scratchWorkspace(homeDir: string): Workspace {
     lastOpenedAt: 0,
     defaultCwd: homeDir
   }
-}
-
-export interface Workspace {
-  id: WorkspaceId
-  name: string
-  folders: WorkspaceFolder[]
-  createdAt: number
-  lastOpenedAt: number
-  /** Where terminals start when the workspace has no folders. Only set for Scratch. */
-  defaultCwd?: string
-  /**
-   * The `.code-workspace` file this workspace was opened from, when it came from one.
-   *
-   * Absent for a workspace that is just a folder — which is the majority, and is exactly VS Code's
-   * distinction between a folder and a saved multi-root workspace. Its presence is what makes
-   * "Save Workspace As" an overwrite rather than a new file.
-   */
-  filePath?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +152,7 @@ export interface EditorTab extends TabBase {
   filePath: string
   repoId: RepoId | null
   readOnly: boolean
-  /** `<pluginId>.<name>`, e.g. `pdf.preview`. See ViewType in @shared/plugin. */
+  /** `<pluginId>.<name>`, e.g. `pdf.preview`. See ViewType in @rigee/plugin-api/manifest. */
   viewType?: string
 }
 
@@ -278,14 +274,20 @@ export interface WorkspaceUiState {
   groupSizes: number[]
   layout: PanelLayout
   /**
-   * Expanded directories in the file explorer, absolute paths.
+   * Whatever each plugin wants to remember about this workspace, keyed by plugin id.
    *
-   * OPTIONAL, and its absence is load-bearing: it is what tells the explorer this workspace has
-   * never been opened, so it should start with its roots expanded. A record with an empty array
-   * means "everything collapsed" and is authoritative. Anything that manufactures `[]` here makes
-   * every existing workspace open fully collapsed, permanently.
+   * The shell stores it and never reads inside it. This replaced a hard-coded `expandedDirs`
+   * field, which was the last thing in the persisted document that named a particular feature —
+   * the explorer is a plugin like any other now, and a plugin from somebody else's repository
+   * wants the same facility for its own filter or scroll position.
+   *
+   * OPTIONAL AT EVERY LEVEL, and the absences are load-bearing. No record for a plugin means "this
+   * workspace has never been opened with it", which is what lets the explorer expand the root
+   * folders on first sight; a record holding an empty list means "the user collapsed everything"
+   * and is authoritative. Anything that manufactures an empty record makes every existing
+   * workspace open collapsed, permanently.
    */
-  expandedDirs?: string[]
+  pluginState?: Record<PluginId, Record<string, unknown>>
 }
 
 /**
@@ -294,7 +296,7 @@ export interface WorkspaceUiState {
  * rather than mutating the shape in place.
  */
 export interface PersistedState {
-  version: 3
+  version: 4
   workspaces: Workspace[]
   activeWorkspaceId: WorkspaceId | null
   ui: Record<WorkspaceId, WorkspaceUiState>
@@ -309,7 +311,7 @@ export interface PersistedState {
   disabledPlugins?: string[]
 }
 
-export const PERSISTED_STATE_VERSION = 3 as const
+export const PERSISTED_STATE_VERSION = 4 as const
 
 export const DEFAULT_PANEL_LAYOUT: PanelLayout = {
   leftView: null,
@@ -323,18 +325,4 @@ export const DEFAULT_PANEL_LAYOUT: PanelLayout = {
 // Filesystem
 // ---------------------------------------------------------------------------
 
-export interface FileStat {
-  path: string
-  name: string
-  isDir: boolean
-  /** True when a .gitignore in scope excludes this entry; the tree dims it. */
-  ignored: boolean
-}
-
 /** Bounds of a DOM placeholder, in CSS pixels relative to the window's content area. */
-export interface ViewBounds {
-  x: number
-  y: number
-  width: number
-  height: number
-}

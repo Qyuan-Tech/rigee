@@ -1,6 +1,6 @@
 import { Context, type Fiber, type FiberState, type Plugin } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
-import type { PluginEventEnvelope, PluginId } from '@shared/plugin'
+import type { PluginEventEnvelope, PluginId } from '@rigee/plugin-api/manifest'
 import { CommandService } from './commands'
 import { ShellService } from './shell'
 

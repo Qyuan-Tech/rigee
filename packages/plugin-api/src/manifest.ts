@@ -25,6 +25,10 @@
  *    and 2000x the cost of a plain property read (measured: 15.5 us for `ctx.svc.method()` against
  *    8 ns), so the framework stays on the activation path and every render-path lookup goes
  *    through the plain Maps in the renderer's `bindings.ts`.
+ *
+ * This file is the root of `@rigee/plugin-api`, which is the version the two sides agree on. It
+ * must stay free of runtime imports: it is read at boot in main AND in the renderer, and anything
+ * it reaches lands in both bundles.
  */
 
 /** Stable identity of a plugin. Namespaces its commands, its view types and its events. */
@@ -181,19 +185,99 @@ export interface PluginContributions {
 }
 
 /**
+ * A capability a plugin must ASK FOR before the shell will give it.
+ *
+ * Deliberately coarse, and deliberately short. A long list of fine-grained permissions reads well
+ * in a design document and is worthless in a dialog: nobody can weigh nine checkboxes, so everyone
+ * presses yes, and the nine were only ever a way of not deciding which three mattered. These four
+ * are the ones a reviewer can actually reason about.
+ *
+ * KNOW WHAT THIS IS AND IS NOT. It is an integrity boundary against mistakes and against a plugin
+ * quietly growing new appetites between versions — the grant is recorded per plugin, and asking for
+ * more invalidates it. It is NOT a sandbox. A plugin's renderer half runs in the shell's own
+ * JavaScript context, so a hostile one can reach whatever the shell can reach no matter what it
+ * declared. That is why installing is a trust decision (see `trust.ts` in the shell) and why the
+ * dialog says so in those words rather than implying the permissions contain the code.
+ *
+ * Real isolation needs a separate context per plugin — a worker for the logic, a locked-down frame
+ * for the UI — which is a much larger change and is not pretended at here.
+ */
+export type PluginPermission =
+  /** Read files anywhere the user can. Any viewer needs this. */
+  | 'files:read'
+  /** Write files. The text editor needs it; a reader does not. */
+  | 'files:write'
+  /** Run programs. Source control needs it to run `git`; almost nothing else should. */
+  | 'process:spawn'
+  /** Reach the network, directly or by showing a remote page. */
+  | 'net'
+
+export const ALL_PERMISSIONS: readonly PluginPermission[] = [
+  'files:read',
+  'files:write',
+  'process:spawn',
+  'net'
+]
+
+/** One line each, for the install dialog. The user reads these, not the identifiers. */
+export const PERMISSION_LABELS: Record<PluginPermission, string> = {
+  'files:read': 'Read files on this computer',
+  'files:write': 'Create and change files on this computer',
+  'process:spawn': 'Run other programs',
+  net: 'Send and receive data over the network'
+}
+
+/**
  * What the host reads at boot.
  *
  * Shaped so it can move into a plugin's `package.json` unchanged once plugins load from disk
  * rather than from the bundled barrel — `id`/`version`/`displayName`/`contributes` are the same
- * four fields VS Code reads, for the same reason.
+ * four fields VS Code reads, for the same reason. A plugin on disk supplies exactly this object
+ * under a `rigee` key, plus the two entry points (see `DiskPluginManifest`).
  */
 export interface PluginManifest {
   id: PluginId
   version: string
   displayName: string
   description?: string
+  /**
+   * What it needs to be allowed to do. Absent means none, and a plugin that asks for nothing is
+   * installable without a prompt beyond "this code will run inside rigee".
+   */
+  permissions?: PluginPermission[]
   contributes?: PluginContributions
 }
+
+/**
+ * The extra fields a plugin loaded FROM DISK carries, on top of the manifest itself.
+ *
+ * Bundled plugins do not need them: their halves are reached through `registry.main.ts` and
+ * `registry.renderer.ts`, which the build resolves statically. A plugin from somebody else's
+ * repository has no such entry, so it names its own files — relative to its own directory, and
+ * checked for containment before anything is read.
+ */
+export interface DiskPluginManifest extends PluginManifest {
+  /** ESM entry for the main half, relative to the plugin directory. Omit if it has none. */
+  main?: string
+  /** ESM entry for the renderer half, relative to the plugin directory. Omit if it has none. */
+  renderer?: string
+  /**
+   * Major version of `@rigee/plugin-api` this was built against.
+   *
+   * Checked before anything is loaded. A plugin built against a contract the shell no longer
+   * speaks must be refused with that as the reason, not allowed to fail later as a missing export
+   * in a stack trace nobody can act on.
+   */
+  apiVersion: number
+}
+
+/**
+ * The API generation the shell implements.
+ *
+ * Bumped when something is REMOVED or changed shape — adding a function does not break a plugin
+ * that never calls it. A disk plugin whose `apiVersion` differs is refused at discovery.
+ */
+export const PLUGIN_API_VERSION = 1
 
 // ---------------------------------------------------------------------------
 // The two IPC channels

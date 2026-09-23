@@ -1,5 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+// FIRST, and for its side effect: it installs the implementation behind `@rigee/plugin-api`.
+// A plugin's first line may call into that package, and an uninstalled host throws — the right
+// failure, but only worth having if it cannot happen. Nothing below may move above it.
+import './plugins/shellHost'
 import { App } from './App'
 import { PluginsView } from './components/PluginsView'
 import { activatedPlugins } from './plugins/activate'

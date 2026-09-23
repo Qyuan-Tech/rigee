@@ -90,6 +90,18 @@ function migrate(raw: unknown): PersistedState {
     version = 3
   }
 
+  // v3 -> v4: `expandedDirs` became one plugin's entry in a generic per-plugin state bag. It was
+  // the last thing in the persisted document that named a particular feature, and the explorer is
+  // a plugin now — one that a third party could replace.
+  //
+  // The shell naming `explorer` here is the same compromise `legacyKind` makes for tabs: a field
+  // the shell used to own has to be handed to whoever owns it now, and only the shell knows where
+  // it used to live. It disappears when v4 becomes the floor.
+  if (version === 3) {
+    ui = Object.fromEntries(Object.entries(ui).map(([id, record]) => [id, toPluginState(record)]))
+    version = 4
+  }
+
   if (version !== PERSISTED_STATE_VERSION) {
     // A document from the FUTURE — an older build reading what a newer one wrote. Keep the
     // workspaces and the key bindings, which are version-stable and expensive to recreate, and
@@ -132,8 +144,36 @@ function toGroups(raw: unknown): WorkspaceUiState {
     activeGroupId: MIGRATED_GROUP_ID,
     groupSizes: [1],
     layout: (record.layout as PanelLayout | undefined) ?? { ...DEFAULT_PANEL_LAYOUT },
+    // Carried forward unchanged; the v3 -> v4 step below is what moves it under the explorer.
+    // Doing it here too would mean a v2 document took a different route than a v3 one to the same
+    // place, which is exactly how one of two migration paths ends up untested.
     ...(Array.isArray(record.expandedDirs) ? { expandedDirs: record.expandedDirs as string[] } : {})
-  }
+  } as WorkspaceUiState
+}
+
+/**
+ * v3 -> v4 for one workspace record: `expandedDirs` moves under `pluginState.explorer`.
+ *
+ * Copied only when it was there, and that is the whole subtlety. Writing
+ * `{ explorer: { expandedDirs: [] } }` for a workspace that never had the field tells the explorer
+ * the user collapsed everything on purpose, so every project the user has ever opened would come
+ * back with its roots shut and no way to tell why. Absence has to survive the migration.
+ */
+export const EXPLORER_PLUGIN_ID = 'explorer'
+
+function toPluginState(raw: unknown): WorkspaceUiState {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const { expandedDirs, ...rest } = record as { expandedDirs?: unknown } & Record<string, unknown>
+  if (!Array.isArray(expandedDirs)) return rest as unknown as WorkspaceUiState
+
+  const existing = (rest.pluginState ?? {}) as Record<string, Record<string, unknown>>
+  return {
+    ...rest,
+    pluginState: {
+      ...existing,
+      [EXPLORER_PLUGIN_ID]: { ...existing[EXPLORER_PLUGIN_ID], expandedDirs }
+    }
+  } as unknown as WorkspaceUiState
 }
 
 let cache: PersistedState | null = null

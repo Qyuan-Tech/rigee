@@ -58,11 +58,12 @@ export function App(): React.ReactElement {
         // invariant, and a render landing between two writes would see a row it cannot lay out.
         useApp.setState((s) => ({
           rowsByWorkspace: { ...s.rowsByWorkspace, [wsId]: sanitizeGroups(ui, nextGroupId) },
-          // Only when the record has one. Leaving it absent is what tells the explorer this
-          // workspace has never been opened, so it should start with its roots expanded.
-          expandedDirs: Array.isArray(ui.expandedDirs)
-            ? { ...s.expandedDirs, [wsId]: ui.expandedDirs }
-            : s.expandedDirs
+          // Only when the record has one. Leaving it absent is what tells a plugin this
+          // workspace has never been opened with it — which is how the explorer knows to start
+          // with its roots expanded rather than as the user last left them.
+          pluginStateByWorkspace: ui.pluginState
+            ? { ...s.pluginStateByWorkspace, [wsId]: ui.pluginState }
+            : s.pluginStateByWorkspace
         }))
       }
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
@@ -309,15 +310,15 @@ function usePersistence(): void {
         groupSizes: row.sizes,
         layout: s.layout,
         /*
-         * Written only when there IS a record, never defaulted to [].
+         * Written only when there IS a record, never defaulted to {}.
          *
-         * Absence means "this workspace has never been opened, so show its roots expanded"; an
-         * empty array means "the user collapsed everything" and is authoritative. Defaulting here
-         * turns the first into the second on the very first save — so every workspace migrated
-         * from an older document would open fully collapsed, for ever. `pnpm smoke:migrate`
-         * caught exactly this.
+         * Absence means "no plugin has recorded anything for this workspace", which the explorer
+         * reads as "never opened, so show the roots expanded". An empty record means the user
+         * collapsed everything and is authoritative. Defaulting here turns the first into the
+         * second on the very first save — so every workspace migrated from an older document
+         * would open fully collapsed, for ever. `pnpm smoke:migrate` caught exactly this.
          */
-        ...(s.expandedDirs[ws.id] ? { expandedDirs: s.expandedDirs[ws.id] } : {})
+        ...(s.pluginStateByWorkspace[ws.id] ? { pluginState: s.pluginStateByWorkspace[ws.id] } : {})
       }
     }
     rpc['state:saveAllUi']({ ui }).catch((e: unknown) => console.error('[persist] saveAllUi failed', e))
@@ -335,7 +336,13 @@ function usePersistence(): void {
 
     const unsub = useApp.subscribe(
       (s) =>
-        [s.rowsByWorkspace, s.layout, s.activeWorkspaceId, s.workspaces, s.expandedDirs] as const,
+        [
+          s.rowsByWorkspace,
+          s.layout,
+          s.activeWorkspaceId,
+          s.workspaces,
+          s.pluginStateByWorkspace
+        ] as const,
       schedule
     )
     const interval = setInterval(save, SAVE_INTERVAL_MS)

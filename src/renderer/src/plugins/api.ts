@@ -1,53 +1,33 @@
 import { SCRATCH_WORKSPACE_ID } from '@shared/types'
-import type { PluginId, ViewType } from '@shared/plugin'
-import type { CustomTab, TabId, Workspace, WorkspaceFolder, WorkspaceId } from '@shared/types'
+import type { PluginId, ViewType } from '@rigee/plugin-api/manifest'
+import type {
+  CustomTab,
+  EditorTab,
+  TabId,
+  Workspace,
+  WorkspaceFolder,
+  WorkspaceId
+} from '@shared/types'
+import type { OpenFileRequest, PluginTabRequest } from '@rigee/plugin-api'
 import { allTabs, groupById, groupOfTab } from '../groups'
 import { rpc } from '../ipc'
 import { nextTabId, nextWorkspaceId, rowOf, takeDuplicateOrigin, useApp } from '../store'
-import { ownerOf } from './registry'
+import { ownerOf, resolveViewType } from './registry'
 
 /**
- * The shell, as a plugin's renderer half sees it.
+ * The shell side of `@rigee/plugin-api` — the behaviour behind the shim a plugin imports.
+ *
+ * NOTHING IN plugins/ MAY IMPORT THIS MODULE. It used to be the plugin-facing API, and that only
+ * worked while every plugin shared the shell's bundle. A plugin from another repository never
+ * will, so the SHAPE moved into the package and the implementation stayed here; `shellHost.tsx`
+ * is what joins the two, once, at boot.
  *
  * Cordis-free by design. A plugin uses `ctx` for the things that must be revoked when it is
- * disposed — binding components, subscribing to its main half — and this module for everything
- * else. Two reasons, both measured: a cordis service access costs ~15 us against 8 ns for a plain
- * call, which is unacceptable inside a React render; and these are ordinary store operations that
- * gain nothing from a lifecycle.
- *
- * Plugins may also import `@renderer/components/Notice`, `@renderer/icons` and `@renderer/ipc`
- * directly. They are in-repo code sharing the shell's bundle, not sandboxed third-party add-ons;
- * pretending otherwise would mean re-exporting the whole shell through a facade nobody benefits
- * from.
+ * disposed — binding components, subscribing to its main half — and this for everything else. Two
+ * reasons, both measured: a cordis service access costs ~15 us against 8 ns for a plain call,
+ * which is unacceptable inside a React render; and these are ordinary store operations that gain
+ * nothing from a lifecycle.
  */
-
-export { Notice } from '../components/Notice'
-export { useActiveWorkspace } from '../store'
-
-export interface PluginTabRequest {
-  viewType: ViewType
-  title: string
-  /** Hover text for the tab strip — the path, the URL, whatever identifies it to a reader. */
-  tooltip?: string
-  state: Record<string, unknown>
-  /**
-   * Identity for de-duplication. Opening the same key twice re-activates the existing tab rather
-   * than adding a second one; leave it out when duplicates are legitimate.
-   *
-   * De-duplication is PER EDITOR GROUP: the same key open in two columns is two tabs, because the
-   * same document side by side is what splitting is for.
-   */
-  key?: string
-  /**
-   * Open beside this tab — in whichever group holds it — instead of in the active group.
-   *
-   * For a tab opened BY another tab rather than by the user. A `window.open` popup from a page in
-   * the right-hand group belongs in the right-hand group: the user's focus may be anywhere by the
-   * time the page gets round to opening it, and landing in the wrong column looks like the click
-   * did something else entirely. Ignored when the tab is gone or lives in another workspace.
-   */
-  nearTabId?: TabId
-}
 
 /** The workspace a plugin's UI is currently looking at, or null before one is chosen. */
 export function activeWorkspaceId(): WorkspaceId | null {
@@ -259,4 +239,134 @@ function workspaceOf(tabId: TabId): WorkspaceId | null {
     if (groupOfTab(row, tabId)) return workspaceId
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// What the plugins used to reach into the store for
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a file in whichever editor claims it, in the active group.
+ *
+ * The explorer used to do this itself: read `resolveViewType`, mint a tab id with `nextTabId` and
+ * call `openTab` on the store — three shell internals in one click handler, and the reason a file
+ * tree could not be written by anybody outside this repository. The resolution belongs here
+ * anyway: it reads the manifests, so no plugin is loaded to answer "who opens a .pdf", and a
+ * caller has no business knowing that editors have priorities.
+ */
+export function openFile(request: OpenFileRequest): TabId | null {
+  const store = useApp.getState()
+  const workspaceId = store.activeWorkspaceId
+  if (!workspaceId) return null
+
+  const before = rowOf(store, workspaceId)
+  const near = request.nearTabId ? groupOfTab(before, request.nearTabId) : undefined
+  const groupId = near?.id ?? before.activeGroupId
+
+  const tab: EditorTab = {
+    id: nextTabId(),
+    kind: 'editor',
+    title: request.title ?? basename(request.path),
+    pinned: false,
+    filePath: request.path,
+    repoId: null,
+    readOnly: request.readOnly ?? false,
+    // Resolved once, here, from the manifests alone: an array scan over a handful of declarations,
+    // and no plugin loaded. Doing it in the pane instead would either scan on every render or
+    // force the viewer to load before the user has committed to the file.
+    viewType: resolveViewType(request.path) ?? undefined
+  }
+  store.openTab(workspaceId, tab, groupId)
+  // openTab re-activates an existing tab for the same file rather than adding this one, so read
+  // back what the TARGET group ended up showing — see `openPluginTab` for the same reasoning.
+  const after = rowOf(useApp.getState(), workspaceId)
+  return groupById(after, groupId)?.activeTabId ?? tab.id
+}
+
+const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
+
+/**
+ * The one tab with the keyboard: the active group's active tab, in the active workspace.
+ *
+ * THE focus rule, written once. The browser plugin had its own copy, reading `rowOf` out of the
+ * store, because there was nowhere else to put it — and two copies of a rule this small is how two
+ * visible pages end up disagreeing about which of them should be typing.
+ */
+export function focusedTabId(): TabId | null {
+  return focusedIn(useApp.getState())
+}
+
+function focusedIn(state: ReturnType<typeof useApp.getState>): TabId | null {
+  const workspaceId = state.activeWorkspaceId
+  if (!workspaceId) return null
+  const row = rowOf(state, workspaceId)
+  return row.groups.find((g) => g.id === row.activeGroupId)?.activeTabId ?? null
+}
+
+/** The same rule as a hook, for a pane that must re-render when focus moves to another column. */
+export function useFocusedTabId(): TabId | null {
+  return useApp(focusedIn)
+}
+
+/**
+ * The active tab of every group in the ACTIVE workspace, left to right — what is on screen.
+ *
+ * Only the active workspace, because only its row is rendered. The pages of a workspace you
+ * switched away from are still alive, and treating them as visible is how a native view ends up
+ * composited over the whole window and switching workspaces looks like nothing happened.
+ */
+export function mountedTabIds(): TabId[] {
+  const state = useApp.getState()
+  if (!state.activeWorkspaceId) return []
+  return rowOf(state, state.activeWorkspaceId)
+    .groups.map((g) => g.activeTabId)
+    .filter((id): id is TabId => id !== null)
+}
+
+/**
+ * Watch for a change in what is mounted — a split, a drag between groups, a workspace switch.
+ *
+ * The selector is that list flattened to a string, so a title change, a resize or a keystroke
+ * costs one comparison and nothing more. Wrap the returned undo in `ctx.effect`.
+ */
+export function subscribeMountedTabs(listener: (tabIds: TabId[]) => void): () => void {
+  return useApp.subscribe(
+    (s) => (s.activeWorkspaceId ? mountedKey(s) : ''),
+    () => listener(mountedTabIds())
+  )
+}
+
+function mountedKey(state: ReturnType<typeof useApp.getState>): string {
+  if (!state.activeWorkspaceId) return ''
+  return rowOf(state, state.activeWorkspaceId)
+    .groups.map((g) => g.activeTabId ?? '')
+    .join(' ')
+}
+
+/**
+ * A plugin's own persisted state for one workspace, or undefined if it has never written any.
+ *
+ * Undefined is a real answer, not an empty one — see the comment on `WorkspaceUiState.pluginState`.
+ */
+export function pluginState(
+  pluginId: PluginId,
+  workspaceId: WorkspaceId
+): Record<string, unknown> | undefined {
+  return useApp.getState().pluginStateByWorkspace[workspaceId]?.[pluginId]
+}
+
+/** The same, as a hook. A null workspace yields undefined rather than throwing. */
+export function usePluginState(
+  pluginId: PluginId,
+  workspaceId: WorkspaceId | null
+): Record<string, unknown> | undefined {
+  return useApp((s) => (workspaceId ? s.pluginStateByWorkspace[workspaceId]?.[pluginId] : undefined))
+}
+
+export function setPluginState(
+  pluginId: PluginId,
+  workspaceId: WorkspaceId,
+  patch: Record<string, unknown>
+): void {
+  useApp.getState().setPluginState(workspaceId, pluginId, patch)
 }

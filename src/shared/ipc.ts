@@ -23,7 +23,7 @@ import type {
   WorkspaceUiState,
   KeyBindings
 } from './types'
-import type { PluginEventEnvelope, PluginInvocation } from './plugin'
+import type { PluginEventEnvelope, PluginInvocation } from '@rigee/plugin-api/manifest'
 
 /** renderer -> main -> renderer. Every one of these is awaited. */
 export interface IpcRequests {

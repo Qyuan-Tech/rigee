@@ -1,6 +1,6 @@
 import { Context, type Fiber, type FiberState } from 'cordis'
 import { RENDERER_HALVES } from '@plugins/registry.renderer'
-import type { PluginId } from '@shared/plugin'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 import { ContributionService } from './contributions'
 import { PluginRpcService } from './rpc'
 

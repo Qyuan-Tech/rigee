@@ -1,5 +1,5 @@
 import { Service, type Context } from 'cordis'
-import { viewNamespace, type PluginId, type ViewType } from '@shared/plugin'
+import { viewNamespace, type PluginId, type ViewType } from '@rigee/plugin-api/manifest'
 import {
   bind,
   type PluginEditorComponent,

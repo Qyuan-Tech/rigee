@@ -1,0 +1,40 @@
+{
+  "name": "@rigee/plugin-api",
+  "version": "0.1.0",
+  "description": "The contract a rigee plugin is written against.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./manifest": {
+      "types": "./src/manifest.ts",
+      "default": "./src/manifest.ts"
+    },
+    "./data": {
+      "types": "./src/data.ts",
+      "default": "./src/data.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "cordis": ">=4.0.0-rc.10",
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "cordis": { "optional": true },
+    "react": { "optional": true }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Qyuan-Tech/rigee.git",
+    "directory": "packages/plugin-api"
+  }
+}

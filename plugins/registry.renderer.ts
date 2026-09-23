@@ -1,5 +1,5 @@
 import type { Plugin } from 'cordis'
-import type { PluginId } from '@shared/plugin'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 
 /**
  * Where the renderer finds each plugin's renderer half.

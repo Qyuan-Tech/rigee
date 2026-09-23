@@ -1,6 +1,6 @@
 import { Service, type Context } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
-import type { PluginEventEnvelope } from '@shared/plugin'
+import type { PluginEventEnvelope } from '@rigee/plugin-api/manifest'
 
 declare module 'cordis' {
   interface Context {

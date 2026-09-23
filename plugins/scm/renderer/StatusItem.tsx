@@ -1,5 +1,5 @@
-import { BranchIcon } from '@renderer/icons'
-import { useActiveWorkspace } from '@renderer/plugins/api'
+import { icons } from '@rigee/plugin-api'
+import { useActiveWorkspace } from '@rigee/plugin-api'
 import { useRepoStatus } from './store'
 
 /**
@@ -22,7 +22,7 @@ export function BranchStatusItem(): React.ReactElement | null {
 
   return (
     <span className="statusbar__item">
-      <BranchIcon size={12} />
+      <icons.Branch size={12} />
       {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
       {dirty > 0 && <span style={{ color: 'var(--git-modified)' }}>{dirty}</span>}
       {status.operation !== 'none' && (

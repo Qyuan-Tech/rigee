@@ -3,6 +3,8 @@
     "electron.vite.config.ts",
     "src/main/**/*",
     "src/shared/**/*",
+    "packages/plugin-api/src/manifest.ts",
+    "packages/plugin-api/src/data.ts",
     "plugins/index.ts",
     "plugins/registry.main.ts",
     "plugins/*/manifest.ts",
@@ -24,6 +26,12 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "baseUrl": ".",
-    "paths": { "@shared/*": ["src/shared/*"], "@plugins/*": ["plugins/*"] }
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@plugins/*": ["plugins/*"],
+      "@rigee/plugin-api": ["packages/plugin-api/src/index.ts"],
+      "@rigee/plugin-api/data": ["packages/plugin-api/src/data.ts"],
+      "@rigee/plugin-api/manifest": ["packages/plugin-api/src/manifest.ts"]
+    }
   }
 }

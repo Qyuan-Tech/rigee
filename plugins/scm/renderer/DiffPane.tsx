@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { editorFontSize, monoFamily } from '@renderer/fonts'
-import { Notice } from '@renderer/plugins/api'
+import { editorFontSize, monoFamily } from '@rigee/plugin-api'
+import { Notice } from '@rigee/plugin-api'
 import { loadMonaco, MONACO_THEME } from '@plugins/shared/monaco'
 import { HunkView } from './HunkView'
 import { readDiffTabState, type DiffTabState } from './diffTab'
 import { scm } from './rpc'
-import type { PluginTabProps } from '@renderer/plugins/bindings'
+import type { PluginTabProps } from '@rigee/plugin-api'
 import type * as Monaco from 'monaco-editor'
 
 /**

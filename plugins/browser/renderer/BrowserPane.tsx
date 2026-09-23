@@ -1,19 +1,17 @@
+import { icons, useFocusedTabId } from '@rigee/plugin-api'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BackIcon, DevToolsIcon, ForwardIcon, ReloadIcon, StopIcon } from '@renderer/icons'
-import { useApp } from '@renderer/store'
 import { invoke, on } from './rpc'
 import {
   ensureView,
   focusView,
   hideView,
-  isFocusTarget,
   isFocusTargetNow,
   releaseFocus,
   showView,
   viewIdFor
 } from './views'
-import type { PluginTabProps } from '@renderer/plugins/bindings'
-import type { ViewBounds } from '@shared/types'
+import type { PluginTabProps } from '@rigee/plugin-api'
+import type { ViewBounds } from '@rigee/plugin-api'
 
 /**
  * The browser tab.
@@ -132,7 +130,7 @@ export function BrowserPane({
    * user's attention moved, so an unconditional hand-back would half the time undo the new group's
    * claim and leave the keyboard on the shell.
    */
-  const focusTarget = useApp((s) => isFocusTarget(s, tabId))
+  const focusTarget = useFocusedTabId() === tabId
   useEffect(() => {
     if (!focusTarget) return
     // A no-op while the view is still being created; the create effect focuses it on arrival.
@@ -216,7 +214,7 @@ export function BrowserPane({
           title="Back"
           onClick={() => act('browser:goBack')}
         >
-          <BackIcon size={14} />
+          <icons.Back size={14} />
         </button>
         <button
           className="icon-button"
@@ -224,14 +222,14 @@ export function BrowserPane({
           title="Forward"
           onClick={() => act('browser:goForward')}
         >
-          <ForwardIcon size={14} />
+          <icons.Forward size={14} />
         </button>
         <button
           className="icon-button"
           title={loading ? 'Stop' : 'Reload'}
           onClick={() => act(loading ? 'browser:stop' : 'browser:reload')}
         >
-          {loading ? <StopIcon size={13} /> : <ReloadIcon size={14} />}
+          {loading ? <icons.Stop size={13} /> : <icons.Reload size={14} />}
         </button>
 
         <input
@@ -249,7 +247,7 @@ export function BrowserPane({
         />
 
         <button className="icon-button" title="DevTools" onClick={() => act('browser:openDevTools')}>
-          <DevToolsIcon size={14} />
+          <icons.DevTools size={14} />
         </button>
       </div>
 

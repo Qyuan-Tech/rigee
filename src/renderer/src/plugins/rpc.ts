@@ -1,5 +1,5 @@
 import { Service, type Context } from 'cordis'
-import { commandNamespace, type PluginId } from '@shared/plugin'
+import { commandNamespace, type PluginId } from '@rigee/plugin-api/manifest'
 import { onEvent, rpc } from '../ipc'
 
 declare module 'cordis' {

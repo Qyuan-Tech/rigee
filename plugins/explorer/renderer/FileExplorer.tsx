@@ -1,10 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileIcon } from '@renderer/icons'
-import { rpc } from '@renderer/ipc'
-import { addWorkspaceFolders, useActiveWorkspace } from '@renderer/plugins/api'
-import { resolveViewType } from '@renderer/plugins/registry'
-import { nextTabId, useApp } from '@renderer/store'
-import type { FileStat } from '@shared/types'
+import {
+  addWorkspaceFolders,
+  icons,
+  listDir,
+  openFile,
+  setPluginState,
+  useActiveWorkspace,
+  usePluginState
+} from '@rigee/plugin-api'
+import type { FileStat } from '@rigee/plugin-api'
+
+/** This plugin's id, which is also the key its per-workspace state is filed under. */
+const PLUGIN_ID = 'explorer'
+
+/**
+ * Which directories are open, for one workspace.
+ *
+ * Kept in the shell's per-plugin state rather than in component state because it has to outlive
+ * the components: switching workspaces unmounts the whole tree, so local state went with it and
+ * coming back re-expanded everything from defaults instead of showing it as you left it.
+ *
+ * UNDEFINED IS A REAL ANSWER and the code below depends on it: it means this workspace has never
+ * been opened with the explorer, which is what triggers the one-time seeding of the root folders.
+ * An empty array means the user collapsed everything and must be left alone.
+ */
+function readExpanded(state: Record<string, unknown> | undefined): string[] | undefined {
+  const dirs = state?.expandedDirs
+  return Array.isArray(dirs) ? (dirs as string[]) : undefined
+}
 
 /**
  * Directory listings, cached by absolute path outside React.
@@ -19,8 +42,11 @@ export function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const [dropping, setDropping] = useState(false)
   const workspaceId = workspace?.id ?? null
-  const expanded = useApp((s) => (workspaceId ? s.expandedDirs[workspaceId] : undefined))
-  const setExpandedDirs = useApp((s) => s.setExpandedDirs)
+  const expanded = readExpanded(usePluginState(PLUGIN_ID, workspaceId))
+
+  const setExpandedDirs = useCallback((id: string, paths: string[]) => {
+    setPluginState(PLUGIN_ID, id, { expandedDirs: [...new Set(paths)] })
+  }, [])
 
   const open = useMemo(() => new Set(expanded ?? []), [expanded])
 
@@ -93,7 +119,7 @@ export function FileExplorer(): React.ReactElement {
           disabled={!workspace || workspace.folders.length === 0}
           onClick={toggleAll}
         >
-          {anyOpen ? <CollapseAllIcon size={14} /> : <ExpandAllIcon size={14} />}
+          {anyOpen ? <icons.CollapseAll size={14} /> : <icons.ExpandAll size={14} />}
         </button>
       </div>
       <div className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}>
@@ -127,7 +153,6 @@ interface DirNodeProps {
  * workspace and coming back.
  */
 function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.ReactElement {
-  const toggleDir = useApp((s) => s.toggleDir)
   const isOpen = open.has(path)
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
@@ -135,7 +160,7 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
   useEffect(() => {
     if (!isOpen || children !== null) return
     let cancelled = false
-    void rpc['fs:list'](path)
+    void listDir(path)
       .then((list) => {
         listings.set(path, list)
         if (!cancelled) setChildren(list)
@@ -149,10 +174,10 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
       <div
         className="row row--clickable"
         style={{ paddingLeft: 8 + depth * 12 }}
-        onClick={() => { if (workspaceId) toggleDir(workspaceId, path) }}
+        onClick={() => { if (workspaceId) toggleDir(workspaceId, open, path) }}
       >
         <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
-          <ChevronIcon size={12} open={isOpen} />
+          <icons.Chevron size={12} open={isOpen} />
         </span>
         <span className="row__label">{name}</span>
       </div>
@@ -175,30 +200,34 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
 }
 
 function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.ReactElement {
-  const openTab = useApp((s) => s.openTab)
-  const workspaceId = useApp((s) => s.activeWorkspaceId)
-
   return (
     <div
       className="row row--clickable"
       style={{ paddingLeft: 8 + depth * 12 }}
       title={stat.path}
-      onClick={() => {
-        if (!workspaceId) return
-        openTab(workspaceId, {
-          id: nextTabId(), kind: 'editor', title: stat.name, pinned: false,
-          filePath: stat.path, repoId: null, readOnly: false,
-          // Resolved once, here, from the manifests alone: an array scan over a handful of
-          // declarations, and no plugin loaded. Doing it in the pane instead would either scan on
-          // every render or force the viewer to load before the user has committed to the file.
-          viewType: resolveViewType(stat.path) ?? undefined
-        })
-      }}
+      // The shell picks the viewer, from the manifests alone — an array scan over a handful of
+      // declarations, with no plugin loaded. A file tree has no business knowing that editors
+      // have priorities, and this one used to: it read the registry, minted a tab id and called
+      // the store, which is three shell internals in a click handler.
+      onClick={() => { openFile({ path: stat.path, title: stat.name }) }}
     >
       <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
-        <FileIcon size={12} />
+        <icons.File size={12} />
       </span>
       <span className="row__label">{stat.name}</span>
     </div>
   )
+}
+
+/**
+ * Flip one directory open or shut.
+ *
+ * Takes the current set rather than reading it back, because the caller already has it from its
+ * own render and a second read could see a different one — the store is shared, and a workspace
+ * switch between the two would move the toggle to the wrong project.
+ */
+function toggleDir(workspaceId: string, open: ReadonlySet<string>, path: string): void {
+  const next = new Set(open)
+  if (!next.delete(path)) next.add(path)
+  setPluginState(PLUGIN_ID, workspaceId, { expandedDirs: [...next] })
 }

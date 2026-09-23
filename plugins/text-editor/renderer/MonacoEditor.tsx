@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { editorFontSize, monoFamily } from '@renderer/fonts'
-import { rpc } from '@renderer/ipc'
-import { duplicatedFrom, Notice } from '@renderer/plugins/api'
+import {
+  duplicatedFrom,
+  editorFontSize,
+  monoFamily,
+  Notice,
+  readFile
+} from '@rigee/plugin-api'
 import { loadMonaco, MONACO_THEME } from '@plugins/shared/monaco'
-import type { PluginEditorProps } from '@renderer/plugins/bindings'
+import type { PluginEditorProps } from '@rigee/plugin-api'
 import type * as Monaco from 'monaco-editor'
 
 type ViewState = Monaco.editor.ICodeEditorViewState | null
@@ -53,7 +57,7 @@ export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): 
 
     void (async () => {
       try {
-        const [monaco, file] = await Promise.all([loadMonaco(), rpc['fs:readFile'](filePath)])
+        const [monaco, file] = await Promise.all([loadMonaco(), readFile(filePath)])
         if (disposed || !host.current) return
         if (file.tooLarge) { setTooLarge(true); return }
 

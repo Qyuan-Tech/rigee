@@ -1,5 +1,5 @@
 import type { Plugin } from 'cordis'
-import type { PluginId } from '@shared/plugin'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 
 /**
  * Where main finds each plugin's main half.

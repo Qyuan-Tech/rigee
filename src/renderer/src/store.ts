@@ -32,6 +32,7 @@ import {
   type Workspace,
   type WorkspaceId
 } from '@shared/types'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 
 /**
  * Renderer state.
@@ -63,14 +64,14 @@ interface AppState {
   layout: PanelLayout
 
   /**
-   * Which explorer directories are expanded, per workspace, by absolute path.
+   * Whatever each plugin wants to remember about each workspace. The shell never looks inside.
    *
-   * In the store rather than in each DirNode because it has to outlive the components: switching
-   * workspaces unmounts the whole tree, and local state went with it — so coming back to a
-   * workspace re-expanded everything from defaults instead of showing it as you left it.
-   * Persisted as `WorkspaceUiState.expandedDirs`.
+   * In the store rather than in the plugin's own components because it has to outlive them:
+   * switching workspaces unmounts a panel entirely, and local state went with it — so coming back
+   * showed the tree re-expanded from defaults instead of as you left it. Persisted as
+   * `WorkspaceUiState.pluginState`; this replaced a hard-coded `expandedDirs` map.
    */
-  expandedDirs: Record<WorkspaceId, string[]>
+  pluginStateByWorkspace: Record<WorkspaceId, Record<PluginId, Record<string, unknown>>>
 
   keybindings: KeyBindings
 
@@ -106,8 +107,12 @@ interface AppState {
   setGroupBoundary: (workspaceId: WorkspaceId, index: number, leftFraction: number) => void
 
   setLayout: (patch: Partial<PanelLayout>) => void
-  toggleDir: (workspaceId: WorkspaceId, path: string) => void
-  setExpandedDirs: (workspaceId: WorkspaceId, paths: string[]) => void
+  /** Merge into one plugin's state for one workspace. */
+  setPluginState: (
+    workspaceId: WorkspaceId,
+    pluginId: PluginId,
+    patch: Record<string, unknown>
+  ) => void
   setKeybindings: (keybindings: KeyBindings) => void
 }
 
@@ -118,7 +123,7 @@ export const useApp = create<AppState>()(
     activeWorkspaceId: null,
     rowsByWorkspace: {},
     layout: { ...DEFAULT_PANEL_LAYOUT },
-    expandedDirs: {},
+    pluginStateByWorkspace: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
 
     setReady: (ready) => set({ ready }),
@@ -276,15 +281,20 @@ export const useApp = create<AppState>()(
 
     setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
 
-    toggleDir: (workspaceId, path) =>
+    setPluginState: (workspaceId, pluginId, patch) =>
       set((s) => {
-        const open = new Set(s.expandedDirs[workspaceId] ?? [])
-        if (!open.delete(path)) open.add(path)
-        return { expandedDirs: { ...s.expandedDirs, [workspaceId]: [...open] } }
+        const forWorkspace = s.pluginStateByWorkspace[workspaceId] ?? {}
+        return {
+          pluginStateByWorkspace: {
+            ...s.pluginStateByWorkspace,
+            [workspaceId]: {
+              ...forWorkspace,
+              [pluginId]: { ...forWorkspace[pluginId], ...patch }
+            }
+          }
+        }
       }),
 
-    setExpandedDirs: (workspaceId, paths) =>
-      set((s) => ({ expandedDirs: { ...s.expandedDirs, [workspaceId]: [...new Set(paths)] } })),
     setKeybindings: (keybindings) => set({ keybindings })
   }))
 )

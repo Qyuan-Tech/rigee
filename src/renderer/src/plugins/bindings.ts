@@ -1,6 +1,13 @@
-import type { ComponentType } from 'react'
 import { pluginUiChanged } from './signal'
-import type { ViewType } from '@shared/plugin'
+import type { ViewType } from '@rigee/plugin-api/manifest'
+import type {
+  PluginEditorComponent,
+  PluginOverlayComponent,
+  PluginStatusItemComponent,
+  PluginTabComponent,
+  PluginTabFactory,
+  PluginViewComponent
+} from '@rigee/plugin-api'
 
 /**
  * Where a plugin's components actually live, once it has activated.
@@ -15,52 +22,22 @@ import type { ViewType } from '@shared/plugin'
  * which enforces the namespace rules and revokes the binding when the plugin is disposed.
  */
 
-/** What every plugin-contributed editor receives. Kept to the two things a viewer cannot infer. */
-export interface PluginEditorProps {
-  /** Absolute path of the file to show. */
-  filePath: string
-  /** The tab this instance belongs to; the right key for any per-tab state a viewer keeps. */
-  tabId: string
-  readOnly: boolean
-}
-
-/** What a plugin-owned tab receives: its own persisted state, and the way to change it. */
-export interface PluginTabProps {
-  tabId: string
-  state: Record<string, unknown>
-  /** Merged into the tab's state and persisted with it. */
-  patchState: (patch: Record<string, unknown>) => void
-  /**
-   * Rename the tab in the strip, and optionally give it a hover tooltip.
-   *
-   * The tooltip is a second argument rather than a second function because the two always change
-   * together: a page navigates and both its title and its URL are new.
-   */
-  setTitle: (title: string, tooltip?: string) => void
-}
-
-/** What a side-bar panel receives. The shell owns the rail and the collapse affordance. */
-export interface PluginViewProps {
-  onCollapse: () => void
-}
-
-export type PluginEditorComponent = ComponentType<PluginEditorProps>
-export type PluginTabComponent = ComponentType<PluginTabProps>
-export type PluginViewComponent = ComponentType<PluginViewProps>
 /**
- * No props at all. `Record<never, never>` rather than `Record<string, never>`: the latter carries
- * an index signature, and React's JSX check then rejects the `key` the shell has to put on every
- * item it maps over.
+ * The prop and component types now live in `@rigee/plugin-api` — they are the contract, and a
+ * plugin has to be able to compile against them without the shell. They are re-exported here so
+ * the shell's own imports read the same as they always did.
  */
-export type PluginStatusItemComponent = ComponentType<Record<never, never>>
-export type PluginOverlayComponent = ComponentType<Record<never, never>>
-
-/** What a plugin returns when the shell asks it for a fresh tab of its own type. */
-export type PluginTabFactory = () => {
-  title: string
-  state: Record<string, unknown>
-  key?: string
-}
+export type {
+  PluginEditorComponent,
+  PluginEditorProps,
+  PluginOverlayComponent,
+  PluginStatusItemComponent,
+  PluginTabComponent,
+  PluginTabFactory,
+  PluginTabProps,
+  PluginViewComponent,
+  PluginViewProps
+} from '@rigee/plugin-api'
 
 const editors = new Map<ViewType, PluginEditorComponent>()
 const tabs = new Map<ViewType, PluginTabComponent>()

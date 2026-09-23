@@ -1,4 +1,4 @@
-import type { ViewBounds } from '@shared/types'
+import type { ViewBounds } from '@rigee/plugin-api/data'
 
 /**
  * What the browser plugin's two halves say to each other.

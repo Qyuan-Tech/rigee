@@ -11,7 +11,7 @@ import {
   type TabContribution,
   type ViewContribution,
   type ViewType
-} from '@shared/plugin'
+} from '@rigee/plugin-api/manifest'
 
 /**
  * Everything the shell can know about plugins without loading one.
@@ -23,7 +23,7 @@ import {
  *
  * MUST NOT IMPORT CORDIS, or any plugin implementation. It is statically imported by the shell,
  * so anything it reaches lands in the entry chunk — which is exactly what the split in
- * @shared/plugin exists to prevent.
+ * @rigee/plugin-api/manifest exists to prevent.
  *
  * Everything below is filtered by the disabled set. A disabled plugin is not merely stopped: its
  * contributions cease to exist as far as the shell is concerned, so its tab type stops resolving,

@@ -1,4 +1,4 @@
-import type { PluginId } from '@shared/plugin'
+import type { PluginId } from '@rigee/plugin-api/manifest'
 
 /**
  * The shell's only door into the plugin runtime.

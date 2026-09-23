@@ -1,4 +1,4 @@
-import type { RepoId } from '@shared/types'
+import type { RepoId } from '@rigee/plugin-api/data'
 
 /**
  * The source control contract: what the two halves of this plugin say to each other.

@@ -1,18 +1,10 @@
+import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useState } from 'react'
-import { isMac } from '@renderer/ipc'
-import {
-  BranchIcon,
-  ChevronIcon,
-  CollapseRightIcon,
-  DiscardIcon,
-  StageIcon,
-  UnstageIcon
-} from '@renderer/icons'
-import { openPluginTab, useActiveWorkspace } from '@renderer/plugins/api'
+import { isMac, openPluginTab, useActiveWorkspace } from '@rigee/plugin-api'
 import { diffTabKey } from './diffTab'
 import { scm } from './rpc'
 import { setRepoStatus, useScm } from './store'
-import type { PluginViewProps } from '@renderer/plugins/bindings'
+import type { PluginViewProps } from '@rigee/plugin-api'
 import type { DiffTarget, GitFileChange, RepoStatus } from '../protocol'
 
 /** Badge colours, matching VS Code's source control decorations. */
@@ -151,7 +143,7 @@ function RepoSection({
     <div className={multi ? 'scm__repo' : 'scm__repo scm__repo--only'}>
       {multi && (
         <button className="scm__repo-header" onClick={() => setOpen((o) => !o)}>
-          <ChevronIcon size={12} open={open} />
+          <icons.Chevron size={12} open={open} />
           <span className="scm__repo-name">{status.name}</span>
           <span className="scm__repo-branch">{status.branch ?? status.detachedAt ?? ''}</span>
           {total > 0 && <span className="badge">{total}</span>}
@@ -163,7 +155,7 @@ function RepoSection({
 
         <div className="scm__branch">
           <span className="scm__branch-name">
-            <BranchIcon size={12} />
+            <icons.Branch size={12} />
             {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
           </span>
           {status.upstream && (status.ahead > 0 || status.behind > 0) && (
@@ -285,7 +277,7 @@ function FileGroup({
                   disabled={busy}
                   onClick={() => void act(() => scm('scm:discard', { repoRoot: root, paths: [f.path] }))}
                 >
-                  <DiscardIcon size={12} />
+                  <icons.Discard size={12} />
                 </button>
               )}
               <button
@@ -300,7 +292,7 @@ function FileGroup({
                   )
                 }
               >
-                {staged ? <UnstageIcon size={12} /> : <StageIcon size={12} />}
+                {staged ? <icons.Unstage size={12} /> : <icons.Stage size={12} />}
               </button>
             </span>
 
@@ -329,7 +321,7 @@ function Panel({
       <div className="section-header">
         <span className="section-header__title">Source control</span>
         <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
-          <CollapseRightIcon size={14} />
+          <icons.CollapseRight size={14} />
         </button>
       </div>
       <div className={scroll ? 'scm__body scm__body--scroll' : 'scm__body'}>{children}</div>

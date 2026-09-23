@@ -1,4 +1,4 @@
-import { openPluginTab, subscribeTabs } from '@renderer/plugins/api'
+import { openPluginTab, subscribeTabs } from '@rigee/plugin-api'
 import { AuthDialog } from './AuthDialog'
 import { BrowserPane, HOME_URL } from './BrowserPane'
 import { bindRpc, dispatch } from './rpc'

@@ -1,6 +1,6 @@
+import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { DiscardIcon, StageIcon, UnstageIcon } from '@renderer/icons'
-import { Notice } from '@renderer/plugins/api'
+import { Notice } from '@rigee/plugin-api'
 import { scm } from './rpc'
 import type { DiffTabState } from './diffTab'
 import type { DiffHunkView, SelectionAction } from '../protocol'
@@ -138,14 +138,14 @@ export function HunkView({
         {primary === 'stage' ? (
           <>
             <button className="btn" disabled={busy || count === 0} onClick={() => void apply('discard')}>
-              <DiscardIcon size={12} /> Discard
+              <icons.Discard size={12} /> Discard
             </button>
             <button
               className="btn btn--primary"
               disabled={busy || count === 0}
               onClick={() => void apply('stage')}
             >
-              <StageIcon size={12} /> Stage
+              <icons.Stage size={12} /> Stage
             </button>
           </>
         ) : (
@@ -154,7 +154,7 @@ export function HunkView({
             disabled={busy || count === 0}
             onClick={() => void apply('unstage')}
           >
-            <UnstageIcon size={12} /> Unstage
+            <icons.Unstage size={12} /> Unstage
           </button>
         )}
       </div>

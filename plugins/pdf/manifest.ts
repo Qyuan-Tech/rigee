@@ -1,4 +1,4 @@
-import type { PluginManifest } from '@shared/plugin'
+import type { PluginManifest } from '@rigee/plugin-api/manifest'
 
 /**
  * The PDF viewer.

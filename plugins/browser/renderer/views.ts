@@ -1,8 +1,7 @@
-import { liveTabIds } from '@renderer/plugins/api'
-import { rowOf, useApp } from '@renderer/store'
+import { focusedTabId, liveTabIds, mountedTabIds, subscribeMountedTabs } from '@rigee/plugin-api'
 import { invoke } from './rpc'
 import type { ViewId } from '../protocol'
-import type { TabId, ViewBounds, WorkspaceId } from '@shared/types'
+import type { TabId, ViewBounds } from '@rigee/plugin-api'
 
 /**
  * Lifecycle for the native WebContentsView backing each browser tab.
@@ -137,25 +136,17 @@ export function releaseFocus(tabId: TabId): void {
   if (viewId) void invoke('browser:releaseFocus', { viewId })
 }
 
-/** As much of the shell's state as the focus rule and the reconciler read. */
-type RowState = Parameters<typeof rowOf>[0] & { activeWorkspaceId: WorkspaceId | null }
-
 /**
- * THE focus rule, written once: the active group's active tab, and nothing else.
+ * Whether this tab is the one with the keyboard, asked from outside a render — after an await,
+ * where a flag captured before it is stale.
  *
- * Both callers need it — the pane subscribes to it through a selector, and the create effect asks
- * it again when the view finally exists — and two copies of a rule this small is how they end up
- * disagreeing about which of two visible pages should be typing.
+ * THE rule itself is the shell's (`focusedTabId`): the active group's active tab, and nothing
+ * else. It used to be reimplemented here against the store, which meant two copies of it — and
+ * two copies of a rule this small is how two visible pages end up disagreeing about which of them
+ * should be typing.
  */
-export function isFocusTarget(state: RowState, tabId: TabId): boolean {
-  if (!state.activeWorkspaceId) return false
-  const row = rowOf(state, state.activeWorkspaceId)
-  return row.groups.find((g) => g.id === row.activeGroupId)?.activeTabId === tabId
-}
-
-/** The same rule, asked from outside a render — after an await, where a captured flag is stale. */
 export function isFocusTargetNow(tabId: TabId): boolean {
-  return isFocusTarget(useApp.getState(), tabId)
+  return focusedTabId() === tabId
 }
 
 /**
@@ -188,19 +179,18 @@ const RECONCILE_DELAY_MS = 50
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
- * Which views main should be compositing: the active tab of every group of the ACTIVE workspace,
- * where that tab is a browser tab with a view.
+ * Which views main should be compositing: of the tabs currently mounted, the ones that are ours.
  *
- * Only the active workspace, because only its row is rendered — the pages of the workspace you
- * switched away from are still alive, and leaving them composited is the failure the scratch smoke
- * test watches for: a native view over the whole window makes switching workspaces look like
- * nothing happened at all.
+ * `mountedTabIds` is the shell's answer to "what is on screen" — the active tab of every group of
+ * the ACTIVE workspace. Only the active workspace, because only its row is rendered: the pages of
+ * the workspace you switched away from are still alive, and leaving them composited is the failure
+ * the scratch smoke test watches for, where a native view over the whole window makes switching
+ * workspaces look like nothing happened at all.
  */
-function compositedViewIds(state: RowState): ViewId[] {
-  if (!state.activeWorkspaceId) return []
+function compositedViewIds(): ViewId[] {
   const out: ViewId[] = []
-  for (const group of rowOf(state, state.activeWorkspaceId).groups) {
-    const viewId = group.activeTabId === null ? undefined : viewByTab.get(group.activeTabId)
+  for (const tabId of mountedTabIds()) {
+    const viewId = viewByTab.get(tabId)
     if (viewId) out.push(viewId)
   }
   return out
@@ -217,29 +207,22 @@ function scheduleReconcile(): void {
   if (reconcileTimer !== null) return
   reconcileTimer = setTimeout(() => {
     reconcileTimer = null
-    void invoke('browser:syncVisible', { viewIds: compositedViewIds(useApp.getState()) })
+    void invoke('browser:syncVisible', { viewIds: compositedViewIds() })
   }, RECONCILE_DELAY_MS)
 }
 
 /**
- * Watch the row for changes that move a page on or off screen.
+ * Watch for changes that move a page on or off screen.
  *
- * The selector is the mounted set expressed as a string — one active tab id per group — so a title
- * change, a resize or a keystroke somewhere else in the store costs a comparison and nothing more.
- * Wrap the returned undo in `ctx.effect` so it dies with the plugin, like `reap` does.
+ * `subscribeMountedTabs` fires only when the mounted set actually differs, so a title change, a
+ * resize or a keystroke costs one comparison and nothing more. Wrap the returned undo in
+ * `ctx.effect` so it dies with the plugin, like `reap` does.
  */
 export function subscribeVisibleViews(): () => void {
-  const unsubscribe = useApp.subscribe(mountedKey, scheduleReconcile)
+  const unsubscribe = subscribeMountedTabs(scheduleReconcile)
   return () => {
     if (reconcileTimer !== null) clearTimeout(reconcileTimer)
     reconcileTimer = null
     unsubscribe()
   }
-}
-
-function mountedKey(state: RowState): string {
-  if (!state.activeWorkspaceId) return ''
-  return rowOf(state, state.activeWorkspaceId)
-    .groups.map((g) => g.activeTabId ?? '')
-    .join(' ')
 }

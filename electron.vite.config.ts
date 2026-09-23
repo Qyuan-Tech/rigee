@@ -89,6 +89,31 @@ function pdfjsAssets(): Plugin {
   }
 }
 
+/**
+ * `@rigee/plugin-api`, resolved by path rather than through node_modules.
+ *
+ * The package is real and publishable — a plugin in somebody else's repository will `npm i` it —
+ * but the app has no reason to install it: everything here is bundled, so resolving the source
+ * directly is one fewer moving part and keeps a pnpm workspace (with its symlinks, which
+ * electron-builder handles badly) out of the packaging story entirely.
+ *
+ * ORDER MATTERS, and this is why the aliases became an array. Vite tries them in order and takes
+ * the first match, so the exact `@rigee/plugin-api/manifest` entry has to precede the bare
+ * `@rigee/plugin-api` one — a prefix match would otherwise rewrite the subpath to
+ * `…/src/index.ts/manifest`, which resolves to nothing, and the error names a file nobody wrote.
+ */
+const PLUGIN_API_ALIASES = [
+  {
+    find: '@rigee/plugin-api/data',
+    replacement: resolve(__dirname, 'packages/plugin-api/src/data.ts')
+  },
+  {
+    find: '@rigee/plugin-api/manifest',
+    replacement: resolve(__dirname, 'packages/plugin-api/src/manifest.ts')
+  },
+  { find: '@rigee/plugin-api', replacement: resolve(__dirname, 'packages/plugin-api/src/index.ts') }
+]
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -105,10 +130,10 @@ export default defineConfig({
       }
     },
     resolve: {
-      alias: {
-        '@shared': resolve(__dirname, 'src/shared'),
-        '@plugins': resolve(__dirname, 'plugins')
-      }
+      alias: PLUGIN_API_ALIASES.concat([
+        { find: '@shared', replacement: resolve(__dirname, 'src/shared') },
+        { find: '@plugins', replacement: resolve(__dirname, 'plugins') }
+      ])
     }
   },
 
@@ -126,7 +151,11 @@ export default defineConfig({
         output: { format: 'cjs', entryFileNames: '[name].cjs' }
       }
     },
-    resolve: { alias: { '@shared': resolve('src/shared') } }
+    resolve: {
+      alias: PLUGIN_API_ALIASES.concat([
+        { find: '@shared', replacement: resolve(__dirname, 'src/shared') }
+      ])
+    }
   },
 
   renderer: {
@@ -170,13 +199,13 @@ export default defineConfig({
       }
     },
     resolve: {
-      alias: {
-        '@shared': resolve(__dirname, 'src/shared'),
-        '@renderer': resolve(__dirname, 'src/renderer/src'),
+      alias: PLUGIN_API_ALIASES.concat([
+        { find: '@shared', replacement: resolve(__dirname, 'src/shared') },
+        { find: '@renderer', replacement: resolve(__dirname, 'src/renderer/src') },
         // Plugins live outside `root` (src/renderer), which Vite's dev server allows because its
         // fs allowlist walks up to the workspace root. Keep them out of `manualChunks`.
-        '@plugins': resolve(__dirname, 'plugins')
-      }
+        { find: '@plugins', replacement: resolve(__dirname, 'plugins') }
+      ])
     }
   }
 })
