@@ -1,6 +1,6 @@
 # @rigee/plugin-api
 
-The contract a [rigee](https://github.com/Qyuan-Tech/rigee) plugin is written against.
+The contract a [Rigee](https://github.com/Qyuan-Tech/rigee) plugin is written against.
 
 ```bash
 npm install --save-dev @rigee/plugin-api
@@ -79,7 +79,7 @@ format: 'esm'
 
 ## What `apiVersion` is for
 
-The generation of this contract the plugin was built against. rigee refuses a plugin whose
+The generation of this contract the plugin was built against. Rigee refuses a plugin whose
 `apiVersion` it does not implement, at discovery, with that as the stated reason — rather than
 letting it fail later as a missing export in a stack trace nobody can act on. Adding a function
 does not bump it; removing or reshaping one does.
@@ -90,4 +90,4 @@ does not bump it; removing or reshaping one does.
 asks for more has to ask again. It is **not** a sandbox. A renderer half runs in the shell's own
 JavaScript context, so a hostile plugin can reach whatever the shell can reach regardless of what
 it declared. Installing one is a decision to run its code with the application's privileges, and
-rigee's install dialog says so in those words.
+Rigee's install dialog says so in those words.

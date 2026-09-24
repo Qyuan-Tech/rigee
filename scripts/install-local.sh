@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build rigee and install it into /Applications, then prove it actually launches.
+# Build Rigee and install it into /Applications, then prove it actually launches.
 #
 #   ./scripts/install-local.sh
 #
@@ -37,7 +37,13 @@ ARCH_FLAG="--x64"
 [ "$(uname -m)" = "arm64" ] && ARCH_FLAG="--arm64"
 
 VERSION=$(node -p "require('./package.json').version")
-APP_NAME=$(node -p "require('./package.json').productName || require('./package.json').name")
+# From electron-builder.yml, NOT package.json. That is where productName actually lives, and it
+# is what names the bundle: package.json has only the lower-case identifier `rigee`, so reading it
+# here looked right and sent the installer hunting for release/…/mac/rigee.app, which electron
+# -builder had just written as Rigee.app. The failure is a confusing "no such directory" at the
+# end of a four-minute build.
+APP_NAME=$(sed -n 's/^productName:[[:space:]]*//p' electron-builder.yml | head -1)
+[ -n "$APP_NAME" ] || { echo "no productName in electron-builder.yml" >&2; exit 1; }
 DEST="/Applications/${APP_NAME}.app"
 
 echo "==> build"

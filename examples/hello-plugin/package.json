@@ -2,7 +2,7 @@
   "name": "rigee-plugin-hello",
   "version": "1.0.0",
   "private": true,
-  "description": "A worked example of a rigee plugin that lives outside the app.",
+  "description": "A worked example of a Rigee plugin that lives outside the app.",
   "type": "module",
   "rigee": {
     "id": "hello",

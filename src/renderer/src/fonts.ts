@@ -1,7 +1,7 @@
 import { platform } from './ipc'
 
 /**
- * VS Code's own font stacks, so rigee's chrome, editor and terminal read as the same product
+ * VS Code's own font stacks, so Rigee's chrome, editor and terminal read as the same product
  * the user already has open on the other monitor.
  *
  * These must be concrete font lists, not `var(--font-mono)`. Monaco and xterm.js both measure

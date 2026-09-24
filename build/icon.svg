@@ -1,5 +1,5 @@
 <!--
-  rigee app icon — source of truth. Rasterised by scripts/make-icons.sh.
+  Rigee app icon — source of truth. Rasterised by scripts/make-icons.sh.
 
   The mark is a shell prompt `>_`, drawn so the chevron's three endpoints are glowing nodes: read
   one way it is a terminal caret, read another it is a three-node directed path. That is the whole

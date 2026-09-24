@@ -153,7 +153,7 @@ export function shellHostInstalled(): boolean {
 function shell(): ShellHost {
   if (!host) {
     throw new Error(
-      '@rigee/plugin-api: no shell host installed. Either this is being called outside rigee, ' +
+      '@rigee/plugin-api: no shell host installed. Either this is being called outside Rigee, ' +
         'or a second copy of @rigee/plugin-api was bundled into the plugin instead of being ' +
         'left external and resolved through the import map.'
     )

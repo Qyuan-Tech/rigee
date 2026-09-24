@@ -1,7 +1,7 @@
 {
   "name": "@rigee/plugin-api",
   "version": "0.1.0",
-  "description": "The contract a rigee plugin is written against.",
+  "description": "The contract a Rigee plugin is written against.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,

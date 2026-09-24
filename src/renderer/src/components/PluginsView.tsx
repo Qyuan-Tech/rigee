@@ -220,7 +220,7 @@ function PluginRow({
  * it is not: a plugin runs in the same process as the shell, and nothing here confines it. Saying
  * "this plugin may read files" would imply a boundary that does not exist, and a user who believes
  * in a boundary approves things they would otherwise look at. So the headline is the true statement
- * — this code runs with rigee's own access — and the declared list is offered underneath as what
+ * — this code runs with Rigee's own access — and the declared list is offered underneath as what
  * the author says it is for.
  *
  * The three non-trusted states ask different questions, which is why they are not one "untrusted".
@@ -243,14 +243,14 @@ function TrustPrompt({
         ? `This version declares something the last one did not: ${trust.added
             .map((p) => PERMISSION_LABELS[p].toLowerCase())
             .join(', ')}.`
-        : 'This plugin did not come with rigee.'
+        : 'This plugin did not come with Rigee.'
 
   return (
     <div className="plugins__trust">
       <div className="plugins__trust-headline">{headline}</div>
       <div className="plugins__trust-body">
-        Running it gives its code the same access rigee has — your files, your terminals, the
-        network. rigee does not restrict it. Only approve plugins from somewhere you trust.
+        Running it gives its code the same access Rigee has — your files, your terminals, the
+        network. Rigee does not restrict it. Only approve plugins from somewhere you trust.
       </div>
       {permissions.length > 0 && (
         <ul className="plugins__trust-perms">

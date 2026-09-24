@@ -1,5 +1,5 @@
 /**
- * `@rigee/plugin-api` — everything a plugin is allowed to know about rigee.
+ * `@rigee/plugin-api` — everything a plugin is allowed to know about Rigee.
  *
  * A plugin should import from here and from nowhere else in the app. That is the whole point of
  * the package: what is exported here is versioned and will be kept working, and what is not is the

@@ -1,4 +1,4 @@
-# Developing rigee
+# Developing Rigee
 
 ```bash
 pnpm install
@@ -455,7 +455,7 @@ receives the already-created guest on `options.webContents` — a field that is 
 **The `login` event has four different arities.** On `app` it takes five arguments, on
 `WebContents` four, on `ClientRequest` two, on `UtilityProcess` three, and `Session` has no such
 event at all. Dropping `authenticationResponseDetails` from the `WebContents` form binds
-`callback` to the `authInfo` object and you get *"cb is not a function"*. rigee registers once on
+`callback` to the `authInfo` object and you get *"cb is not a function"*. Rigee registers once on
 `app` and routes by the `webContents` argument.
 
 **Pin the dependency versions.** electron-vite 5 constrains vite to ≤7, `@vitejs/plugin-react` 6

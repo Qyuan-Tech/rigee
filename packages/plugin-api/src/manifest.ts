@@ -1,7 +1,7 @@
 /**
  * The plugin contract, shared by main / preload / renderer.
  *
- * rigee's core is a shell: a window, workspaces, a tab framework, terminals, persistence and the
+ * Rigee's core is a shell: a window, workspaces, a tab framework, terminals, persistence and the
  * IPC spine. Everything that shows a document or a panel — the text editor, source control, the
  * browser, the PDF viewer — is a plugin. This file is the contract they are written against.
  *
@@ -206,7 +206,7 @@ export interface PluginContributions {
  * Real enforcement needs a separate context per plugin — a worker for the logic, a locked-down
  * frame for the UI, every contribution point becoming a message — which is a much larger change
  * and is not pretended at here. Installing a plugin runs its code with the application's
- * privileges, and rigee's install dialog says exactly that.
+ * privileges, and Rigee's install dialog says exactly that.
  */
 export type PluginPermission =
   /** Read files anywhere the user can. Any viewer needs this. */

@@ -1,9 +1,9 @@
-# rigee
+# Rigee
 
 One window for the whole loop: terminals, code, diffs and the web.
 
 If you write code mostly by directing AI agents, your attention is probably split across a
-terminal multiplexer, an editor you use to read diffs, and a browser full of docs. rigee puts
+terminal multiplexer, an editor you use to read diffs, and a browser full of docs. Rigee puts
 those three in one window without pretending any of them is something it isn't — the editor is
 the real VS Code editor, the browser is real Chromium, and the terminal is a real pseudo-terminal
 running your own shell.
@@ -64,7 +64,7 @@ None. Terminals run your login shell directly — `$SHELL` on macOS and Linux, P
 Windows — so there is nothing to install and no WSL requirement. The status bar shows which shell
 is in use.
 
-rigee recovers your real `PATH` at startup, so Homebrew, nvm, asdf and friends work even though
+Rigee recovers your real `PATH` at startup, so Homebrew, nvm, asdf and friends work even though
 an app launched from Finder inherits almost none of it.
 
 ## What works today
@@ -91,7 +91,7 @@ an app launched from Finder inherits almost none of it.
 
 ## Plugins
 
-rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
+Rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
 the text editor, the PDF reader, source control and the browser are each a folder under
 `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
@@ -110,16 +110,16 @@ The framework is [cordis](https://github.com/cordiverse/cordis): a plugin gets a
 everything it registers through that Context — commands, components, listeners, watchers, native
 views — is revoked when the plugin is disposed.
 
-**Plugins do not have to ship with rigee.** The contract is a published package,
+**Plugins do not have to ship with Rigee.** The contract is a published package,
 [`@rigee/plugin-api`](packages/plugin-api), and the ones in this repository import it exactly as an
 external plugin would — there is no back door into the shell for the built-in ones. Drop an npm
 package into `<userData>/plugins/<id>/` and it appears in the plugins view, **inert**: nothing of it
 is imported until you have approved that exact build. Approval is pinned to a hash of its contents,
 so an update has to be approved again.
 
-Be clear about what that does and does not buy. It is not a sandbox — a plugin runs with rigee's own
+Be clear about what that does and does not buy. It is not a sandbox — a plugin runs with Rigee's own
 access to your files, your terminals and the network, and the permission list in its manifest is
-what its author says it needs, not something rigee enforces. What is enforced is that unapproved
+what its author says it needs, not something Rigee enforces. What is enforced is that unapproved
 code does not run at all, and that code which changes has to be looked at again.
 
 `examples/hello-plugin/` is a complete one in 80 lines. See `docs/DEVELOPMENT.md` for the
@@ -130,7 +130,7 @@ contribution points and the traps.
 Each pane is its own pseudo-terminal running your login shell, and each terminal tab holds a tree
 of panes you can split and resize.
 
-They do not outlive the app: quitting rigee ends the shells and whatever they were running. If
+They do not outlive the app: quitting Rigee ends the shells and whatever they were running. If
 you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
 `screen` works exactly as it would in any other terminal.
 
@@ -152,7 +152,7 @@ the title bar.
 Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
 collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.
 
-## Where rigee keeps your data
+## Where Rigee keeps your data
 
 | | |
 |---|---|

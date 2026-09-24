@@ -1,5 +1,5 @@
 /**
- * The rigee domain model.
+ * The Rigee domain model.
  *
  * This file is the contract shared by main, preload and renderer. It contains no behaviour, and
  * its only imports are types from `@rigee/plugin-api` — which is itself runtime-free — so it can

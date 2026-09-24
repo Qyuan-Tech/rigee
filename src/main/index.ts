@@ -53,6 +53,26 @@ const mark = (label: string): void => {
 mark('main module evaluated')
 
 /**
+ * Where the data lives, pinned, so that the product's NAME can never move it again.
+ *
+ * Electron derives `userData` from the application's name, and on macOS that name comes from the
+ * bundle — so capitalising the product to `Rigee` would have silently relocated
+ * `~/Library/Application Support/rigee` to `…/Rigee`. It happens to survive on a default APFS
+ * volume, which is case-insensitive, and would NOT survive on a case-sensitive one or on Linux:
+ * every workspace, every restored tab, the key bindings and every signed-in browser session go
+ * quiet at once, with the data still sitting there under the old spelling. That already happened
+ * once, on the rename from onestop, and `adoptLegacyUserData` below is the apology for it.
+ *
+ * So the storage path is now stated outright instead of being a consequence of a display string.
+ * `rigee`, lower case, for ever: it is an identifier, and the name on the Dock is free to change
+ * without anybody having to think about this again.
+ *
+ * MUST be the first thing that touches paths — before the smoke override below, and before
+ * anything calls `getPath('userData')`.
+ */
+app.setPath('userData', join(app.getPath('appData'), 'rigee'))
+
+/**
  * Every smoke mode runs against a throwaway data directory.
  *
  * Without this the tests read and write the developer's real workspaces.json — and the

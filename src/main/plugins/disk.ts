@@ -125,11 +125,11 @@ function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string
     return { reason: `package.json is missing or not valid JSON (${message(err)})` }
   }
 
-  const rigee = (raw as { rigee?: unknown } | null)?.rigee
-  if (!rigee || typeof rigee !== 'object') {
+  const section = (raw as { rigee?: unknown } | null)?.rigee
+  if (!section || typeof section !== 'object') {
     return { reason: 'package.json has no "rigee" section' }
   }
-  const m = rigee as Record<string, unknown>
+  const m = section as Record<string, unknown>
 
   const id = m.id
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
@@ -145,7 +145,7 @@ function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string
   if (m.apiVersion !== PLUGIN_API_VERSION) {
     return {
       reason:
-        `built for plugin API ${String(m.apiVersion)}, this rigee implements ${PLUGIN_API_VERSION}`
+        `built for plugin API ${String(m.apiVersion)}, this Rigee implements ${PLUGIN_API_VERSION}`
     }
   }
   if (typeof m.version !== 'string' || typeof m.displayName !== 'string') {

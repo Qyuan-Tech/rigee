@@ -1,5 +1,5 @@
 appId: dev.rigee.app
-productName: rigee
+productName: Rigee
 directories:
   output: release/${version}
   buildResources: build
@@ -87,7 +87,11 @@ linux:
     - target: deb
       arch: [x64, arm64]
   category: Development
-  maintainer: rigee <dev@rigee.local>
+  # Lower case, unlike productName. On Linux the binary name is what ends up in $PATH, in the
+  # .desktop Exec line and in the window's WM_CLASS, and all three are conventionally lower case —
+  # `StartupWMClass` below has to match whatever Electron reports, so the two move together.
+  executableName: rigee
+  maintainer: Rigee <dev@rigee.local>
   synopsis: Agentic IDE
   # Without this, desktop environments cannot associate running windows with the .desktop entry.
   syncDesktopName: true

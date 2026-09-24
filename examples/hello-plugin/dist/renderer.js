@@ -3,7 +3,7 @@
  *
  * WHAT THIS FILE IS DEMONSTRATING is the three bare specifiers. `react`, `react/jsx-runtime` and
  * `@rigee/plugin-api` are left EXTERNAL by a plugin's build and resolved at runtime through the
- * import map in rigee's index.html, to the shell's own copies. Bundling them instead is the
+ * import map in Rigee's index.html, to the shell's own copies. Bundling them instead is the
  * failure worth knowing about: two Reacts in one window makes hooks throw the moment this panel
  * renders inside the shell's tree, and a second copy of @rigee/plugin-api has no host installed,
  * so every call from it throws instead.
