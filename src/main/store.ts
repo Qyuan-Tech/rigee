@@ -71,7 +71,7 @@ function migrate(raw: unknown): PersistedState {
   if (version === 0) return { ...EMPTY }
 
   const workspaces = Array.isArray(doc.workspaces) ? (doc.workspaces as Workspace[]) : []
-  const keybindings = { ...DEFAULT_KEYBINDINGS, ...((doc.keybindings as Partial<KeyBindings>) ?? {}) }
+  const keybindings = cleanKeybindings(doc.keybindings)
   let ui =
     doc.ui && typeof doc.ui === 'object' ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>) : {}
 
@@ -235,8 +235,33 @@ export function saveAllUi(ui: Record<WorkspaceId, WorkspaceUiState>): void {
 
 export function saveKeybindings(keybindings: KeyBindings): void {
   const state = loadState()
-  state.keybindings = keybindings
+  state.keybindings = cleanKeybindings(keybindings)
   flush()
+}
+
+/**
+ * Key bindings from disk or from the renderer, made safe to hold.
+ *
+ * Only the SHAPE is checked: strings where strings belong, and `binds` a list of them. Whether a
+ * line means anything is the renderer's call — it owns the keymap — and a line it cannot read is
+ * reported and skipped there rather than deleted here, so a binding written by a newer build that
+ * knows an action this one does not survives a round trip through the older one. Fields this
+ * build has never heard of are kept for the same reason.
+ */
+function cleanKeybindings(raw: unknown): KeyBindings {
+  const doc = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const str = (k: 'prefix' | 'splitRight' | 'splitDown' | 'closePane'): string =>
+    typeof doc[k] === 'string' ? (doc[k] as string) : DEFAULT_KEYBINDINGS[k]
+  const out: KeyBindings = {
+    ...doc,
+    prefix: str('prefix'),
+    splitRight: str('splitRight'),
+    splitDown: str('splitDown'),
+    closePane: str('closePane')
+  }
+  if (Array.isArray(doc.binds)) out.binds = doc.binds.filter((l): l is string => typeof l === 'string')
+  else delete out.binds
+  return out
 }
 
 export function saveDisabledPlugins(disabled: string[]): void {

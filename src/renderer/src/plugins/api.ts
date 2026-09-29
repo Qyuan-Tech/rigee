@@ -1,4 +1,5 @@
 import { SCRATCH_WORKSPACE_ID } from '@shared/types'
+import { requestReveal } from '../editing'
 import type { PluginId, ViewType } from '@rigee/plugin-api/manifest'
 import type {
   CustomTab,
@@ -195,6 +196,22 @@ export function closePluginTab(tabId: TabId): void {
 }
 
 /**
+ * Make a tab the one its column shows, and that column the active one — for a tab whose content
+ * took the keyboard where the shell cannot see it happen: a click into a browser page lands on a
+ * native view, not in the DOM. Only in the workspace on screen; a no-op when nothing would change,
+ * so a plugin can call it from a focus event without starting a loop.
+ */
+export function activateTab(tabId: TabId): void {
+  const s = useApp.getState()
+  const workspaceId = s.activeWorkspaceId
+  if (!workspaceId || workspaceOf(tabId) !== workspaceId) return
+  const row = rowOf(s, workspaceId)
+  const group = groupOfTab(row, tabId)
+  if (!group || (group.activeTabId === tabId && row.activeGroupId === group.id)) return
+  s.setActiveTab(workspaceId, tabId)
+}
+
+/**
  * Every tab id that exists: every GROUP of every workspace.
  *
  * For plugins holding a resource per tab — a native browser view, a parsed document — that has to
@@ -280,7 +297,9 @@ export function openFile(request: OpenFileRequest): TabId | null {
   // openTab re-activates an existing tab for the same file rather than adding this one, so read
   // back what the TARGET group ended up showing — see `openPluginTab` for the same reasoning.
   const after = rowOf(useApp.getState(), workspaceId)
-  return groupById(after, groupId)?.activeTabId ?? tab.id
+  const opened = groupById(after, groupId)?.activeTabId ?? tab.id
+  if (request.selection) requestReveal(opened, request.selection)
+  return opened
 }
 
 const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
@@ -317,7 +336,9 @@ export function useFocusedTabId(): TabId | null {
  */
 export function mountedTabIds(): TabId[] {
   const state = useApp.getState()
-  if (!state.activeWorkspaceId) return []
+  // A shell dialog is up. A browser page is a native view drawn OVER the document, so a page left
+  // on screen would hide the dialog and take the clicks meant for it: nothing counts as on screen.
+  if (!state.activeWorkspaceId || state.settingsOpen) return []
   return rowOf(state, state.activeWorkspaceId)
     .groups.map((g) => g.activeTabId)
     .filter((id): id is TabId => id !== null)
@@ -331,7 +352,7 @@ export function mountedTabIds(): TabId[] {
  */
 export function subscribeMountedTabs(listener: (tabIds: TabId[]) => void): () => void {
   return useApp.subscribe(
-    (s) => (s.activeWorkspaceId ? mountedKey(s) : ''),
+    (s) => (s.activeWorkspaceId && !s.settingsOpen ? mountedKey(s) : ''),
     () => listener(mountedTabIds())
   )
 }

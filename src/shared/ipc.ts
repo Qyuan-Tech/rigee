@@ -69,6 +69,11 @@ export interface IpcRequests {
     shell: string
     homeDir: string
   }
+  /**
+   * Ghostty's `toggle_fullscreen`. Through main because the renderer's Fullscreen API would put
+   * one ELEMENT full screen, not the window — the macOS green-button kind, with its own Space.
+   */
+  'window:toggleFullScreen': () => void
 
   // --- persistence -----------------------------------------------------
   'state:load': () => PersistedState
@@ -87,6 +92,21 @@ export interface IpcRequests {
    * main halves; the renderer stops its own and re-reads the contribution tables.
    */
   'state:setDisabledPlugins': (args: { disabled: string[] }) => void
+
+  // --- unsaved changes -------------------------------------------------
+  /** Which files have unsaved changes, reported as it changes. See src/main/unsaved.ts. */
+  'app:setDirtyFiles': (args: { files: string[] }) => void
+  /** The answer to an 'app:saveAll' event: whether everything was saved. */
+  'app:saveAllDone': (args: { id: number; ok: boolean }) => void
+  /** Ask the user about unsaved files a closing tab would take with it. A native dialog. */
+  'dialog:unsaved': (args: { files: string[]; quitting: boolean }) => 'save' | 'discard' | 'cancel'
+
+  // --- shortcuts -------------------------------------------------------
+  /**
+   * What each key types unshifted on the user's layout, for main's matching of keys pressed in a
+   * browser page (src/main/shortcuts.ts). Only the renderer can read the layout.
+   */
+  'shortcuts:setLayout': (args: { map: Record<string, string> }) => void
 
   // --- workspaces ------------------------------------------------------
   /** Opens a native directory picker; returns null if the user cancelled. */
@@ -121,11 +141,21 @@ export interface IpcRequests {
    * process clipboard has no such condition.
    */
   'clipboard:write': (args: { text: string }) => void
-  'clipboard:read': () => string
+  /**
+   * `selection` is the X11/Wayland PRIMARY selection — whatever was last selected anywhere, which
+   * is what Linux means by "paste the selection". Linux only; elsewhere it reads as empty.
+   */
+  'clipboard:read': (args?: { selection?: boolean }) => string
 
   // --- filesystem ------------------------------------------------------
   'fs:list': (dir: string) => FileStat[]
-  'fs:readFile': (path: string) => { content: string; truncated: boolean; tooLarge: boolean }
+  'fs:readFile': (path: string) => {
+    content: string
+    truncated: boolean
+    tooLarge: boolean
+    /** The bytes are not valid UTF-8, so `content` is lossy and must not be written back. */
+    notUtf8?: boolean
+  }
   'fs:writeFile': (args: { path: string; content: string }) => void
 
   // --- terminals ---------------------------------------------------------
@@ -178,6 +208,14 @@ export interface IpcEvents {
   'plugin:event': PluginEventEnvelope
   'fs:changed': { paths: string[] }
   'app:error': { scope: string; message: string }
+  /**
+   * An app shortcut pressed while a page had the keyboard — a browser tab, whose keys never reach
+   * the shell's renderer. Main matched it against the keymap; the renderer runs it. See
+   * src/main/shortcuts.ts.
+   */
+  'shortcuts:run': { action: string }
+  /** Main is about to quit or close the window and the user chose Save: save everything. */
+  'app:saveAll': { id: number }
 }
 
 export type IpcRequestChannel = keyof IpcRequests
@@ -186,11 +224,16 @@ export type IpcEventChannel = keyof IpcEvents
 export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'app:getVersions',
   'app:getPlatformInfo',
+  'window:toggleFullScreen',
   'state:load',
   'state:saveWorkspaces',
   'state:saveAllUi',
   'state:saveKeybindings',
   'state:setDisabledPlugins',
+  'app:setDirtyFiles',
+  'app:saveAllDone',
+  'dialog:unsaved',
+  'shortcuts:setLayout',
   'workspace:pickFolder',
   'workspace:probeFolder',
   'workspace:pickWorkspaceFile',
@@ -215,7 +258,9 @@ export const EVENT_CHANNELS: readonly IpcEventChannel[] = [
   'terminal:exit',
   'plugin:event',
   'fs:changed',
-  'app:error'
+  'app:error',
+  'shortcuts:run',
+  'app:saveAll'
 ] as const
 
 /**

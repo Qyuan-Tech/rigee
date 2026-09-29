@@ -1,18 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { groupOfTab } from '../groups'
-import { isMac, onEvent, rpc } from '../ipc'
-import { clipboardAction, formatChord, resolvePrefixKey } from '../keys'
-import { bindPane, leaves, neighbourOf, newLeaf, removeLeaf, setSizes, splitLeaf } from '../paneTree'
+import { isMac, onEvent, platform, rpc } from '../ipc'
+import { formatChord, resolvePrefixKey } from '../keys'
 import {
+  actionSpec,
+  decodeText,
+  formatTrigger,
+  isTextEditingTrigger,
+  splitAction,
+  splitDirection,
+  triggersFor,
+  type Binding
+} from '@shared/keymap'
+import {
+  bindPane,
+  cycleLeaf,
+  equalize,
+  leafInDirection,
+  leaves,
+  newLeaf,
+  nodeRects,
+  resizeSplit,
+  setSizes,
+  splitLeaf,
+  type Direction
+} from '../paneTree'
+import {
+  lookupShortcut,
+  markDispatched,
+  rememberPress,
+  repeatOutcome,
+  runAppAction,
+  unshiftedKey,
+  useKeymap
+} from '../shortcuts'
+import {
+  clearPane,
+  clearPaneSearch,
+  closeTerminalPane,
   copyPane,
-  disposeTerminal,
   ensureTerminal,
+  findInPane,
   getTerminal,
+  inheritFontSize,
+  newlineBytes,
+  paneFontSize,
   paneKey,
+  paneSearch,
   paneSelection,
   pastePane,
+  pasteSelection,
+  reapPanes,
+  resetPaneFontSize,
+  scrollPane,
+  scrollToSelection,
   selectAllInPane,
-  reapPanes
+  sendToPane,
+  setPaneFontSize
 } from '../terminals'
 import { rowOf, useApp } from '../store'
 import type { PaneNode, TerminalTab } from '@shared/types'
@@ -48,12 +92,27 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   })
   const [error, setError] = useState<string | null>(null)
   const bindings = useApp((s) => s.keybindings)
+  const keymap = useKeymap()
   const [prefixArmed, setPrefixArmed] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; leafId: string } | null>(null)
+  /**
+   * The pane filling the whole tab, if one is: Ghostty's `toggle_split_zoom`. Not persisted — it
+   * is a way of looking, like scroll position, and a tab that came back zoomed after a restart
+   * would look as if its other panes had been lost.
+   */
+  const [zoomed, setZoomed] = useState<string | null>(null)
+  /** The find bar, when open. It searches whichever pane is active. */
+  const [search, setSearch] = useState<{ query: string } | null>(null)
+  const [results, setResults] = useState<{ index: number; count: number } | null>(null)
+  /** Bumped to hand the find bar the keyboard, which it takes once it has rendered. */
+  const [searchFocus, setSearchFocus] = useState(0)
+  const container = useRef<HTMLDivElement>(null)
   // Synchronous mirror: the key handler runs before React can re-render.
   const armed = useRef(false)
 
   const cwd = workspace?.folders[0]?.path ?? workspace?.defaultCwd ?? '.'
+  const activeKey = paneKey(tab.id, tab.activeLeafId)
+  const zoomedLeaf = zoomed ? (leaves(tab.root).find((l) => l.id === zoomed) ?? null) : null
 
   const patch = useCallback(
     (fn: (t: TerminalTab) => Partial<TerminalTab>) => {
@@ -66,20 +125,10 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   const closeLeaf = useCallback(
     (leafId: string) => {
       if (!workspaceId) return
-      const leaf = leaves(tab.root).find((l) => l.id === leafId)
-      if (leaf?.paneId) void rpc['terminal:kill']({ paneId: leaf.paneId })
-      disposeTerminal(paneKey(tab.id, leafId))
-
-      const next = removeLeaf(tab.root, leafId)
-      if (next === null) {
-        // The last pane closed, so the tab has nothing left to show.
-        useApp.getState().closeTab(workspaceId, tab.id)
-        return
-      }
-      const focus = neighbourOf(tab.root, leafId) ?? leaves(next)[0]?.id ?? ''
-      updateTab(workspaceId, tab.id, { root: next, activeLeafId: focus })
+      setZoomed(null)
+      closeTerminalPane(workspaceId, tab.id, leafId)
     },
-    [tab.root, tab.id, updateTab, workspaceId]
+    [tab.id, workspaceId]
   )
 
   // A shell that exits takes its pane with it, the way closing a terminal should.
@@ -91,26 +140,191 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   }, [tab.root, closeLeaf])
 
   const split = useCallback(
-    (direction: 'row' | 'column') => {
-      const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, direction, newLeaf())
+    (direction: 'row' | 'column', before = false) => {
+      const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, direction, newLeaf(), before)
+      // The new pane starts at the size of the one it was split from, as it does in Ghostty.
+      inheritFontSize(paneKey(tab.id, newLeafId), paneKey(tab.id, tab.activeLeafId))
+      setZoomed(null)
       patch(() => ({ root, activeLeafId: newLeafId }))
     },
-    [tab.root, tab.activeLeafId, patch]
+    [tab.root, tab.activeLeafId, tab.id, patch]
+  )
+
+  const focusLeaf = useCallback(
+    (leafId: string | null): boolean => {
+      if (!leafId) return false
+      setZoomed(null)
+      patch(() => ({ activeLeafId: leafId }))
+      return true
+    },
+    [patch]
+  )
+
+  /** The tab's size in pixels, which is what turns Ghostty's pixel-based resize into fractions. */
+  const box = (): { width: number; height: number } => {
+    const r = container.current?.getBoundingClientRect()
+    return { width: r?.width ?? 0, height: r?.height ?? 0 }
+  }
+
+  const closeSearch = useCallback((): boolean => {
+    if (!search) return false
+    setSearch(null)
+    setResults(null)
+    getTerminal(activeKey)?.term.focus()
+    return true
+  }, [search, activeKey])
+
+  const openSearch = useCallback((query?: string) => {
+    // The search itself runs from the effect below, once the bar is subscribed to its results.
+    setSearch((s) => ({ query: query ?? s?.query ?? '' }))
+    setSearchFocus((n) => n + 1)
+  }, [])
+
+  const navigateSearch = useCallback(
+    (direction: 'next' | 'previous'): boolean => {
+      if (!search?.query) return false
+      findInPane(activeKey, search.query, direction)
+      return true
+    },
+    [search, activeKey]
   )
 
   /**
-   * tmux-style prefix handling, run from xterm's key hook so it intercepts before the bytes
-   * reach the shell. Returns false to swallow the key.
+   * Run a bound action with this pane focused. True when it did something — the answer a
+   * `performable:` binding needs to decide whether the key still goes to the program.
+   */
+  const runTerminalAction = useCallback(
+    (leafId: string, action: string): boolean => {
+      const [name, param] = splitAction(action)
+      const key = paneKey(tab.id, leafId)
+      const count = leaves(tab.root).length
+
+      switch (name) {
+        case 'copy_to_clipboard':
+          return copyPane(key)
+        case 'paste_from_clipboard':
+          void pastePane(key)
+          return true
+        case 'paste_from_selection':
+          void pasteSelection(key)
+          return true
+
+        case 'text': {
+          const bytes = decodeText(param)
+          return bytes !== null && sendToPane(key, bytes)
+        }
+        case 'esc':
+          return sendToPane(key, `\x1b${param}`)
+        case 'csi':
+          return sendToPane(key, `\x1b[${param}`)
+        case 'insert_newline':
+          return sendToPane(key, newlineBytes(key))
+
+        case 'increase_font_size':
+          return setPaneFontSize(key, paneFontSize(key) + (Number(param) || 1))
+        case 'decrease_font_size':
+          return setPaneFontSize(key, paneFontSize(key) - (Number(param) || 1))
+        case 'set_font_size':
+          return setPaneFontSize(key, Number(param))
+        case 'reset_font_size':
+          return resetPaneFontSize(key)
+
+        case 'clear_screen':
+          return clearPane(key)
+        case 'select_all':
+          selectAllInPane(key)
+          return true
+        case 'scroll_to_top':
+          return scrollPane(key, 'top')
+        case 'scroll_to_bottom':
+          return scrollPane(key, 'bottom')
+        case 'scroll_page_up':
+          return scrollPane(key, 'pageUp')
+        case 'scroll_page_down':
+          return scrollPane(key, 'pageDown')
+        case 'scroll_to_selection':
+          return scrollToSelection(key)
+
+        case 'new_split': {
+          let dir = (param || 'auto') as Direction | 'auto'
+          if (dir === 'auto') {
+            // The longer way, measured on screen: a tall narrow pane splits down.
+            const r = nodeRects(tab.root).get(leafId)
+            const { width, height } = box()
+            dir = r && r.w * width < r.h * height ? 'down' : 'right'
+          }
+          split(dir === 'left' || dir === 'right' ? 'row' : 'column', dir === 'left' || dir === 'up')
+          return true
+        }
+        case 'goto_split':
+          return focusLeaf(
+            param === 'previous' || param === 'next'
+              ? cycleLeaf(tab.root, leafId, param === 'next' ? 1 : -1)
+              : leafInDirection(tab.root, leafId, splitDirection(param))
+          )
+        case 'resize_split': {
+          const [dir, px] = param.split(',')
+          const root = resizeSplit(tab.root, leafId, dir as Direction, Number(px), box())
+          if (!root) return false
+          setZoomed(null)
+          patch(() => ({ root }))
+          return true
+        }
+        case 'equalize_splits':
+          if (count < 2) return false
+          patch((t) => ({ root: equalize(t.root) }))
+          return true
+        case 'toggle_split_zoom':
+          if (count < 2) return false
+          // A zoomed pane that is no longer in the tree — closed from outside, by Cmd+W with the
+          // keyboard elsewhere — counts as not zoomed, or this press would only clear the leftover.
+          setZoomed((z) => (z && leaves(tab.root).some((l) => l.id === z) ? null : leafId))
+          return true
+        case 'close_surface':
+          closeLeaf(leafId)
+          return true
+
+        case 'start_search':
+          openSearch()
+          return true
+        case 'search_selection': {
+          const text = paneSelection(key)
+          if (!text) return false
+          openSearch(text)
+          return true
+        }
+        case 'navigate_search':
+          return navigateSearch(param === 'previous' ? 'previous' : 'next')
+        case 'end_search':
+          return closeSearch()
+      }
+      return actionSpec(action)?.scope === 'app' ? runAppAction(action, key) : false
+    },
+    [tab.id, tab.root, split, focusLeaf, patch, closeLeaf, openSearch, navigateSearch, closeSearch]
+  )
+
+  /**
+   * Every key a focused pane receives, from xterm's key hook, before xterm turns it into bytes.
+   * Returns false to consume it; LeafView then cancels the event, which is what stops the browser
+   * sending a keypress for it (a swallowed key that still types itself) and Electron's menu acting
+   * on it as well (Cmd+V pasting twice).
    *
-   * Pressing the prefix twice sends a literal one, which is the escape hatch tmux gives you for
-   * Ctrl-A at the start of a line. An unbound key after the prefix is swallowed, also like tmux:
-   * passing it through would run a command the user did not mean to type.
+   * The tmux-style prefix goes first, then the shortcut table. Pressing the prefix twice sends a
+   * literal one, which is the escape hatch tmux gives you for Ctrl-A at the start of a line. An
+   * unbound key after the prefix is swallowed, also like tmux: passing it through would run a
+   * command the user did not mean to type.
    */
   const handleKey = useCallback(
     (leafId: string, e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true
+      // Mid-composition the key is the input method's — Enter commits a Pinyin candidate, it does
+      // not insert a newline or arm anything.
+      if (e.isComposing || e.keyCode === 229) return true
+      // The shortcuts dialog is up but does not have the keyboard yet — it is still arriving.
+      // Nothing typed in that moment is meant for the shell behind it, least of all Cmd+W.
+      if (useApp.getState().settingsOpen) return false
 
-      const outcome = resolvePrefixKey(e, bindings, armed.current)
+      const outcome = resolvePrefixKey(e, bindings, armed.current, unshiftedKey)
       switch (outcome.kind) {
         case 'arm':
           armed.current = true
@@ -124,10 +338,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
         case 'literal': {
           armed.current = false
           setPrefixArmed(false)
-          const handle = getTerminal(paneKey(tab.id, leafId))
-          if (handle?.paneId && workspaceId) {
-            window.rigee.writeTerminal(workspaceId, handle.paneId, outcome.bytes)
-          }
+          sendToPane(paneKey(tab.id, leafId), outcome.bytes)
           return false
         }
 
@@ -144,30 +355,40 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
           setPrefixArmed(false)
           return false
 
-        case 'passthrough': {
-          const clip = clipboardAction(e, isMac())
-          if (clip === 'copy') {
-            // Nothing selected: let it through rather than swallow. On macOS an empty Cmd+C
-            // should stay inert, not become a key that mysteriously does nothing.
-            if (!copyPane(paneKey(tab.id, leafId))) return true
-            return false
-          }
-          if (clip === 'paste') {
-            void pastePane(paneKey(tab.id, leafId))
-            return false
-          }
-
-          // The iTerm combos stay as a second way in, for anyone who reaches for them.
-          const mod = isMac() ? e.metaKey : e.ctrlKey
-          if (mod && e.key.toLowerCase() === 'd') {
-            split(e.shiftKey ? 'column' : 'row')
-            return false
-          }
-          return true
-        }
+        case 'passthrough':
+          break
       }
+
+      const binding = lookupShortcut(e)
+      if (!binding) return true
+      // Whatever happens next, this key has been answered here: the window listener must not run
+      // it again when an `unconsumed:` binding lets it through.
+      markDispatched(e)
+      const spec = actionSpec(binding.action)
+      // Held down, a key that must not repeat does what its first press did: swallowed if that
+      // was consumed — or the repeats would leak through to the program one at a time — and
+      // passed on if the first press went to the program anyway.
+      if (e.repeat && spec && !spec.repeats) return repeatOutcome(e) === false
+      const performed = runTerminalAction(leafId, binding.action)
+      const pass = (!performed && binding.performable) || binding.unconsumed
+      rememberPress(e, !pass)
+      return pass
     },
-    [bindings, split, closeLeaf, tab.id, workspaceId]
+    [bindings, split, closeLeaf, tab.id, runTerminalAction]
+  )
+
+  /*
+   * What the panes are handed is STABLE, forwarding to whatever the latest render produced. Each
+   * pane's mount effect depends on these, and it re-parents the xterm element, rebinds its input
+   * and takes the keyboard every time it runs — so a fresh function per render meant every render
+   * of this component, a keystroke in the find bar included, yanked focus back into the terminal.
+   */
+  const latest = useRef({ handleKey, patch })
+  latest.current = { handleKey, patch }
+  const onKey = useCallback((leafId: string, e: KeyboardEvent) => latest.current.handleKey(leafId, e), [])
+  const onBind = useCallback(
+    (leafId: string, paneId: string) => latest.current.patch((t) => ({ root: bindPane(t.root, leafId, paneId) })),
+    []
   )
 
   // Arming times out, so a stray prefix does not silently eat the next keystroke minutes later.
@@ -193,32 +414,83 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     reapPanes(tab.id, new Set(leaves(tab.root).map((l) => l.id)))
   }, [tab.root, tab.id])
 
+  // The find bar follows the active pane: its matches, its count, and its highlights, which come
+  // off a pane the moment it stops being the one searched.
+  const searchOpen = search !== null
+  const query = search?.query ?? ''
+  //
+  // The pane may not exist yet — a split made while the bar is open is still being created — so
+  // the subscription waits for it, and the count is cleared rather than left showing the last
+  // pane's.
+  const [searchReady, setSearchReady] = useState<string | null>(null)
+  useEffect(() => {
+    if (!searchOpen) return
+    let cancelled = false
+    let sub: { dispose(): void } | undefined
+    setResults(null)
+    void ensureTerminal(activeKey).then(() => {
+      if (cancelled) return
+      sub = paneSearch(activeKey)?.onDidChangeResults(({ resultIndex, resultCount }) =>
+        setResults({ index: resultIndex, count: resultCount })
+      )
+      setSearchReady(activeKey)
+    })
+    return () => {
+      cancelled = true
+      sub?.dispose()
+      clearPaneSearch(activeKey)
+      setSearchReady(null)
+    }
+  }, [searchOpen, activeKey])
+
+  useEffect(() => {
+    if (!searchOpen || searchReady !== activeKey) return
+    if (query) findInPane(activeKey, query, 'next', true)
+    else {
+      clearPaneSearch(activeKey)
+      setResults(null)
+    }
+  }, [searchOpen, searchReady, query, activeKey])
+
   if (!workspaceId || !workspace) return <div className="empty">No workspace.</div>
 
   return (
-    <div className="term">
+    <div className="term" ref={container}>
       <NodeView
-        node={tab.root}
+        node={zoomedLeaf ?? tab.root}
         tab={tab}
         workspaceId={workspaceId}
         cwd={cwd}
         inActiveGroup={inActiveGroup}
-        onBind={(leafId, paneId) => patch((t) => ({ root: bindPane(t.root, leafId, paneId) }))}
+        onBind={onBind}
         onFocus={(leafId) => patch(() => ({ activeLeafId: leafId }))}
         onClose={closeLeaf}
         onResize={(splitId, sizes) => patch((t) => ({ root: setSizes(t.root, splitId, sizes) }))}
         onError={setError}
-        onKey={handleKey}
+        onKey={onKey}
         onContextMenu={(leafId, x, y) => setMenu({ x, y, leafId })}
       />
 
+      {search && (
+        <SearchBar
+          focusToken={searchFocus}
+          query={search.query}
+          results={results}
+          onChange={(q) => setSearch({ query: q })}
+          onNavigate={navigateSearch}
+          onClose={closeSearch}
+          onAction={(action) => runTerminalAction(tab.activeLeafId, action)}
+        />
+      )}
+
       {prefixArmed && <div className="term__prefix">prefix</div>}
+      {zoomedLeaf && <div className="term__prefix term__prefix--left">zoomed</div>}
 
       {menu && (
         <PaneMenu
           x={menu.x}
           y={menu.y}
-          bindings={bindings}
+          hints={menuHints(keymap, bindings)}
           selection={paneSelection(paneKey(tab.id, menu.leafId))}
           onCopy={() => { copyPane(paneKey(tab.id, menu.leafId)); setMenu(null) }}
           onSelectAll={() => { selectAllInPane(paneKey(tab.id, menu.leafId)); setMenu(null) }}
@@ -234,10 +506,42 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   )
 }
 
+interface MenuHints {
+  copy: string
+  paste: string
+  splitRight: string
+  splitDown: string
+  closePane: string
+}
+
+/**
+ * What the context menu shows beside each item: the shortcut, else the prefix chord that does the
+ * same, else nothing. Read from the live keymap, so a key the user rebinds is the key the menu
+ * names.
+ */
+function menuHints(
+  keymap: ReturnType<typeof useKeymap>,
+  bindings: { prefix: string; splitRight: string; splitDown: string; closePane: string }
+): MenuHints {
+  const mac = isMac()
+  const key = (action: string): string => {
+    const t = triggersFor(keymap, action)[0]
+    return t ? formatTrigger(t, mac) : ''
+  }
+  const viaPrefix = (k: string): string => (bindings.prefix ? `${formatChord(bindings.prefix, mac)} ${k}` : '')
+  return {
+    copy: key('copy_to_clipboard'),
+    paste: key('paste_from_clipboard'),
+    splitRight: key('new_split:right') || viaPrefix(bindings.splitRight),
+    splitDown: key('new_split:down') || viaPrefix(bindings.splitDown),
+    closePane: key('close_surface') || viaPrefix(bindings.closePane)
+  }
+}
+
 function PaneMenu({
   x,
   y,
-  bindings,
+  hints,
   selection,
   onCopy,
   onSelectAll,
@@ -248,7 +552,7 @@ function PaneMenu({
 }: {
   x: number
   y: number
-  bindings: { prefix: string; splitRight: string; splitDown: string; closePane: string }
+  hints: MenuHints
   selection: string
   onCopy: () => void
   onSelectAll: () => void
@@ -257,24 +561,22 @@ function PaneMenu({
   onSplitDown: () => void
   onClose: () => void
 }): React.ReactElement {
-  const hint = (key: string): string =>
-    `${formatChord(bindings.prefix, isMac())} ${key}`
-  // The shortcut a terminal can spare: Ctrl+C and Ctrl+V are SIGINT and literal-quote.
-  const clip = isMac() ? { copy: '⌘C', paste: '⌘V' } : { copy: 'Ctrl+Shift+C', paste: 'Ctrl+Shift+V' }
-
   return (
     <div
       className="menu"
       style={{ left: x, top: y }}
-      onMouseDown={(e) => e.stopPropagation()}
+      // preventDefault as well: a button takes the focus on mousedown, and when the menu then
+      // unmounts it is left on <body> — the terminal would stop hearing the keyboard, so the Enter
+      // after "Paste" or the Cmd+C after "Select All" would go nowhere.
+      onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
     >
       <button className="menu__item" disabled={!selection} onClick={onCopy}>
         <span>Copy</span>
-        <span className="menu__hint">{clip.copy}</span>
+        <span className="menu__hint">{hints.copy}</span>
       </button>
       <button className="menu__item" onClick={onPaste}>
         <span>Paste</span>
-        <span className="menu__hint">{clip.paste}</span>
+        <span className="menu__hint">{hints.paste}</span>
       </button>
       {/* Reachable no matter what the running program has done with the mouse. */}
       <button className="menu__item" onClick={onSelectAll}>
@@ -284,19 +586,117 @@ function PaneMenu({
       <div className="menu__sep" />
       <button className="menu__item" onClick={onSplitRight}>
         <span>Split right</span>
-        <span className="menu__hint">{hint(bindings.splitRight)}</span>
+        <span className="menu__hint">{hints.splitRight}</span>
       </button>
       <button className="menu__item" onClick={onSplitDown}>
         <span>Split down</span>
-        <span className="menu__hint">{hint(bindings.splitDown)}</span>
+        <span className="menu__hint">{hints.splitDown}</span>
       </button>
       <div className="menu__sep" />
       <button className="menu__item" onClick={onClose}>
         <span>Close pane</span>
-        <span className="menu__hint">{hint(bindings.closePane)}</span>
+        <span className="menu__hint">{hints.closePane}</span>
       </button>
     </div>
   )
+}
+
+/**
+ * The find bar: Ghostty's search, on xterm's search addon.
+ *
+ * Its input holds the keyboard while open, so the navigation keys are answered here as well as
+ * from the terminal — Cmd+G from inside the box has to find the next match, not do nothing.
+ * Escape closes it and hands the keyboard back to the pane; it is only ever taken from the
+ * program while the bar is open, because Escape is how Claude Code is interrupted.
+ */
+function SearchBar({
+  focusToken,
+  query,
+  results,
+  onChange,
+  onNavigate,
+  onClose,
+  onAction
+}: {
+  focusToken: number
+  query: string
+  results: { index: number; count: number } | null
+  onChange: (query: string) => void
+  onNavigate: (direction: 'next' | 'previous') => boolean
+  onClose: () => boolean
+  /** Run a bound action as the pane being searched would. True when it did something. */
+  onAction: (action: string) => boolean
+}): React.ReactElement {
+  const inputRef = useRef<HTMLInputElement>(null)
+  // An effect, not requestAnimationFrame: animation frames stop in a window that is hidden or
+  // covered, and Cmd+F there would open a bar that does not have the keyboard.
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [focusToken])
+
+  const status = !query
+    ? ''
+    : !results || results.count === 0
+      ? 'No results'
+      : results.index < 0
+        ? `${results.count}+`
+        : `${results.index + 1} of ${results.count}`
+
+  return (
+    <div className="term__search" onMouseDown={(e) => e.stopPropagation()}>
+      <input
+        ref={inputRef}
+        value={query}
+        placeholder="Find"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            onClose()
+            return
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            onNavigate(e.shiftKey ? 'previous' : 'next')
+            return
+          }
+          const binding = lookupShortcut(e.nativeEvent)
+          const action = binding?.action ?? ''
+          const [name, param] = splitAction(action)
+          if (name === 'navigate_search') onNavigate(param === 'previous' ? 'previous' : 'next')
+          else if (name === 'end_search') onClose()
+          else if (name === 'start_search') inputRef.current?.select()
+          else if (binding && belongsToThePane(binding)) {
+            // The bar belongs to its pane, as Ghostty's does to its surface: Cmd+W from here
+            // closes that one split, not — through the window listener — the whole tab.
+            if (!onAction(action) && binding.performable) return
+          } else return
+          e.preventDefault()
+        }}
+      />
+      <span className="term__search-count">{status}</span>
+      <button className="icon-button" title="Previous match" onClick={() => onNavigate('previous')}>↑</button>
+      <button className="icon-button" title="Next match" onClick={() => onNavigate('next')}>↓</button>
+      <button className="icon-button" title="Close" onClick={() => onClose()}>×</button>
+    </div>
+  )
+}
+
+/**
+ * Whether a binding pressed in the find bar should act on the pane rather than on the text box.
+ * Not the clipboard or line-editing actions, not select-all, and not any key a text box uses to
+ * move or select — Shift+Home selects the query, whatever it does in the terminal.
+ */
+function belongsToThePane(binding: Binding): boolean {
+  const spec = actionSpec(binding.action)
+  if (!spec) return false
+  const [name] = splitAction(binding.action)
+  if (name === 'close_surface') return true
+  if (isTextEditingTrigger(binding.trigger)) return false
+  return spec.scope === 'terminal' && spec.group !== 'Clipboard' && spec.group !== 'Editing' && name !== 'select_all'
 }
 
 interface NodeProps {
@@ -406,7 +806,18 @@ function LeafView({
    * would be churn for nothing. A mirror ref is always current by the time the awaits are done.
    */
   const mayFocus = useRef(false)
-  mayFocus.current = active && inActiveGroup
+  // Never while the shortcuts dialog is up: a shell that finishes starting behind it must not take
+  // the keyboard away from the dialog the user is typing into.
+  mayFocus.current = active && inActiveGroup && !useApp.getState().settingsOpen
+  /**
+   * Whether this pane is still on screen — as distinct from the effect below merely re-running.
+   * Declared first so it is set before that effect runs, StrictMode's second mount included.
+   */
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -428,12 +839,20 @@ function LeafView({
             cols: handle.term.cols,
             rows: handle.term.rows
           })
-          if (cancelled) {
+          // Killed only if the pane is really gone. An effect that merely re-ran — the pane was
+          // clicked while its shell was still starting, which changes `active` — has a successor
+          // that saw the spawn in flight and did not start another; dropping this one would leave
+          // the pane with no shell at all, for good.
+          if (!mounted.current) {
             void rpc['terminal:kill']({ paneId })
             return
           }
           handle.paneId = paneId
+          // A new process has not asked for anything yet, whatever the last one in this pane did.
+          handle.modifyOtherKeys = 0
           onBind(leaf.id, paneId)
+          // Binding changes `leaf.paneId`, which re-runs this effect; that run does the wiring.
+          if (cancelled) return
         } catch (e) {
           onError(e instanceof Error ? e.message : String(e))
           return
@@ -444,7 +863,20 @@ function LeafView({
 
       // Runs before xterm turns the key into bytes, which is the only place a prefix binding can
       // intercept without racing the shell.
-      handle.term.attachCustomKeyEventHandler((e) => onKey(leaf.id, e))
+      //
+      // A consumed keydown is cancelled HERE, in one place, rather than by each branch that
+      // consumes one — forgetting it once is how Cmd+V came to paste twice. Returning false alone
+      // is not enough: xterm then returns without cancelling, so the browser still produces a
+      // keypress (the swallowed key types itself anyway) and Electron still runs the menu item
+      // bound to the same chord.
+      handle.term.attachCustomKeyEventHandler((e) => {
+        // Alt+F4 on Windows closes the window — but only if nobody handles the key, and xterm would
+        // turn it into an escape sequence and cancel it. Not ours, not xterm's, not cancelled.
+        if (e.key === 'F4' && e.altKey && platform() === 'win32') return false
+        const pass = onKey(leaf.id, e)
+        if (!pass && e.type === 'keydown') e.preventDefault()
+        return pass
+      })
 
       // Rebind rather than stack: this effect re-runs once the pane id is assigned.
       handle.input?.dispose()
@@ -467,6 +899,21 @@ function LeafView({
     // pane is what should hand it the keyboard, and dropping it from here would mean clicking
     // between panes no longer focuses the one you clicked.
   }, [key, leaf.id, leaf.paneId, workspaceId, cwd, onBind, onError, onKey, active])
+
+  // Clicking into this column — its tab strip, say — hands its active pane the keyboard. The mount
+  // effect above deliberately does not re-run for that; this is the whole of what it would do.
+  useEffect(() => {
+    if (active && inActiveGroup && !useApp.getState().settingsOpen) getTerminal(key)?.term.focus()
+  }, [active, inActiveGroup, key])
+
+  // And whenever the keyboard has gone nowhere — the settings dialog closed, a tab was dragged, a
+  // menu item unmounted under the cursor — the pane the user was working in takes it back. Only
+  // from <body>: never from a text box, an editor or the find bar that somebody chose to type in.
+  useEffect(() => {
+    if (!active || !inActiveGroup || useApp.getState().settingsOpen) return
+    const focused = document.activeElement
+    if (!focused || focused === document.body) getTerminal(key)?.term.focus()
+  })
 
   // The pty's geometry must always match what xterm is showing, or line wrapping goes wrong.
   useEffect(() => {

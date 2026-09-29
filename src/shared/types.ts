@@ -236,6 +236,16 @@ export interface KeyBindings {
   splitRight: string
   splitDown: string
   closePane: string
+  /**
+   * The user's changes to the default shortcuts, as Ghostty keybind lines applied in order on top
+   * of the platform's defaults — `super+k=unbind`, `super+shift+k=clear_screen`. See keymap.ts.
+   *
+   * Only the DIFFERENCES are stored, never the whole table, so a default that changes in a later
+   * release reaches everybody who had not changed that key themselves. Nested in here rather than
+   * beside it because an older build rebuilds the document from the fields it knows at the top
+   * level, and would drop a sibling on its first save; it carries this object through whole.
+   */
+  binds?: string[]
 }
 
 export const DEFAULT_KEYBINDINGS: KeyBindings = {

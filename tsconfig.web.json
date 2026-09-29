@@ -8,6 +8,7 @@
     "plugins/shared/**/*",
     "plugins/*/manifest.ts",
     "plugins/*/protocol.ts",
+    "plugins/*/types.ts",
     "plugins/*/renderer/**/*"
   ],
   "compilerOptions": {

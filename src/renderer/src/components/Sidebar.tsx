@@ -12,7 +12,9 @@ import {
   TerminalIcon
 } from '../icons'
 import { resolveViewType } from '../plugins/registry'
-import { nextTabId, nextWorkspaceId, useActiveWorkspace, useApp } from '../store'
+import { closeTabsSafely } from '../editing'
+import { allTabs } from '../groups'
+import { nextTabId, nextWorkspaceId, rowOf, useActiveWorkspace, useApp } from '../store'
 import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
 
 /**
@@ -214,7 +216,17 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
                     <button
                       className="icon-button"
                       title="Remove workspace"
-                      onClick={(e) => { e.stopPropagation(); remove(w.id); persist() }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        // Its tabs go with it, so its unsaved files are asked about first, exactly as
+                        // closing those tabs one by one would ask.
+                        const ids = allTabs(rowOf(useApp.getState(), w.id)).map((t) => t.id)
+                        void closeTabsSafely(w.id, ids).then((closed) => {
+                          if (!closed) return
+                          remove(w.id)
+                          persist()
+                        })
+                      }}
                     >
                       <CloseIcon size={11} />
                     </button>

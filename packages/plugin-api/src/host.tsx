@@ -59,6 +59,30 @@ export interface OpenFileRequest {
   readOnly?: boolean
   /** As on `PluginTabRequest`: put it beside this tab rather than in the active group. */
   nearTabId?: TabId
+  /**
+   * Where to put the cursor — a search result's match. Delivered to the editor through
+   * `onRevealInFile`, whether the tab is new or was already open.
+   */
+  selection?: TextSelection
+}
+
+/** A place in a text file. 1-based, columns in UTF-16 code units, as Monaco counts them. */
+export interface TextSelection {
+  line: number
+  column: number
+  /** Defaults to `line`. */
+  endLine?: number
+  /** Defaults to `column`: a caret, not a range. */
+  endColumn?: number
+}
+
+/**
+ * How the shell saves or drops a file's unsaved changes, when a tab closing or the app quitting
+ * asks the user and the user answers. Both reject to say they could not.
+ */
+export interface FileHandlers {
+  save: () => Promise<void>
+  discard: () => Promise<void>
 }
 
 /** What `pluginTabs` reports about one of a plugin's own tabs. */
@@ -96,6 +120,7 @@ export interface ShellHost {
     patch: { title?: string; tooltip?: string; key?: string; state?: Record<string, unknown> }
   ) => void
   closePluginTab: (tabId: TabId) => void
+  activateTab: (tabId: TabId) => void
   pluginTabs: (viewType: ViewType) => PluginTabInfo[]
   liveTabIds: () => Set<TabId>
   subscribeTabs: (listener: (live: Set<TabId>) => void) => () => void
@@ -119,8 +144,13 @@ export interface ShellHost {
     patch: Record<string, unknown>
   ) => void
 
+  // --- editing ------------------------------------------------------------
+  setFileDirty: (path: string, dirty: boolean, handlers?: FileHandlers) => void
+  onRevealInFile: (tabId: TabId, cb: (selection: TextSelection) => void) => () => void
+  onViewRevealed: (viewId: string, cb: () => void) => () => void
+
   // --- files (permissioned) ----------------------------------------------
-  readFile: (path: string) => Promise<{ content: string; truncated: boolean; tooLarge: boolean }>
+  readFile: (path: string) => Promise<{ content: string; truncated: boolean; tooLarge: boolean; notUtf8?: boolean }>
   writeFile: (path: string, content: string) => Promise<void>
   listDir: (path: string) => Promise<FileStat[]>
 
@@ -210,6 +240,14 @@ export const patchPluginTab = (
 export const closePluginTab = (tabId: TabId): void => shell().closePluginTab(tabId)
 
 /**
+ * Make this tab the one its column shows, and its column the active one. For content that takes
+ * the keyboard where the shell cannot see it — a click inside a native view — so that the shell's
+ * idea of "where the user is working", which every shortcut acts on, follows. A no-op when it is
+ * already so.
+ */
+export const activateTab = (tabId: TabId): void => shell().activateTab(tabId)
+
+/**
  * Every open tab of one of this plugin's own view types, across every workspace.
  *
  * Exists for one job: repairing tabs restored from a persisted state older than the plugin. The
@@ -291,10 +329,38 @@ export const setPluginState = (
   patch: Record<string, unknown>
 ): void => shell().setPluginState(pluginId, workspaceId, patch)
 
-/** Needs `files:read`. */
+/**
+ * Say whether a file has unsaved changes, and how to save or drop them.
+ *
+ * The shell marks its tabs with a dot and, when one would close — or the app would quit — with
+ * the changes unsaved, asks the user and calls `save` or `discard`. Keyed by PATH, not tab: one
+ * document can be open in two columns, and it is the document that is unsaved.
+ */
+export const setFileDirty = (path: string, dirty: boolean, handlers?: FileHandlers): void =>
+  shell().setFileDirty(path, dirty, handlers)
+
+/**
+ * Where the cursor should go in the file this tab shows — the target of a search result or any
+ * other `openFile({ selection })`. A request made before the editor subscribed is delivered as it
+ * subscribes, so subscribe on mount. Wrap the returned undo in the unmount.
+ */
+export const onRevealInFile = (tabId: TabId, cb: (selection: TextSelection) => void): (() => void) =>
+  shell().onRevealInFile(tabId, cb)
+
+/**
+ * Called when the user asks for this side panel by keyboard — the panel should take the keyboard,
+ * as a search box does. Delivered on subscribe if the request came before the panel mounted.
+ */
+export const onViewRevealed = (viewId: string, cb: () => void): (() => void) =>
+  shell().onViewRevealed(viewId, cb)
+
+/**
+ * Needs `files:read`. `notUtf8` means the bytes were not valid UTF-8 and `content` is a lossy
+ * decoding — show it, but never write it back.
+ */
 export const readFile = (
   path: string
-): Promise<{ content: string; truncated: boolean; tooLarge: boolean }> => shell().readFile(path)
+): Promise<{ content: string; truncated: boolean; tooLarge: boolean; notUtf8?: boolean }> => shell().readFile(path)
 
 /** Needs `files:write`. */
 export const writeFile = (path: string, content: string): Promise<void> =>

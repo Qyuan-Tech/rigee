@@ -214,6 +214,14 @@ export const FilesIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** A magnifier: searching every file. */
+export const SearchIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <circle cx="7" cy="7" r="4.25" />
+    <path d="m10.2 10.2 3.3 3.3" />
+  </Svg>
+)
+
 /** A puzzle piece: plugins. The one icon everyone already reads as "extensions". */
 export const PluginIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>
@@ -251,5 +259,6 @@ export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
   terminal: TerminalIcon,
   branch: BranchIcon,
   folder: FolderIcon,
-  plugin: PluginIcon
+  plugin: PluginIcon,
+  search: SearchIcon
 }

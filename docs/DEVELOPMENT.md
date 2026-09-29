@@ -16,7 +16,8 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm build` | typecheck, then build main / preload / renderer |
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
-| `pnpm panes:selftest` | 139 checks on the split tree, the group row, key chords and the tab strip |
+| `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
+| `pnpm panes:selftest` | 273 checks on the split tree, the group row, key chords, the shortcut table and the tab strip |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
@@ -25,6 +26,8 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:persist` | builds tabs, splits and a two-group row, then reads back what reached disk |
 | `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
+| `pnpm smoke:keys` | real keystrokes through the input pipeline: Shift+Enter's bytes, one paste, no leaked keys, splits, tabs, find |
+| `pnpm smoke:editing` | workspace search, opening a result, saving, the unsaved-changes prompts, a file changed on disk, in-file find |
 | `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
@@ -54,6 +57,27 @@ is the check refusing to pass vacuously rather than a regression.
 `smoke:migrate` needs no fixture directory: it writes its own v2 `workspaces.json` into the
 throwaway userData directory during module evaluation, which is the only moment early enough —
 `loadState()` caches for the life of the process, so a document planted after boot is never read.
+
+### Smoke runs that stay out of your way
+
+`smoke:keys` and `smoke:editing` never show their window or take the foreground. The editing mode
+answers the unsaved-changes prompts through `RIGEE_SMOKE_UNSAVED_ANSWER` instead of putting a dialog
+on screen. `smoke:keys` also runs its panes on a sink
+(`cat >/dev/null`) instead of your shell: it presses Enter, and in a real shell every one of those
+keystrokes would be a command in your history. It does write to the clipboard — saved and put back
+— so do not copy anything while it runs.
+
+Any other mode can be kept off screen the same way:
+
+```bash
+RIGEE_SMOKE_HIDDEN=1 SHELL=/bin/sh HISTFILE=/dev/null pnpm smoke:split
+```
+
+Keystrokes in `smoke:keys` go through `webContents.sendInputEvent` — keyDown, char, keyUp — which is
+the real input pipeline, keypress included; the other modes dispatch DOM events, which cannot show
+a key that was swallowed and then typed itself anyway. Neither can reach Electron's menu, which
+acts only on real OS key events; that is why the keys smoke asserts every consumed keydown was
+cancelled, which is what keeps the menu from acting on it too.
 
 ### Screenshots
 
@@ -88,6 +112,7 @@ plugins/       the features, one folder each — OUTSIDE src/, see below
   explorer/      the file tree
   pdf/           the PDF reader
   scm/           git: status, staging by line, commits, diffs
+  search/        find in every file of the workspace
   browser/       Chromium tabs as native WebContentsViews
   shared/        what more than one plugin needs (the Monaco loader). Not a plugin.
 packages/

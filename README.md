@@ -74,9 +74,13 @@ an app launched from Finder inherits almost none of it.
 | Workspaces — multiple folders, persisted across restarts | works |
 | File explorer — lazy-loaded tree | works |
 | Editor — Monaco, syntax highlighting, view state kept per tab | works |
+| Saving — Cmd/Ctrl+S, a dot on unsaved tabs, asked before closing or quitting over them | works |
+| Find and replace in a file — Cmd+F, Cmd+Option+F (Ctrl+F, Ctrl+H) | works |
+| Search the workspace — every file, case / whole word / regex, click a result to jump to it | works |
 | Browser tabs — navigation, persistent logins, DevTools, `target=_blank` opens a tab | works |
 | Terminals — one pseudo-terminal per pane, running your login shell | works |
-| Split panes — Cmd/Ctrl+D beside, Shift+Cmd/Ctrl+D below, draggable dividers | works |
+| Split panes — Cmd+D beside, Shift+Cmd+D below (Ctrl+Shift+O / E elsewhere), draggable dividers | works |
+| Keyboard shortcuts — Ghostty's defaults, every one rebindable, Ghostty config lines accepted | works |
 | Scratch workspace — terminals without setting anything up | works |
 | Source control — status, diff, stage, unstage, discard, commit, amend | works |
 | Staging individual hunks and lines, and discarding them | works |
@@ -134,9 +138,54 @@ They do not outlive the app: quitting Rigee ends the shells and whatever they we
 you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
 `screen` works exactly as it would in any other terminal.
 
-Splitting uses a tmux-style prefix: press the prefix, release it, then the action key. Right-click
-a pane for the same commands with their current bindings shown, and change them from the gear in
-the title bar.
+### Keyboard shortcuts
+
+The shortcuts are [Ghostty](https://ghostty.org)'s defaults, so the same keys do the same things in
+both. Every one can be changed from the gear in the title bar (or `Cmd`+`,`), by pressing the new
+key, or by pasting `keybind = …` lines straight out of a Ghostty config. Right-click a pane to see
+the current ones.
+
+| | macOS | Windows / Linux |
+|---|---|---|
+| Newline without submitting (Claude Code, zsh) | `Shift`+`Enter` | `Shift`+`Enter` |
+| Copy / paste | `Cmd`+`C` / `Cmd`+`V` | `Ctrl`+`Shift`+`C` / `Ctrl`+`Shift`+`V` |
+| Paste the last selection | `Shift`+`Cmd`+`V` | `Shift`+`Insert` (the clipboard, on Windows) |
+| Split right / down | `Cmd`+`D` / `Shift`+`Cmd`+`D` | `Ctrl`+`Shift`+`O` / `Ctrl`+`Shift`+`E` |
+| Previous / next pane | `Cmd`+`[` / `Cmd`+`]` | `Ctrl`+`Super`+`[` / `]` |
+| Pane in a direction | `Cmd`+`Option`+arrow | `Ctrl`+`Alt`+arrow |
+| Move a divider / even them out | `Cmd`+`Ctrl`+arrow / `Cmd`+`Ctrl`+`=` | `Ctrl`+`Shift`+`Super`+arrow |
+| Zoom a pane | `Shift`+`Cmd`+`Enter` | `Ctrl`+`Shift`+`Enter` |
+| Close the pane, then the tab | `Cmd`+`W` | — |
+| New terminal tab / close tab | `Cmd`+`T` / `Cmd`+`Option`+`W` | `Ctrl`+`Shift`+`T` / `Ctrl`+`Shift`+`W` |
+| Go to tab 1–8, the last tab | `Cmd`+`1`…`8`, `Cmd`+`9` | `Alt`+`1`…`8`, `Alt`+`9` |
+| Previous / next tab | `Shift`+`Cmd`+`[` / `]`, `Ctrl`+`Tab` | `Ctrl`+`Page Up` / `Down`, `Ctrl`+`Tab` |
+| Bigger / smaller / reset text | `Cmd`+`=` / `Cmd`+`-` / `Cmd`+`0` | `Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0` |
+| Clear screen and scrollback | `Cmd`+`K` | — |
+| Find in the terminal / next / previous | `Cmd`+`F` / `Cmd`+`G` / `Shift`+`Cmd`+`G` | `Ctrl`+`Shift`+`F` |
+| Search every file in the workspace | `Shift`+`Cmd`+`F` | `Ctrl`+`Shift`+`Alt`+`F` |
+| Start / end of line, delete line | `Cmd`+`←` / `Cmd`+`→`, `Cmd`+`Backspace` | — |
+| Back / forward a word | `Option`+`←` / `Option`+`→` | — |
+| Go to column 1–9 | `Cmd`+`Option`+`1`…`9` | `Alt`+`Shift`+`1`…`9` |
+| Toggle the left / right panel | `Cmd`+`B` / `Cmd`+`Option`+`B` | `Ctrl`+`Shift`+`B` / `Ctrl`+`Shift`+`G` |
+| Split into a new column | `Cmd`+`\` | `Ctrl`+`Shift`+`\` |
+| Full screen | `Cmd`+`Enter`, `Cmd`+`Ctrl`+`F` | `F11` |
+
+In the editor the keys are Monaco's own, as in VS Code: `Cmd`+`S` saves, `Cmd`+`F` finds in the file,
+`Cmd`+`Option`+`F` replaces, `Cmd`+`G` finds the next one.
+
+While a browser tab has the keyboard, the page gets its keys — `Cmd`+`B` is bold in a web editor,
+not the side panel — except the ones every browser keeps for itself: switching, opening and closing
+tabs, plus searching the workspace and opening the shortcuts.
+
+On Windows and Linux, plain `Ctrl`+letter stays with the shell — `Ctrl`+`C` interrupts, `Ctrl`+`D`
+ends input, `Ctrl`+`W` deletes a word — which is why everything there has a `Shift` in it.
+
+Shift+Enter sends ESC CR, the same thing Claude Code's own `/terminal-setup` binds in VS Code. A
+program that turns on xterm's modifyOtherKeys, as vim does, gets `CSI 27;2;13~` instead, so Shift+Enter
+in vim's insert mode is still a newline rather than a trip to normal mode.
+
+There is also a tmux-style prefix, for anybody whose fingers expect one: press it, release it, then
+one key. It is set, or turned off, in the same place.
 
 | | |
 |---|---|
@@ -144,10 +193,6 @@ the title bar.
 | Split down | `Ctrl`+`A` then `-` |
 | Close pane | `Ctrl`+`A` then `x` |
 | Send a literal `Ctrl`+`A` | `Ctrl`+`A` twice |
-| Split right / down (also) | `Cmd`/`Ctrl` + `D`, `Shift` + `Cmd`/`Ctrl` + `D` |
-| New terminal tab | `Cmd`/`Ctrl` + `T` |
-| Close tab | `Cmd`/`Ctrl` + `W` |
-| Toggle the sidebars | `Cmd`/`Ctrl` + `B`, `Shift` + `Cmd`/`Ctrl` + `G` |
 
 Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
 collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.

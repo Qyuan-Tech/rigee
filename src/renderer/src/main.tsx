@@ -12,6 +12,7 @@ import { resolveViewType } from './plugins/registry'
 import { useApp, newTerminalTab } from './store'
 import { getTerminal, paneKey } from './terminals'
 import { applyFonts } from './fonts'
+import { loadKeyboardLayout } from './shortcuts'
 import './theme.css'
 
 /**
@@ -54,6 +55,8 @@ bind('view', 'shell.plugins', PluginsView)
 
 // Before render: xterm reads these at construction time.
 applyFonts()
+// Asynchronous, and the US layout stands in until it lands, so it holds nothing up.
+loadKeyboardLayout()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('#root missing from index.html')

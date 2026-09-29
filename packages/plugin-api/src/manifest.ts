@@ -58,6 +58,7 @@ export type IconName =
   | 'branch'
   | 'folder'
   | 'plugin'
+  | 'search'
 
 /**
  * A file matcher, in the only two forms worth supporting before someone asks for a third:

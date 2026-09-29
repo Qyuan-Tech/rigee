@@ -25,6 +25,7 @@ import { Notice } from '../components/Notice'
 import { editorFontSize, monoFamily } from '../fonts'
 import * as icons from '../icons'
 import { isMac, rpc } from '../ipc'
+import { onRevealInFile, onViewRevealed, setFileDirty } from '../editing'
 import { useActiveWorkspace } from '../store'
 import * as api from './api'
 
@@ -62,6 +63,7 @@ const iconSet: ShellHost['icons'] = {
   CollapseAll: icons.CollapseAllIcon,
   CollapseLeft: icons.CollapseLeftIcon,
   CollapseRight: icons.CollapseRightIcon,
+  Search: icons.SearchIcon,
   Chevron: icons.ChevronIcon
 }
 
@@ -78,6 +80,7 @@ const host: ShellHost = {
   openFile: api.openFile,
   patchPluginTab: api.patchPluginTab,
   closePluginTab: api.closePluginTab,
+  activateTab: api.activateTab,
   pluginTabs: api.pluginTabs,
   liveTabIds: api.liveTabIds,
   subscribeTabs: api.subscribeTabs,
@@ -91,6 +94,10 @@ const host: ShellHost = {
   pluginState: api.pluginState,
   usePluginState: api.usePluginState,
   setPluginState: api.setPluginState,
+
+  setFileDirty,
+  onRevealInFile,
+  onViewRevealed,
 
   // The three file operations a plugin may perform, named rather than handed the whole `rpc`
   // object. That object also carries `terminal:spawn`, `state:saveWorkspaces` and every other

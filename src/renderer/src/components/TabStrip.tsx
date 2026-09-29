@@ -11,6 +11,7 @@ import {
   isDuplicableViewType,
   ownerOf
 } from '../plugins/registry'
+import { closeTabsSafely } from '../editing'
 import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useRow } from '../store'
 import { isFileTab, tabsToClose } from '../tabs'
 import type { GroupId, Tab, TabId } from '@shared/types'
@@ -48,8 +49,10 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
   const isActiveGroup = row.activeGroupId === groupId
 
   const setActiveTab = useApp((s) => s.setActiveTab)
-  const closeTab = useApp((s) => s.closeTab)
-  const closeTabs = useApp((s) => s.closeTabs)
+  // Every close from the strip goes through the check for unsaved changes.
+  const closeTab = (workspaceId: string, tabId: TabId): void => { void closeTabsSafely(workspaceId, [tabId]) }
+  const closeTabs = (workspaceId: string, tabIds: TabId[]): void => { void closeTabsSafely(workspaceId, tabIds) }
+  const dirtyFiles = useApp((s) => s.dirtyFiles)
   const openTab = useApp((s) => s.openTab)
   const moveTab = useApp((s) => s.moveTab)
   const splitTab = useApp((s) => s.splitTab)
@@ -175,11 +178,12 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           <span className="tab__icon"><TabIcon tab={tab} /></span>
           <span className="tab__label">{tab.title}</span>
           <button
-            className="tab__close"
+            className={`tab__close${tab.kind === 'editor' && dirtyFiles[tab.filePath] ? ' tab__close--dirty' : ''}`}
             onClick={(e) => { e.stopPropagation(); closeTab(workspace.id, tab.id) }}
-            title="Close tab"
+            title={tab.kind === 'editor' && dirtyFiles[tab.filePath] ? 'Unsaved changes — close tab' : 'Close tab'}
           >
             <CloseIcon size={11} />
+            <span className="tab__dirty" aria-hidden="true" />
           </button>
         </div>
       ))}

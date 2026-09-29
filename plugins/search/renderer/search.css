@@ -1,0 +1,157 @@
+/*
+ * The search panel. Imported by the plugin's renderer entry, so a window that never opens the
+ * panel never fetches it. The palette is the app's (theme.css), not this plugin's.
+ */
+
+.search {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.search__box {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 8px 6px;
+  padding: 0 3px 0 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.search__box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.search__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.search__input:focus {
+  border: none;
+  box-shadow: none;
+}
+
+.search__toggle {
+  height: 20px;
+  min-width: 22px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.search__toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.search__toggle--on {
+  color: var(--fg-bright);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.search__results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 10px;
+}
+
+.search__note,
+.search__summary,
+.search__error {
+  padding: 4px 12px 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.search__summary {
+  color: var(--fg-faint);
+}
+
+.search__error {
+  color: var(--git-deleted);
+  user-select: text;
+}
+
+.search__file-row {
+  gap: 5px;
+  padding-left: 6px;
+}
+
+.search__chevron {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  color: var(--fg-faint);
+}
+
+.search__file-name {
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.search__file-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.search__count {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: var(--bg-raised);
+}
+
+.search__match {
+  gap: 8px;
+  padding-left: 30px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.search__line {
+  min-width: 28px;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+
+.search__preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--fg-muted);
+}
+
+.search__preview mark {
+  color: var(--fg-bright);
+  background: #e3bb5e40;
+  border-radius: 2px;
+  outline: 1px solid #e3bb5e80;
+}
+
+.search__file-row:focus,
+.search__match:focus {
+  outline: none;
+  background: var(--bg-selected);
+}

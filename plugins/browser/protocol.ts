@@ -237,7 +237,13 @@ export interface LoadErrorEvent {
   message: string
 }
 
+/** A page took the keyboard — the user clicked into it. */
+export interface FocusedEvent {
+  viewId: ViewId
+}
+
 export interface BrowserEvents {
+  focused: FocusedEvent
   state: StateEvent
   tabRequested: TabRequestedEvent
   authRequested: AuthRequestedEvent

@@ -1,4 +1,4 @@
-import { openPluginTab, subscribeTabs } from '@rigee/plugin-api'
+import { activateTab, openPluginTab, subscribeTabs } from '@rigee/plugin-api'
 import { AuthDialog } from './AuthDialog'
 import { BrowserPane, HOME_URL } from './BrowserPane'
 import { bindRpc, dispatch } from './rpc'
@@ -6,6 +6,7 @@ import { adoptView, reap, subscribeVisibleViews, tabIdFor } from './views'
 import './browser.css'
 import type {
   AuthRequestedEvent,
+  FocusedEvent,
   LoadErrorEvent,
   StateEvent,
   TabRequestedEvent
@@ -41,6 +42,12 @@ const plugin: Plugin = {
     rpc.on<StateEvent>('state', (payload) => dispatch('state', payload))
     rpc.on<AuthRequestedEvent>('authRequested', (payload) => dispatch('authRequested', payload))
     rpc.on<LoadErrorEvent>('error', (payload) => dispatch('error', payload))
+    // The page the user clicked into is where they are working now: its column becomes the active
+    // one, so the shortcuts main forwards from it act there and not in the column they came from.
+    rpc.on<FocusedEvent>('focused', ({ viewId }) => {
+      const tabId = tabIdFor(viewId)
+      if (tabId) activateTab(tabId)
+    })
 
     /*
      * window.open, and target=_blank.

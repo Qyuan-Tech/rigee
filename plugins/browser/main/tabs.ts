@@ -97,6 +97,10 @@ export class BrowserTabs {
       })
     }
 
+    // A click into the page gives it the keyboard without the shell's DOM seeing anything, so the
+    // shell would go on believing the user is in whichever column they last clicked in the DOM —
+    // and Cmd+W, forwarded from this page, would close something in THAT column.
+    wc.on('focus', () => this.emit('focused', { viewId: entry.id }))
     wc.on('page-title-updated', push)
     wc.on('did-start-loading', push)
     wc.on('did-stop-loading', push)

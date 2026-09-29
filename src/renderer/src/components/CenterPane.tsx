@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useRef } from 'react'
 import { isMac } from '../ipc'
+import { formatTrigger, triggersFor } from '@shared/keymap'
+import { useKeymap } from '../shortcuts'
 import { useApp, useRow } from '../store'
 import { PluginEditorPane, PluginTabPane } from './PluginHost'
 import { Splitter } from './Splitter'
@@ -46,6 +48,8 @@ export function CenterPane(): React.ReactElement {
         <Fragment key={group.id}>
           <div
             className={`group${group.id === row.activeGroupId ? ' group--active' : ''}`}
+            // For goto_group, which hands the column the keyboard as well as the highlight.
+            data-group-id={group.id}
             style={{ flexGrow: row.sizes[i] ?? 1, flexBasis: 0 }}
             // Capture, so clicking anywhere in the group — the editor, the terminal, a PDF page —
             // says "this is the column I am working in", and the next file from the explorer lands
@@ -120,7 +124,8 @@ function EmptyMark(): React.ReactElement {
  * something into.
  */
 function EmptyState({ solo }: { solo: boolean }): React.ReactElement {
-  const mod = isMac() ? 'Cmd' : 'Ctrl'
+  // Whatever new_tab is bound to now, so the advice survives the user rebinding it.
+  const newTab = triggersFor(useKeymap(), 'new_tab')[0]
   if (!solo) return <div className="empty"><div className="muted">Nothing open</div></div>
 
   return (
@@ -130,8 +135,14 @@ function EmptyState({ solo }: { solo: boolean }): React.ReactElement {
         <div className="empty__title">Nothing open</div>
         <div className="empty__hint">
           <div>
-            Start a terminal with <span className="kbd">{mod}</span>
-            <span className="kbd">T</span>, or press the buttons in the tab strip
+            {newTab ? (
+              <>
+                Start a terminal with <span className="kbd">{formatTrigger(newTab, isMac())}</span>, or
+                press the buttons in the tab strip
+              </>
+            ) : (
+              'Start a terminal with the buttons in the tab strip'
+            )}
           </div>
           <div>Click a file in the explorer to read it</div>
           <div>Click a change on the right to see its diff</div>

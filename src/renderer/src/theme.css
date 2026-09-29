@@ -749,6 +749,28 @@ textarea:focus {
   color: var(--fg-bright);
 }
 
+/* Unsaved: a dot where the × would be, always visible, turning back into the × under the pointer —
+   VS Code's convention, and the one people look for. */
+.tab__dirty {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+
+.tab__close--dirty {
+  opacity: 1;
+}
+
+.tab__close--dirty:not(:hover) svg {
+  display: none;
+}
+
+.tab__close--dirty:not(:hover) .tab__dirty {
+  display: block;
+}
+
 .tabstrip__actions {
   display: flex;
   align-items: center;
@@ -1168,6 +1190,223 @@ textarea:focus {
   color: #1a1c25;
   background: var(--accent-gradient);
   pointer-events: none;
+}
+
+/* The same pill, bottom left, while one pane fills the tab. */
+.term__prefix--left {
+  right: auto;
+  left: 10px;
+}
+
+/* The find bar: top right of the tab, over the terminal, the way VS Code's sits over an editor. */
+.term__search {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 6px;
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.term__search input {
+  width: 220px;
+  padding: 3px 7px;
+  font-size: 12px;
+}
+
+.term__search-count {
+  min-width: 64px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+/* ===================================================================== */
+/* Keyboard shortcuts dialog                                              */
+/* ===================================================================== */
+
+.modal--shortcuts {
+  width: 640px;
+  max-height: min(760px, 86vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.shortcuts__intro {
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+.shortcuts__filter {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.shortcuts__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -18px;
+  padding: 0 18px;
+}
+
+.shortcuts__group {
+  margin: 12px 0 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.shortcuts__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+}
+
+.shortcuts__row:hover {
+  background: var(--bg-raised);
+}
+
+.shortcuts__label {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+}
+
+.shortcuts__label small {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+
+.shortcuts__row--changed .shortcuts__label {
+  color: var(--fg-bright);
+}
+
+.shortcuts__keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* One chord. The × appears on hover, so a row of them does not read as a row of close buttons. */
+.shortcuts__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg);
+}
+
+.shortcuts__chip button {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--fg-faint);
+  visibility: hidden;
+}
+
+.shortcuts__chip:hover button {
+  visibility: visible;
+}
+
+.shortcuts__chip button:hover {
+  background: var(--bg-hover);
+  color: var(--fg-bright);
+}
+
+.shortcuts__chip--capturing {
+  padding: 0 8px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  color: var(--accent);
+}
+
+.shortcuts__add,
+.shortcuts__reset {
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.shortcuts__add:hover,
+.shortcuts__reset:hover {
+  background: var(--bg-hover);
+  color: var(--fg-bright);
+}
+
+.shortcuts__notice {
+  margin-top: 10px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--accent-dim);
+}
+
+.shortcuts__section {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.shortcuts__prefix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.shortcuts__prefix input {
+  width: 44px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.shortcuts__text {
+  width: 100%;
+  min-height: 110px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.shortcuts__errors {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--git-deleted);
+  user-select: text;
 }
 
 /* ===================================================================== */

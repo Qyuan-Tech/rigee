@@ -1,9 +1,12 @@
 import { loadXterm } from './lazy'
 import { editorFontSize, monoFamily } from './fonts'
-import { rpc } from './ipc'
-import { useApp } from './store'
+import { platform, rpc } from './ipc'
+import { allTabs } from './groups'
+import { leaves, neighbourOf, removeLeaf } from './paneTree'
+import { rowOf, useApp } from './store'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import type { SearchAddon } from '@xterm/addon-search'
 
 /**
  * xterm.js instances, owned outside React.
@@ -24,12 +27,65 @@ export interface TerminalHandle {
   paneId: string | null
   /** The single live onData subscription; replaced, never stacked. */
   input: { dispose: () => void } | null
+  /**
+   * xterm's modifyOtherKeys level, as the program running here last set it (`CSI > 4 ; n m`).
+   *
+   * xterm.js neither implements the mode nor remembers it, so this is our own bookkeeping, and
+   * only for one decision: what Shift+Enter sends. See `newlineBytes`.
+   */
+  modifyOtherKeys: number
+  /** Created the first time somebody searches this pane. */
+  search: SearchAddon | null
   dispose: () => void
 }
 
 const handles = new Map<string, TerminalHandle>()
 /** Guards against two concurrent mounts racing to create the same terminal. */
 const creating = new Map<string, Promise<TerminalHandle>>()
+
+/** Set once xterm has loaded, which is before any handle exists to search. */
+let SearchAddonCtor: (new () => SearchAddon) | null = null
+
+/**
+ * The size a pane about to be created should start at, keyed like `handles`.
+ *
+ * Ghostty's `window-inherit-font-size`: a split or tab opened from a pane you had zoomed into
+ * opens at that size, not back at the default. Keyed by the pane being created rather than kept
+ * as one global "current size", because restored panes are created lazily too — the first time
+ * their tab is shown — and those should come back at the default, not at whatever size the pane
+ * you happened to be reading last was.
+ */
+const pendingFontSize = new Map<string, number>()
+
+/** Which pane last had the keyboard, for new tabs to inherit from. */
+let lastFocusedKey: string | null = null
+
+/**
+ * Ghostty's copy-on-select: the last thing selected in any terminal, for `paste_from_selection`.
+ *
+ * Private to the app rather than the system clipboard, as Ghostty's is on macOS — selecting text
+ * to read it must not destroy what the user deliberately copied. Beside it, what the clipboard
+ * held at that moment, so a paste can tell which of the two is newer. See `pasteSelection`.
+ */
+let selectionBuffer = ''
+let clipboardAtSelection: string | null = null
+let selectionTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * Set around selections the app makes rather than the user: a select-all, which is a way of
+ * copying everything, and each find-bar match, which search highlights by selecting it. Neither
+ * is something anybody meant to paste.
+ */
+let appSelecting = false
+
+function rememberSelection(text: string): void {
+  if (!text || appSelecting) return
+  selectionBuffer = text
+  // Once the drag settles, not on every cell it crosses.
+  if (selectionTimer) clearTimeout(selectionTimer)
+  selectionTimer = setTimeout(() => {
+    void rpc['clipboard:read']().then((clip) => { clipboardAtSelection = clip })
+  }, 150)
+}
 
 export const paneKey = (tabId: string, leafId: string): string => `${tabId}:${leafId}`
 
@@ -44,7 +100,11 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
   if (inFlight) return inFlight
 
   const promise = (async (): Promise<TerminalHandle> => {
-    const { Terminal, FitAddon, WebglAddon } = await loadXterm()
+    const { Terminal, FitAddon, WebglAddon, SearchAddon } = await loadXterm()
+    SearchAddonCtor = SearchAddon
+
+    const fontSize = pendingFontSize.get(key) ?? editorFontSize()
+    pendingFontSize.delete(key)
 
     const element = document.createElement('div')
     element.style.width = '100%'
@@ -53,7 +113,7 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
     const term = new Terminal({
       allowProposedApi: true,
       fontFamily: monoFamily(),
-      fontSize: editorFontSize(),
+      fontSize,
       // Looser than xterm's 1.0 default: rows of dense monospace with no gap between them are
       // markedly harder to scan, and a terminal is mostly scanning.
       lineHeight: 1.35,
@@ -127,13 +187,19 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
       element,
       paneId: null,
       input: null,
+      modifyOtherKeys: 0,
+      search: null,
       dispose: () => {
         handles.delete(key)
+        if (lastFocusedKey === key) lastFocusedKey = null
         handle.input?.dispose()
         term.dispose()
         element.remove()
       }
     }
+    trackModifyOtherKeys(handle)
+    term.textarea?.addEventListener('focus', () => { lastFocusedKey = key })
+    term.onSelectionChange(() => rememberSelection(term.getSelection()))
     handles.set(key, handle)
     creating.delete(key)
     return handle
@@ -145,6 +211,28 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
 
 export function disposeTerminal(key: string): void {
   handles.get(key)?.dispose()
+}
+
+/**
+ * Close one pane of a terminal tab: its process, its xterm, its place in the tree. The last pane
+ * takes the tab with it; otherwise the keyboard goes to the neighbour, the way closing a split in
+ * any terminal does. The pane component and Cmd+W from outside it both come here.
+ */
+export function closeTerminalPane(workspaceId: string, tabId: string, leafId: string): void {
+  const s = useApp.getState()
+  const tab = allTabs(rowOf(s, workspaceId)).find((t) => t.id === tabId)
+  if (tab?.kind !== 'terminal') return
+  const leaf = leaves(tab.root).find((l) => l.id === leafId)
+  if (leaf?.paneId) void rpc['terminal:kill']({ paneId: leaf.paneId })
+  disposeTerminal(paneKey(tabId, leafId))
+
+  const next = removeLeaf(tab.root, leafId)
+  if (next === null) {
+    s.closeTab(workspaceId, tabId)
+    return
+  }
+  const focus = neighbourOf(tab.root, leafId) ?? leaves(next)[0]?.id ?? ''
+  s.updateTab(workspaceId, tabId, { root: next, activeLeafId: focus })
 }
 
 /** Dispose every pane belonging to a tab. Called when the tab closes. */
@@ -170,7 +258,12 @@ export function reapPanes(tabId: string, liveLeafIds: ReadonlySet<string>): void
 
 /** Select the whole scrollback. The way out when a program has taken the mouse. */
 export function selectAllInPane(key: string): void {
-  getTerminal(key)?.term.selectAll()
+  appSelecting = true
+  try {
+    getTerminal(key)?.term.selectAll()
+  } finally {
+    appSelecting = false
+  }
 }
 
 /** Whether this pane currently has a selection, for enabling a Copy menu item. */
@@ -193,11 +286,206 @@ export async function pastePane(key: string): Promise<void> {
   const handle = getTerminal(key)
   if (!handle) return
   const text = await rpc['clipboard:read']()
-  if (!text) return
+  pasteInto(handle, text)
+}
+
+/**
+ * Ghostty's `paste_from_selection`.
+ *
+ * On Linux that is the real PRIMARY selection, which follows a selection made in any app, as
+ * Ghostty's does there — xterm.js already puts its own selection into PRIMARY.
+ *
+ * Elsewhere it is the last terminal selection — unless something has been COPIED since, in which
+ * case it is the clipboard. That second half is ours. Before this binding existed, Cmd+Shift+V
+ * was simply paste, and people who learned it copy something in the browser, come back and press
+ * it; handing them a stale selection of scrollback instead would be a paste they did not ask for
+ * into a live shell. Whichever of the two is newer is what they meant.
+ */
+export async function pasteSelection(key: string): Promise<void> {
+  const handle = getTerminal(key)
+  if (!handle) return
+  if (platform() === 'linux') {
+    pasteInto(handle, await rpc['clipboard:read']({ selection: true }))
+    return
+  }
+  const clip = await rpc['clipboard:read']()
+  const selectionIsNewer = !!selectionBuffer && clipboardAtSelection !== null && clip === clipboardAtSelection
+  pasteInto(handle, selectionIsNewer ? selectionBuffer : clip)
+}
+
+function pasteInto(handle: TerminalHandle, text: string): void {
+  if (!text) {
+    // An EMPTY bracketed paste is how Claude Code learns the clipboard holds an image: on macOS
+    // it answers one by reading the image itself. Cmd+V with a screenshot on the clipboard only
+    // ever attached it because the menu's native paste sent exactly that, so the paste that
+    // replaced it has to send it too. Without bracketed paste there is nobody to tell.
+    if (handle.term.modes.bracketedPasteMode) handle.term.paste('')
+    return
+  }
   // term.paste, not writeTerminal: paste() applies bracketed-paste framing when the program has
   // asked for it. Without that a multi-line paste arrives at a shell as a sequence of Enters and
   // runs itself line by line, which is how a paste into a prompt turns into an accident.
   handle.term.paste(text)
+}
+
+/**
+ * Type bytes into a pane as though the user had: `text:`, `esc:` and `csi:` bindings.
+ *
+ * Through `term.input` rather than straight to the pty, so it takes the same road a keystroke
+ * does — the one onData subscription — and scrolls to the bottom the way typing does.
+ */
+export function sendToPane(key: string, data: string): boolean {
+  const handle = getTerminal(key)
+  if (!handle || !data) return false
+  handle.term.input(data, true)
+  return true
+}
+
+/**
+ * What Shift+Enter sends: a newline the program will not take as "submit".
+ *
+ * ESC CR — Meta+Enter — by default. It is what Claude Code's own /terminal-setup binds Shift+Enter
+ * to in VS Code, which is xterm.js exactly like us; Claude Code inserts a newline for it, and zsh
+ * inserts one into the command line without running it.
+ *
+ * Except when the program has turned on modifyOtherKeys level 2, which vim does on start. There
+ * ESC CR is a disaster — ESC leaves insert mode — and the program has said it can read xterm's own
+ * encoding of the chord, which is what Ghostty sends: CSI 27;2;13~. Level 1 is left on ESC CR,
+ * because that level promises nothing about Enter.
+ */
+export function newlineBytes(key: string): string {
+  return getTerminal(key)?.modifyOtherKeys === 2 ? '\x1b[27;2;13~' : '\x1b\r'
+}
+
+function trackModifyOtherKeys(handle: TerminalHandle): void {
+  const { parser } = handle.term
+  // XTMODKEYS, CSI > Pp ; Pv m. Resource 4 is modifyOtherKeys; no value, or no parameters at all,
+  // means "back to the default", which is off. Returning true: xterm.js has no handler of its own.
+  parser.registerCsiHandler({ prefix: '>', final: 'm' }, (params) => {
+    const [resource, value] = params
+    if (params.length === 0 || resource === 4) handle.modifyOtherKeys = typeof value === 'number' ? value : 0
+    return true
+  })
+  // CSI > Ps n: disable a resource.
+  parser.registerCsiHandler({ prefix: '>', final: 'n' }, (params) => {
+    if (params.length === 0 || params[0] === 4) handle.modifyOtherKeys = 0
+    return true
+  })
+  // A full or soft reset takes the mode with it. False, so xterm's own reset still runs.
+  parser.registerEscHandler({ final: 'c' }, () => { handle.modifyOtherKeys = 0; return false })
+  parser.registerCsiHandler({ intermediates: '!', final: 'p' }, () => { handle.modifyOtherKeys = 0; return false })
+}
+
+// --- font size ---------------------------------------------------------------
+
+const MIN_FONT = 6
+const MAX_FONT = 72
+
+export function paneFontSize(key: string): number {
+  return getTerminal(key)?.term.options.fontSize ?? editorFontSize()
+}
+
+/**
+ * Resize one pane's text: Ghostty's font-size actions, which apply per split.
+ *
+ * The pty is told the new geometry here, not left to the ResizeObserver — the pane's box has not
+ * changed, only how many cells fit in it, so the observer never fires, and a pty that still thinks
+ * it is 80 columns wide wraps every line in the wrong place.
+ */
+export function setPaneFontSize(key: string, size: number): boolean {
+  const handle = getTerminal(key)
+  if (!handle) return false
+  const next = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(size * 2) / 2))
+  if (next === handle.term.options.fontSize) return true
+  handle.term.options.fontSize = next
+  handle.fit.fit()
+  if (handle.paneId) {
+    void rpc['terminal:resize']({ paneId: handle.paneId, cols: handle.term.cols, rows: handle.term.rows })
+  }
+  return true
+}
+
+export const resetPaneFontSize = (key: string): boolean => setPaneFontSize(key, editorFontSize())
+
+/** A pane about to be created from `fromKey` starts at its size. See `pendingFontSize`. */
+export function inheritFontSize(toKey: string, fromKey: string | null): void {
+  if (!fromKey) return
+  const size = getTerminal(fromKey)?.term.options.fontSize
+  if (size && size !== editorFontSize()) pendingFontSize.set(toKey, size)
+}
+
+export const focusedTerminalKey = (): string | null => lastFocusedKey
+
+// --- screen ------------------------------------------------------------------
+
+/**
+ * Ghostty's `clear_screen`: scrollback and all, keeping the line the cursor is on.
+ *
+ * Not performed on the alternate screen, where a full-screen program — claude, vim — owns every
+ * cell and clearing would just leave it to repaint over a blank. Its binding is `performable:`,
+ * so there the key goes to the program instead.
+ */
+export function clearPane(key: string): boolean {
+  const handle = getTerminal(key)
+  if (!handle || handle.term.buffer.active.type === 'alternate') return false
+  handle.term.clear()
+  return true
+}
+
+export function scrollPane(key: string, how: 'top' | 'bottom' | 'pageUp' | 'pageDown'): boolean {
+  const term = getTerminal(key)?.term
+  if (!term) return false
+  if (how === 'top') term.scrollToTop()
+  else if (how === 'bottom') term.scrollToBottom()
+  else term.scrollPages(how === 'pageUp' ? -1 : 1)
+  return true
+}
+
+/** Ghostty's `scroll_to_selection`. False with nothing selected, so the key goes through. */
+export function scrollToSelection(key: string): boolean {
+  const term = getTerminal(key)?.term
+  const pos = term?.getSelectionPosition()
+  if (!term || !pos) return false
+  term.scrollToLine(Math.max(0, pos.start.y - Math.floor(term.rows / 3)))
+  return true
+}
+
+// --- search ------------------------------------------------------------------
+
+/** The palette's yellow: visible on the lighter surface without being mistaken for a selection. */
+const SEARCH_DECORATIONS = {
+  matchBackground: '#5a4b25',
+  matchBorder: '#e3bb5e',
+  matchOverviewRuler: '#e3bb5e',
+  activeMatchBackground: '#e3bb5e',
+  activeMatchBorder: '#efcd7e',
+  activeMatchColorOverviewRuler: '#efcd7e'
+}
+
+export function paneSearch(key: string): SearchAddon | null {
+  const handle = getTerminal(key)
+  if (!handle || !SearchAddonCtor) return null
+  if (!handle.search) {
+    handle.search = new SearchAddonCtor()
+    handle.term.loadAddon(handle.search)
+  }
+  return handle.search
+}
+
+export function findInPane(key: string, query: string, direction: 'next' | 'previous', incremental = false): boolean {
+  const search = paneSearch(key)
+  if (!search || !query) return false
+  const options = { decorations: SEARCH_DECORATIONS, incremental }
+  appSelecting = true
+  try {
+    return direction === 'next' ? search.findNext(query, options) : search.findPrevious(query, options)
+  } finally {
+    appSelecting = false
+  }
+}
+
+export function clearPaneSearch(key: string): void {
+  getTerminal(key)?.search?.clearDecorations()
 }
 
 /** Route a decoded pane frame to whichever terminal is bound to that pane. */

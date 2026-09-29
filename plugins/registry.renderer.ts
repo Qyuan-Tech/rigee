@@ -20,5 +20,6 @@ export const RENDERER_HALVES: Readonly<Record<PluginId, () => Promise<{ default:
   scm: () => import('./scm/renderer'),
   browser: () => import('./browser/renderer'),
   explorer: () => import('./explorer/renderer'),
+  search: () => import('./search/renderer'),
   'text-editor': () => import('./text-editor/renderer')
 }

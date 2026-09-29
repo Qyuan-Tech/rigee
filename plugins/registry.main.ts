@@ -14,5 +14,6 @@ import type { PluginId } from '@rigee/plugin-api/manifest'
 export const MAIN_HALVES: Readonly<Record<PluginId, () => Promise<{ default: Plugin }>>> = {
   pdf: () => import('./pdf/main'),
   scm: () => import('./scm/main'),
-  browser: () => import('./browser/main')
+  browser: () => import('./browser/main'),
+  search: () => import('./search/main')
 }

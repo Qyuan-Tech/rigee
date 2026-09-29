@@ -74,6 +74,16 @@ interface AppState {
   pluginStateByWorkspace: Record<WorkspaceId, Record<PluginId, Record<string, unknown>>>
 
   keybindings: KeyBindings
+  /**
+   * Whether the shortcuts dialog is open. Here rather than in App's local state because Cmd+, opens
+   * it from a key handler that is nowhere near the component tree.
+   */
+  settingsOpen: boolean
+  /**
+   * Files with unsaved changes, by path — what the tab strip marks with a dot. Reported by the
+   * editor; the shell only reads it, and asks before closing over it (editing.ts).
+   */
+  dirtyFiles: Record<string, true>
 
   // --- actions ---
   setReady: (ready: boolean) => void
@@ -114,6 +124,7 @@ interface AppState {
     patch: Record<string, unknown>
   ) => void
   setKeybindings: (keybindings: KeyBindings) => void
+  setSettingsOpen: (open: boolean) => void
 }
 
 export const useApp = create<AppState>()(
@@ -125,6 +136,8 @@ export const useApp = create<AppState>()(
     layout: { ...DEFAULT_PANEL_LAYOUT },
     pluginStateByWorkspace: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
+    settingsOpen: false,
+    dirtyFiles: {},
 
     setReady: (ready) => set({ ready }),
     setWorkspaces: (workspaces) => set({ workspaces }),
@@ -295,7 +308,8 @@ export const useApp = create<AppState>()(
         }
       }),
 
-    setKeybindings: (keybindings) => set({ keybindings })
+    setKeybindings: (keybindings) => set({ keybindings }),
+    setSettingsOpen: (settingsOpen) => set({ settingsOpen })
   }))
 )
 

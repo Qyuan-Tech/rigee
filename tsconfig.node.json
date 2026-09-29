@@ -9,6 +9,7 @@
     "plugins/registry.main.ts",
     "plugins/*/manifest.ts",
     "plugins/*/protocol.ts",
+    "plugins/*/types.ts",
     "plugins/*/main/**/*"
   ],
   "compilerOptions": {

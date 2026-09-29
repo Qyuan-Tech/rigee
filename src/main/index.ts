@@ -4,6 +4,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  rmSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -11,11 +12,15 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
+import { isUtf8 } from 'node:buffer'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { ensureShellPath } from './env'
+import { installMenu } from './menu'
+import { forwardShortcuts } from './shortcuts'
+import { confirmUnsaved, hasUnsavedChanges, registerUnsavedHandlers, resetUnsaved } from './unsaved'
 import { PtyManager } from './pty/manager'
 import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
@@ -91,6 +96,26 @@ if (process.env.RIGEE_SMOKE) {
   // Same reason: the plugin directory is scanned once, at app ready. A plugin copied in after
   // that is not in the snapshot, and the mode would assert against an empty registry.
   if (process.env.RIGEE_SMOKE === 'diskplugin') plantExamplePlugin(dir)
+  // The keys mode types into terminals — Enter included — so its panes run a sink rather than
+  // the user's shell, where every one of those keystrokes would be a command in their history.
+  // And it never shows its window or takes the foreground: it runs while somebody is working.
+  if (process.env.RIGEE_SMOKE === 'keys') {
+    const sink = join(dir, 'sink.sh')
+    writeFileSync(sink, '#!/bin/sh\nexec cat >/dev/null\n', { mode: 0o755 })
+    process.env.SHELL = sink
+  }
+}
+
+/**
+ * A smoke run that must not put a window in front of the person using the machine: the keys mode
+ * always, any other mode with RIGEE_SMOKE_HIDDEN=1. Hidden AND kept out of the foreground — on
+ * macOS an app that merely launches can still take the focus, so it becomes an accessory app.
+ */
+const HIDDEN_SMOKE =
+  !!process.env.RIGEE_SMOKE &&
+  (process.env.RIGEE_SMOKE === 'keys' || process.env.RIGEE_SMOKE === 'editing' || process.env.RIGEE_SMOKE_HIDDEN === '1')
+if (HIDDEN_SMOKE && process.platform === 'darwin') {
+  void app.whenReady().then(() => app.setActivationPolicy('accessory'))
 }
 
 /** Files above this are opened read-only with a warning rather than streamed into Monaco. */
@@ -188,12 +213,12 @@ function createWindow(): void {
 
   window.once('ready-to-show', () => {
     mark('ready-to-show')
-    window?.show()
+    if (!HIDDEN_SMOKE) window?.show()
   })
 
   window.webContents.once('did-finish-load', () => {
     mark('shell did-finish-load')
-    window?.show()
+    if (!HIDDEN_SMOKE) window?.show()
     focusActiveView()
     if (process.env.RIGEE_SMOKE === 'terminal') void runTerminalSmoke()
     else if (process.env.RIGEE_SMOKE === 'split') void runSplitSmoke()
@@ -214,11 +239,28 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'pdf') void runPdfSmoke()
     else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
     else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
+    else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
+    else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
   window.on('focus', focusActiveView)
   window.on('closed', () => { window = null })
+  // Closing the window with unsaved edits asks first, the way quitting does. A quit that already
+  // asked has released them, so this does not ask twice.
+  resetUnsaved()
+  // A renderer that crashed or reloaded took its unsaved text with it. Asking about it afterwards
+  // would offer to save edits that no longer exist — and Save would wait on a page that cannot answer.
+  window.webContents.on('render-process-gone', resetUnsaved)
+  // On a navigation that COMMITTED — one that is only starting may turn into a download and leave
+  // the page, and its unsaved text, exactly where they were.
+  window.webContents.on('did-navigate', resetUnsaved)
+  window.on('close', (event) => {
+    if (!hasUnsavedChanges()) return
+    event.preventDefault()
+    const closing = window
+    void confirmUnsaved(closing, shellWc(), false).then((go) => { if (go) closing?.close() })
+  })
 
   // Without these, a renderer that fails to boot just shows nothing and the window never appears.
   window.webContents.on('did-fail-load', (_e, code, desc, url) => {
@@ -1041,6 +1083,709 @@ async function runCopySmoke(): Promise<void> {
 }
 
 /**
+ * End-to-end check of the keyboard: what real keystrokes put on the wire, and what they do.
+ *
+ * Driven through `webContents.sendInputEvent` — keyDown, char, keyUp — which is Chromium's real
+ * input pipeline, keypress included, unlike the synthetic DOM events the other smokes dispatch.
+ * That difference is the point. A key the terminal consumed without cancelling still produced a
+ * keypress that typed itself — Shift+Enter arrived as a newline AND a submit — and a synthetic
+ * keydown can never show it. What this cannot reach is Electron's menu, which only acts on real
+ * NSEvents; for that the check is that every consumed keydown was cancelled, which is what stops
+ * the menu acting on it too (Cmd+V pasting twice was exactly that).
+ *
+ * The window is never shown and the panes run a sink instead of a shell — see the smoke setup at
+ * the top of this file — so it can run while somebody is using the machine.
+ */
+async function runKeysSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const mac = process.platform === 'darwin'
+  const mod = mac ? 'meta' : 'control'
+  const trail: string[] = []
+  const failed: string[] = []
+  const expect = (label: string, ok: boolean, detail?: unknown): void => {
+    trail.push(`${ok ? 'ok  ' : 'FAIL'} ${label}${ok || detail === undefined ? '' : ` — ${JSON.stringify(detail)}`}`)
+    if (!ok) failed.push(label)
+  }
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  type Mod = 'shift' | 'control' | 'alt' | 'meta' | 'isautorepeat'
+
+  /** One keystroke, the way a keyboard delivers it. Returns what reached the pty meanwhile. */
+  const press = async (
+    keyCode: string,
+    modifiers: Mod[] = [],
+    char?: string,
+    wait = 150
+  ): Promise<{ data: string[]; prevented: boolean[] }> => {
+    await js(`window.__keys.reset()`)
+    keystroke(wc, keyCode, modifiers, char)
+    await sleep(wait)
+    return js(`window.__keys.read()`)
+  }
+  const click = async (selector: string, button: 'left' | 'right' = 'left', wait = 200): Promise<boolean> => {
+    const ok = await clickAt(wc, selector, button)
+    await sleep(wait)
+    return ok
+  }
+  /** Poll the page until `code` is true: for UI that arrives in its own time, like a lazy dialog. */
+  const waitFor = async (code: string, ms = 5000): Promise<boolean> => {
+    for (let waited = 0; waited < ms; waited += 100) {
+      if (await js<boolean>(code)) return true
+      await sleep(100)
+    }
+    return false
+  }
+  const dialogReady = `window.__rigee.store.getState().settingsOpen && document.activeElement === document.querySelector('.shortcuts__filter')`
+  const state = (): Promise<{
+    tabs: number
+    activeTab: string | null
+    leaves: string[]
+    activeLeaf: string | null
+    panesOnScreen: number
+    fontSize: number
+    searchOpen: boolean
+    focus: string
+    leftCollapsed: boolean
+    rightCollapsed: boolean
+    settingsOpen: boolean
+    sizes: number[] | null
+    baseY: number
+  }> => js(`window.__keys.state()`)
+
+  const saved = await clipboard.readText()
+  try {
+    const setup = await js<{ ok: boolean; stage?: string }>(`(async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+      const { store, newTerminalTab, getTerminal, paneKey } = window.__rigee
+      let scratch = null
+      for (let i = 0; i < 80; i++) {
+        scratch = store.getState().workspaces.find(w => w.id === '__scratch__')
+        if (scratch && store.getState().ready) break
+        await sleep(250)
+      }
+      if (!scratch) return { ok: false, stage: 'no-scratch' }
+      store.getState().setActiveWorkspace(scratch.id)
+      store.getState().openTab(scratch.id, newTerminalTab())
+
+      const row = () => store.getState().rowsByWorkspace[scratch.id]
+      const group = () => row().groups.find(g => g.id === row().activeGroupId)
+      const tab = () => group().tabs.find(t => t.id === group().activeTabId)
+      const leafIds = (n) => n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIds)
+      const active = () => { const t = tab(); return t && t.kind === 'terminal' ? getTerminal(paneKey(t.id, t.activeLeafId)) : null }
+
+      const K = window.__keys = {
+        data: [], downs: [],
+        reset() {
+          K.data = []; K.downs = []
+          // Every pane, including ones split off since the last keystroke.
+          for (const g of row().groups) for (const t of g.tabs) {
+            if (t.kind !== 'terminal') continue
+            for (const id of leafIds(t.root)) {
+              const h = getTerminal(paneKey(t.id, id))
+              if (h && !h.__probed) { h.__probed = true; h.term.onData(d => K.data.push(d)) }
+            }
+          }
+          if (!store.getState().settingsOpen && !document.querySelector('.term__search input')) active()?.term.focus()
+        },
+        read() { return { data: K.data, prevented: K.downs.map(e => e.defaultPrevented) } },
+        write(text) { return new Promise(r => active().term.write(text, r)) },
+        state() {
+          const t = tab(), s = store.getState(), h = active()
+          const ae = document.activeElement
+          return {
+            tabs: group().tabs.length,
+            activeTab: t ? t.id : null,
+            leaves: t && t.kind === 'terminal' ? leafIds(t.root) : [],
+            activeLeaf: t && t.kind === 'terminal' ? t.activeLeafId : null,
+            panesOnScreen: document.querySelectorAll('.term__pane').length,
+            fontSize: h ? h.term.options.fontSize : 0,
+            searchOpen: !!document.querySelector('.term__search'),
+            focus: ae ? (ae.className || ae.tagName) : '',
+            leftCollapsed: s.layout.leftCollapsed,
+            rightCollapsed: s.layout.rightCollapsed,
+            settingsOpen: s.settingsOpen,
+            sizes: t && t.kind === 'terminal' && t.root.kind === 'split' ? t.root.sizes : null,
+            baseY: h ? h.term.buffer.active.baseY : -1
+          }
+        }
+      }
+      // Capture phase, so it sees each keydown first; defaultPrevented is read after dispatch.
+      window.addEventListener('keydown', e => K.downs.push(e), true)
+
+      for (let i = 0; i < 80; i++) {
+        await sleep(250)
+        const h = active()
+        if (h && h.paneId) { K.reset(); return { ok: true } }
+      }
+      return { ok: false, stage: 'no-terminal' }
+    })()`)
+    if (!setup.ok) {
+      console.log('[smoke:keys]', JSON.stringify(setup))
+      await clipboard.writeText(saved)
+      app.exit(1)
+      return
+    }
+    const fontDefault = (await state()).fontSize
+
+    // --- Shift+Enter ---------------------------------------------------------
+    let r = await press('Enter', ['shift'], '\r')
+    expect('Shift+Enter sends ESC CR and nothing else', JSON.stringify(r.data) === JSON.stringify(['\x1b\r']), r)
+    expect('and the keydown was cancelled', r.prevented[0] === true, r.prevented)
+    r = await press('Enter', [], '\r')
+    expect('plain Enter is still CR', JSON.stringify(r.data) === JSON.stringify(['\r']), r)
+    await js(`window.__keys.write('\\x1b[>4;2m')`)
+    r = await press('Enter', ['shift'], '\r')
+    expect('under modifyOtherKeys 2 (vim) it is CSI 27;2;13~', JSON.stringify(r.data) === JSON.stringify(['\x1b[27;2;13~']), r)
+    await js(`window.__keys.write('\\x1b[>4m')`)
+    r = await press('Enter', ['shift'], '\r')
+    expect('and back to ESC CR when the program resets it', JSON.stringify(r.data) === JSON.stringify(['\x1b\r']), r)
+
+    // --- paste ---------------------------------------------------------------
+    const marker = `rigee-keys-${Date.now()}`
+    await js(`window.__keys.write('\\x1b[?2004h')`)
+    await clipboard.writeText(marker)
+    const pasteKey: [string, Mod[]] = mac ? ['V', ['meta']] : ['V', ['control', 'shift']]
+    r = await press(pasteKey[0], pasteKey[1], undefined, 400)
+    expect('paste sends the clipboard once, bracketed',
+      JSON.stringify(r.data) === JSON.stringify([`\x1b[200~${marker}\x1b[201~`]), r)
+    expect('and the keydown was cancelled, so the menu cannot paste it again', r.prevented[0] === true, r.prevented)
+    await clipboard.writeText('')
+    r = await press(pasteKey[0], pasteKey[1], undefined, 400)
+    expect('an empty clipboard still sends an empty bracketed paste (Claude Code\'s image signal)',
+      JSON.stringify(r.data) === JSON.stringify(['\x1b[200~\x1b[201~']), r)
+    if ((await clipboard.readText()) === '') await clipboard.writeText(saved)
+
+    // --- the prefix no longer leaks -------------------------------------------
+    r = await press('A', ['control'], '\x01')
+    expect('the prefix arms without reaching the shell', r.data.length === 0 && r.prevented[0] === true, r)
+    r = await press('Q', [], 'q')
+    expect('an unbound key after it is swallowed, keypress and all', r.data.length === 0, r)
+
+    // --- line editing ------------------------------------------------------------
+    if (mac) {
+      r = await press('Left', ['meta'])
+      expect('Cmd+Left is ^A', JSON.stringify(r.data) === JSON.stringify(['\x01']), r)
+      r = await press('Right', ['meta'])
+      expect('Cmd+Right is ^E', JSON.stringify(r.data) === JSON.stringify(['\x05']), r)
+      r = await press('Backspace', ['meta'])
+      expect('Cmd+Backspace is ^U', JSON.stringify(r.data) === JSON.stringify(['\x15']), r)
+      r = await press('Left', ['alt'])
+      expect('Option+Left is ESC b', JSON.stringify(r.data) === JSON.stringify(['\x1bb']), r)
+    }
+
+    // --- font size ---------------------------------------------------------------
+    r = await press('=', [mod], mac ? undefined : '=')
+    expect('Cmd/Ctrl+= makes the text bigger', (await state()).fontSize === fontDefault + 1, await state())
+    expect('without also zooming the page', r.prevented[0] === true && r.data.length === 0, r)
+    await press('=', [mod, 'shift'])
+    expect('so does the + chord', (await state()).fontSize === fontDefault + 2)
+    await press('-', [mod])
+    expect('and minus makes it smaller', (await state()).fontSize === fontDefault + 1)
+    await press('0', [mod])
+    expect('0 puts it back', (await state()).fontSize === fontDefault)
+
+    // --- clear ---------------------------------------------------------------------
+    if (mac) {
+      await js(`window.__keys.write(Array.from({ length: 200 }, (_, i) => 'line ' + i).join('\\r\\n'))`)
+      const before = (await state()).baseY
+      await press('K', ['meta'])
+      const after = (await state()).baseY
+      expect('Cmd+K clears the scrollback', before > 0 && after === 0, { before, after })
+    }
+
+    // --- splits ----------------------------------------------------------------
+    const splitRight: [string, Mod[]] = mac ? ['D', ['meta']] : ['O', ['control', 'shift']]
+    const splitDown: [string, Mod[]] = mac ? ['D', ['meta', 'shift']] : ['E', ['control', 'shift']]
+    await press(splitRight[0], splitRight[1], undefined, 900)
+    await press(splitDown[0], splitDown[1], undefined, 900)
+    let st = await state()
+    expect('two splits make three panes', st.leaves.length === 3, st)
+    // R(a, C(b, c)), with c active.
+    const [a, b, c] = st.leaves
+    if (mac) {
+      await press(']', ['meta'])
+      expect('Cmd+] wraps to the first pane', (await state()).activeLeaf === a)
+      await press('[', ['meta'])
+      expect('Cmd+[ goes back', (await state()).activeLeaf === c)
+      await press('Up', ['meta', 'alt'])
+      expect('Cmd+Option+Up goes to the pane above', (await state()).activeLeaf === b)
+      await press('Left', ['meta', 'alt'])
+      expect('Cmd+Option+Left goes to the pane on the left', (await state()).activeLeaf === a)
+      await press('Right', ['meta', 'control'])
+      st = await state()
+      expect('Cmd+Ctrl+Right moves the divider right', !!st.sizes && st.sizes[0]! > 0.5, st.sizes)
+      await press('=', ['meta', 'control'])
+      st = await state()
+      expect('Cmd+Ctrl+= evens it out', !!st.sizes && Math.abs(st.sizes[0]! - 0.5) < 1e-6, st.sizes)
+      r = await press('Enter', ['meta', 'shift'], '\r')
+      st = await state()
+      expect('Cmd+Shift+Enter zooms the pane', st.panesOnScreen === 1, st)
+      expect('and sends no Enter to it', r.data.length === 0, r)
+      await press('Enter', ['meta', 'shift'], '\r')
+      expect('and again unzooms', (await state()).panesOnScreen === 3)
+      await press('W', ['meta', 'isautorepeat'])
+      expect('a held Cmd+W closes nothing', (await state()).leaves.length === 3)
+      await press('W', ['meta'], undefined, 600)
+      st = await state()
+      expect('Cmd+W closes the pane, not the tab', st.leaves.length === 2 && st.tabs >= 1, st)
+    }
+
+    // --- tabs ------------------------------------------------------------------
+    const tabsBefore = (await state()).tabs
+    await press('T', mac ? ['meta'] : ['control', 'shift'], undefined, 900)
+    st = await state()
+    expect('new tab', st.tabs === tabsBefore + 1, st)
+    if (mac) {
+      const newest = st.activeTab
+      await press('1', ['meta'], undefined, 600)
+      st = await state()
+      expect('Cmd+1 goes to the first tab', st.activeTab !== newest, st)
+      await press('9', ['meta'], undefined, 600)
+      expect('Cmd+9 goes to the last', (await state()).activeTab === newest)
+      await press('Tab', ['control'], undefined, 600)
+      const first = (await state()).activeTab
+      expect('Ctrl+Tab wraps round to the first', first !== newest)
+      await press('[', ['meta', 'shift'], undefined, 600)
+      expect('Cmd+Shift+[ wraps back to the last', (await state()).activeTab === newest)
+      await press(']', ['meta', 'shift'], undefined, 600)
+      expect('Cmd+Shift+] wraps forward to the first', (await state()).activeTab === first)
+    }
+
+    // --- search ------------------------------------------------------------------
+    await press('F', mac ? ['meta'] : ['control', 'shift'], undefined, 300)
+    st = await state()
+    expect('find opens a search bar that has the keyboard', st.searchOpen && st.focus === 'INPUT', st)
+    r = await press('Escape', [], undefined, 300)
+    st = await state()
+    expect('Escape closes it and gives the keyboard back', !st.searchOpen && st.focus.includes('xterm-helper-textarea'), st)
+    expect('without the terminal seeing the Escape', r.data.length === 0, r)
+    r = await press('Escape')
+    expect('with no search open, Escape reaches the program', JSON.stringify(r.data) === JSON.stringify(['\x1b']), r)
+
+    // --- what the review found -----------------------------------------------------
+    r = await press('Escape')
+    const heldEsc = await press('Escape', ['isautorepeat'])
+    expect('holding Escape with no search open keeps sending ESC', JSON.stringify(heldEsc.data) === JSON.stringify(['\x1b']), heldEsc)
+
+    if (mac) {
+      // The find bar belongs to its pane: Cmd+W there closes the pane, never the whole tab.
+      await press('D', ['meta'], undefined, 900)
+      const beforeFind = await state()
+      await press('F', ['meta'], undefined, 300)
+      r = await press('Left', ['meta'])
+      expect('Cmd+Left in the find box edits the box, it types nothing into the pane', r.data.length === 0, r)
+      await press('W', ['meta'], undefined, 600)
+      st = await state()
+      expect('Cmd+W in the find bar closes one pane, not the tab',
+        st.leaves.length === beforeFind.leaves.length - 1 && st.tabs === beforeFind.tabs, { before: beforeFind, after: st })
+      await press('Escape', [], undefined, 300)
+
+      // The context menu must leave the keyboard in the terminal.
+      await js(`window.__keys.reset()`)
+      await click('.term__pane--active .term__surface', 'right')
+      const menuOpen = await js<boolean>(`!!document.querySelector('.menu')`)
+      await click('.menu .menu__item:nth-of-type(3)')
+      st = await state()
+      expect('after the pane menu, the terminal still has the keyboard',
+        menuOpen && st.focus.includes('xterm-helper-textarea'), { menuOpen, focus: st.focus })
+
+      // The dialog: Cmd+W closes it — not the window — and the keyboard goes back to the terminal.
+      await press(',', ['meta'], undefined, 100)
+      await waitFor(dialogReady)
+      r = await press('W', ['meta'], undefined, 300)
+      st = await state()
+      expect('Cmd+W closes the shortcuts dialog', !st.settingsOpen && r.prevented[0] === true, { st, r })
+      expect('and the terminal has the keyboard again', st.focus.includes('xterm-helper-textarea'), st.focus)
+
+      // unconsumed: runs the action once, however many listeners the key passes.
+      await js(`(() => { const s = window.__rigee.store.getState(); window.__keys.saved = s.keybindings;
+        s.setKeybindings({ ...s.keybindings, binds: ['unconsumed:super+b=toggle_left_panel'] }) })()`)
+      const leftBefore = (await state()).leftCollapsed
+      await press('B', ['meta'])
+      expect('an unconsumed: binding runs once, not twice', (await state()).leftCollapsed === !leftBefore)
+      await press('B', ['meta'])
+      await js(`window.__rigee.store.getState().setKeybindings(window.__keys.saved)`)
+    }
+
+    // --- the workbench -------------------------------------------------------------
+    if (mac) {
+      const right = (await state()).rightCollapsed
+      await press('G', ['meta', 'shift'])
+      expect('Cmd+Shift+G is left for search now', (await state()).rightCollapsed === right)
+      await press('B', ['meta', 'alt'])
+      expect('Cmd+Option+B toggles the right panel', (await state()).rightCollapsed === !right)
+      await press('B', ['meta', 'alt'])
+      const left = (await state()).leftCollapsed
+      await press('B', ['meta'])
+      expect('Cmd+B toggles the left panel', (await state()).leftCollapsed === !left)
+      await press('B', ['meta'])
+      await press(',', ['meta'], undefined, 100)
+      expect('Cmd+, opens the shortcuts', await waitFor(dialogReady))
+      await press('Escape', [], undefined, 300)
+      expect('and Escape closes them', !(await state()).settingsOpen)
+    }
+
+    console.log('[smoke:keys]\n  ' + trail.join('\n  '))
+    console.log(`[smoke:keys] ${trail.length - failed.length}/${trail.length} passed`)
+    if ((await clipboard.readText()) === '' || (await clipboard.readText()) === marker) await clipboard.writeText(saved)
+    app.exit(failed.length === 0 ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:keys] threw:', err)
+    console.log('[smoke:keys]\n  ' + trail.join('\n  '))
+    await clipboard.writeText(saved)
+    app.exit(1)
+  }
+}
+
+type KeyModifier = 'shift' | 'control' | 'alt' | 'meta' | 'isautorepeat'
+
+/** One keystroke through Chromium's real input pipeline: keyDown, the char it types, keyUp. */
+function keystroke(wc: WebContents, keyCode: string, modifiers: KeyModifier[] = [], char?: string): void {
+  wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+  if (char !== undefined) wc.sendInputEvent({ type: 'char', keyCode: char, modifiers })
+  wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+}
+
+/** Type text as keystrokes, one character at a time — what an IME-free keyboard would send. */
+async function typeText(wc: WebContents, text: string): Promise<void> {
+  for (const ch of text) {
+    keystroke(wc, ch, [], ch)
+    await new Promise((r) => setTimeout(r, 15))
+  }
+}
+
+/** A real click — mouseDown, mouseUp — at the centre of the first visible match for `selector`. */
+async function clickAt(wc: WebContents, selector: string, button: 'left' | 'right' = 'left'): Promise<boolean> {
+  const at = (await wc.executeJavaScript(`(() => {
+    const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.offsetParent !== null)
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
+  })()`, true)) as { x: number; y: number } | null
+  if (!at) return false
+  wc.sendInputEvent({ type: 'mouseDown', x: at.x, y: at.y, button, clickCount: 1 })
+  wc.sendInputEvent({ type: 'mouseUp', x: at.x, y: at.y, button, clickCount: 1 })
+  return true
+}
+
+/**
+ * End-to-end check of editing: finding text across the workspace, opening a result, saving, the
+ * unsaved-changes prompts, a file changed on disk underneath the editor, and in-file find.
+ *
+ * Hidden, like the keys mode, and for the same reason. The native prompts are answered by
+ * RIGEE_SMOKE_UNSAVED_ANSWER instead of by a person, and `window.confirm` — the overwrite question —
+ * is stubbed in the page; neither can appear on anybody's screen.
+ */
+async function runEditingSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const mac = process.platform === 'darwin'
+  const mod: KeyModifier = mac ? 'meta' : 'control'
+  const trail: string[] = []
+  const failed: string[] = []
+  const expect = (label: string, ok: boolean, detail?: unknown): void => {
+    trail.push(`${ok ? 'ok  ' : 'FAIL'} ${label}${ok || detail === undefined ? '' : ` — ${JSON.stringify(detail)}`}`)
+    if (!ok) failed.push(label)
+  }
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const until = async (code: string, ms = 8000): Promise<boolean> => {
+    for (let waited = 0; waited < ms; waited += 150) {
+      if (await js<boolean>(code)) return true
+      await sleep(150)
+    }
+    return false
+  }
+  const answer = (choice: 'save' | 'discard' | 'cancel'): void => { process.env.RIGEE_SMOKE_UNSAVED_ANSWER = choice }
+  /** The keyboard into the editor of one column, the way a click would put it there. */
+  const focusEditor = (groupId: string): Promise<boolean> => js<boolean>(`(() => {
+    const el = document.querySelector('[data-group-id="${groupId}"] .monaco-editor .native-edit-context, [data-group-id="${groupId}"] .monaco-editor textarea')
+    el?.focus()
+    return !!el && document.activeElement === el
+  })()`)
+  const docStart = (): void => keystroke(wc, mac ? 'Up' : 'Home', [mod])
+  const docEnd = (): void => keystroke(wc, mac ? 'Down' : 'End', [mod])
+
+  const root = join(app.getPath('userData'), 'editing-fixture')
+  const fileA = join(root, 'a.ts')
+  mkdirSync(root, { recursive: true })
+  writeFileSync(fileA, 'const needle = 1\nconst other = 2\n')
+  writeFileSync(join(root, 'notes.md'), '这是一个needle测试\n')
+  const fileB = join(root, 'b.ts')
+  const fileBom = join(root, 'bom.csv')
+  writeFileSync(fileB, 'const bee = 1\n')
+  writeFileSync(fileBom, '\uFEFFname,值\n')
+  const fileMixed = join(root, 'mixed.txt')
+  writeFileSync(fileMixed, 'a\nb\nc\r\nd\n')
+  // One long identifier: `(\w+\s*)+=` against it backtracks exponentially in V8.
+  writeFileSync(join(root, 'evil.txt'), `const ${'someVeryLongIdentifierNameHere'.repeat(2)}.b = 1\n`)
+  const editorTab = (id: string, path: string): string =>
+    JSON.stringify({ id, kind: 'editor', title: path.split('/').pop(), pinned: false, filePath: path, repoId: null, readOnly: false, viewType: 'text-editor.monaco' })
+
+  try {
+    const ready = await js<boolean>(`(async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+      const { store } = window.__rigee
+      for (let i = 0; i < 80; i++) { if (store.getState().ready) break; await sleep(250) }
+      store.getState().addWorkspace({
+        id: 'ws-edit', name: 'edit', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(root)}, name: 'editing-fixture', isGitRepo: false, repoRoot: null }]
+      })
+      await sleep(800)
+      return store.getState().activeWorkspaceId === 'ws-edit'
+    })()`)
+    expect('a workspace with two files', ready)
+
+    // --- workspace search -------------------------------------------------------
+    keystroke(wc, 'F', [mod, 'shift', ...(mac ? [] : (['alt'] as KeyModifier[]))])
+    expect('the search shortcut opens the search panel',
+      await until(`!!document.querySelector('.search__input') && document.activeElement === document.querySelector('.search__input')`))
+    await typeText(wc, 'needle')
+    expect('typing finds the matches in both files',
+      await until(`document.querySelectorAll('.search__match').length === 2 && document.querySelectorAll('.search__file').length === 2`),
+      await js(`document.querySelector('.search__summary')?.textContent`))
+    const zhPreview = await js<string>(`[...document.querySelectorAll('.search__match mark')].map(m => m.textContent).join('|')`)
+    expect('each match is highlighted where it is, Chinese text included', zhPreview === 'needle|needle', zhPreview)
+
+    // --- open a result, edit, save -------------------------------------------------
+    await clickAt(wc, '.search__file:has([title$="a.ts"]) .search__match')
+    expect('a result opens its file in an editor with the keyboard',
+      await until(`!!document.activeElement && !!document.activeElement.closest('.monaco-editor')`))
+    // The match is selected, so typing replaces exactly it: that is what proves the cursor landed.
+    await typeText(wc, 'pin')
+    expect('an edit marks the tab unsaved', await until(`!!document.querySelector('.tab__close--dirty')`))
+    keystroke(wc, 'S', [mod])
+    expect('Cmd/Ctrl+S saves and clears the mark', await until(`!document.querySelector('.tab__close--dirty')`))
+    const saved = readFileSync(fileA, 'utf8')
+    expect('what was saved is the match replaced, nothing else', saved === 'const pin = 1\nconst other = 2\n', saved)
+
+    // --- in-file find and replace ----------------------------------------------------
+    keystroke(wc, 'F', [mod])
+    expect('find inside the file opens the editor\'s own find widget',
+      await until(`!!document.querySelector('.monaco-editor .find-widget.visible')`))
+    keystroke(wc, 'Escape')
+    await sleep(200)
+    keystroke(wc, mac ? 'F' : 'H', mac ? ['meta', 'alt'] : ['control'])
+    expect('and replace opens its replace field',
+      await until(`!!document.querySelector('.monaco-editor .find-widget.visible.replaceToggled')`))
+    keystroke(wc, 'Escape')
+    await sleep(200)
+    await js(`document.querySelector('.monaco-editor textarea, .monaco-editor .native-edit-context')?.focus()`)
+
+    // --- unsaved changes, and closing over them ------------------------------------------
+    keystroke(wc, 'End', [])
+    await typeText(wc, ' // edited')
+    expect('a second edit is unsaved again', await until(`!!document.querySelector('.tab__close--dirty')`))
+    answer('cancel')
+    keystroke(wc, 'W', [mod])
+    await sleep(600)
+    expect('closing with unsaved changes, and choosing Cancel, keeps the tab',
+      await js<boolean>(`!!document.querySelector('.tab__close--dirty')`))
+    answer('discard')
+    keystroke(wc, 'W', [mod])
+    expect("Don't Save closes it", await until(`!document.querySelector('.tab__close--dirty') && ![...document.querySelectorAll('.tab__label')].some(l => l.textContent === 'a.ts')`))
+    expect('and leaves the file on disk as it was saved', readFileSync(fileA, 'utf8') === 'const pin = 1\nconst other = 2\n', readFileSync(fileA, 'utf8'))
+
+    // --- the file changes on disk underneath the editor -------------------------------------
+    await clickAt(wc, '.search__match')
+    await until(`!!document.activeElement && !!document.activeElement.closest('.monaco-editor')`)
+    writeFileSync(fileA, 'const agent = 1\nconst other = 2\n')
+    wc.focus()
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    expect('coming back to a file with nothing unsaved takes the disk\'s version',
+      await until(`(document.querySelector('.monaco-editor .view-lines')?.textContent || '').includes('agent')`))
+    await typeText(wc, 'x')
+    writeFileSync(fileA, 'const someone = 1\nconst other = 2\n')
+    await js(`void (window.confirm = () => false)`)
+    keystroke(wc, 'S', [mod])
+    expect('saving over a change made on disk asks, and No keeps the disk\'s version',
+      await until(`(document.body.textContent || '').includes('Not saved')`) && readFileSync(fileA, 'utf8').includes('someone'),
+      readFileSync(fileA, 'utf8'))
+    await js(`void (window.confirm = () => true)`)
+    keystroke(wc, 'S', [mod])
+    expect('and Yes overwrites it', await until(`!document.querySelector('.tab__close--dirty')`) && !readFileSync(fileA, 'utf8').includes('someone'))
+
+    // --- two editors side by side: Cmd+S saves the one with the keyboard -------------------------
+    const groups = await js<string[]>(`(async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+      const s = () => window.__rigee.store.getState()
+      s().splitTab('ws-edit')
+      await sleep(400)
+      s().openTab('ws-edit', ${editorTab('tab-b', fileB)})
+      await sleep(1200)
+      return s().rowsByWorkspace['ws-edit'].groups.map(g => g.id)
+    })()`)
+    const leftFocused = await focusEditor(groups[0]!)
+    await sleep(200)
+    docStart()
+    await typeText(wc, '// left ')
+    keystroke(wc, 'S', [mod])
+    await sleep(800)
+    expect('with two files in two columns, Cmd+S saves the one being typed in',
+      leftFocused && readFileSync(fileA, 'utf8').startsWith('// left') && readFileSync(fileB, 'utf8') === 'const bee = 1\n',
+      { leftFocused, a: readFileSync(fileA, 'utf8').slice(0, 20), b: readFileSync(fileB, 'utf8') })
+
+    // --- a byte order mark survives a save -------------------------------------------------------
+    await js(`window.__rigee.store.getState().openTab('ws-edit', ${editorTab('tab-bom', fileBom)})`)
+    await until(`[...document.querySelectorAll('.tab--active .tab__label')].some(l => l.textContent === 'bom.csv')`)
+    await sleep(600)
+    await focusEditor(groups[1]!)
+    docEnd()
+    await typeText(wc, 'x,1')
+    keystroke(wc, 'S', [mod])
+    await sleep(800)
+    const bomBytes = readFileSync(fileBom)
+    expect('saving keeps the UTF-8 byte order mark', bomBytes[0] === 0xef && bomBytes[1] === 0xbb && bomBytes[2] === 0xbf && bomBytes.toString('utf8').includes('x,1'),
+      bomBytes.subarray(0, 8).toString('hex'))
+
+    // --- a result in a file that changed on disk lands on the right text --------------------------
+    await focusEditor(groups[0]!)
+    await sleep(300)
+    writeFileSync(fileA, 'import { x } from "y"\n// left\nconst agent = 1\nconst other = 2\n')
+    keystroke(wc, 'F', [mod, 'shift', ...(mac ? [] : (['alt'] as KeyModifier[]))])
+    await until(`document.activeElement === document.querySelector('.search__input')`)
+    keystroke(wc, 'A', [mod])
+    await typeText(wc, 'other')
+    await until(`[...document.querySelectorAll('.search__match')].some(m => m.title.endsWith('a.ts:4:7'))`)
+    await clickAt(wc, '.search__match[title$="a.ts:4:7"]')
+    await sleep(900)
+    await typeText(wc, 'OTHER')
+    keystroke(wc, 'S', [mod])
+    await sleep(800)
+    expect('opening a result after the file changed on disk selects the match, not the text that used to be there',
+      readFileSync(fileA, 'utf8') === 'import { x } from "y"\n// left\nconst agent = 1\nconst OTHER = 2\n', readFileSync(fileA, 'utf8'))
+
+    // --- a file that stops being UTF-8 goes read-only ---------------------------------------------
+    writeFileSync(fileA, Buffer.from([0x2f, 0x2f, 0x20, 0xc4, 0xe3, 0xba, 0xc3, 0x0a]))  // "// 你好" in GBK
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    expect('a file rewritten in another encoding is not loaded, and goes read-only with a warning',
+      await until(`(document.body.textContent || '').includes('not UTF-8')`) &&
+      readFileSync(fileA).equals(Buffer.from([0x2f, 0x2f, 0x20, 0xc4, 0xe3, 0xba, 0xc3, 0x0a])))
+    writeFileSync(fileA, 'const back = 1\n')
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    expect('and editable again once it is UTF-8', await until(`!(document.body.textContent || '').includes('not UTF-8')`))
+
+    // --- a deleted file is not silently recreated -------------------------------------------------
+    await js(`window.__rigee.store.getState().setActiveTab('ws-edit', 'tab-b')`)
+    await sleep(700)
+    await focusEditor(groups[1]!)
+    await typeText(wc, 'q')
+    rmSync(fileB)
+    await js(`void (window.confirm = () => false)`)
+    keystroke(wc, 'S', [mod])
+    await sleep(800)
+    expect('saving a file deleted on disk asks, and No leaves it deleted', !existsSync(fileB))
+
+    // --- removing a workspace with unsaved files asks first ----------------------------------------
+    answer('cancel')
+    await js(`[...document.querySelectorAll('[title="Remove workspace"]')].pop()?.click()`)
+    await sleep(600)
+    expect('removing a workspace with an unsaved file, and choosing Cancel, keeps it',
+      await js<boolean>(`window.__rigee.store.getState().workspaces.some(w => w.id === 'ws-edit')`))
+
+    // --- a reload from disk keeps the cursor on its line and is an undo step of its own ------------
+    const thirty = Array.from({ length: 30 }, (_, i) => `L${i + 1}`).join('\n') + '\n'
+    writeFileSync(fileA, thirty)
+    await js(`window.__rigee.store.getState().setActiveTab('ws-edit', ${JSON.stringify(await js<string>(`window.__rigee.store.getState().rowsByWorkspace['ws-edit'].groups[0].activeTabId`))})`)
+    await focusEditor(groups[0]!)
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    await until(`(document.querySelector('[data-group-id="${groups[0]}"] .view-lines')?.textContent || '').includes('L30')`)
+    docStart()
+    for (let i = 0; i < 19; i++) keystroke(wc, 'Down')
+    await sleep(200)
+    writeFileSync(fileA, 'A1\nA2\nA3\n' + thirty)
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    await until(`(document.querySelector('[data-group-id="${groups[0]}"] .view-lines')?.textContent || '').includes('A1')`)
+    await sleep(200)
+    await typeText(wc, 'Z')
+    keystroke(wc, 'S', [mod])
+    await sleep(700)
+    const afterReload = readFileSync(fileA, 'utf8').split('\n')
+    expect('after an agent adds lines above it, the cursor is still on the same line of text',
+      afterReload[22] === 'ZL20', afterReload.slice(18, 25))
+    keystroke(wc, 'Z', [mod])
+    await sleep(200)
+    keystroke(wc, 'S', [mod])
+    await sleep(700)
+    const afterUndo = readFileSync(fileA, 'utf8')
+    expect('and one Cmd+Z takes back only the keystroke, not the agent\'s lines',
+      afterUndo === 'A1\nA2\nA3\n' + thirty, afterUndo.slice(0, 40))
+
+    // --- Cmd+S with nothing to save writes nothing ------------------------------------------------
+    const mtime = statSync(fileA).mtimeMs
+    await sleep(50)
+    keystroke(wc, 'S', [mod])
+    await sleep(600)
+    expect('Cmd+S on a file with nothing unsaved leaves it untouched', statSync(fileA).mtimeMs === mtime)
+
+    // --- a reload keeps a mostly-LF file LF, and follows the disk's byte order mark -----------------
+    await js(`window.__rigee.store.getState().openTab('ws-edit', ${editorTab('tab-mixed', fileMixed)}, ${JSON.stringify(groups[0])})`)
+    await until(`[...document.querySelectorAll('.tab--active .tab__label')].some(l => l.textContent === 'mixed.txt')`)
+    await sleep(600)
+    await focusEditor(groups[0]!)
+    writeFileSync(fileMixed, 'a\nb\nc\r\nd\ne\n')
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    await until(`(document.querySelector('[data-group-id="${groups[0]}"] .view-lines')?.textContent || '').includes('e')`)
+    docEnd()
+    await typeText(wc, 'x')
+    keystroke(wc, 'S', [mod])
+    await sleep(700)
+    const mixed = readFileSync(fileMixed, 'utf8')
+    expect('a reload does not turn a mostly-LF file into CRLF', !mixed.includes('\r\n') && mixed.includes('x'), JSON.stringify(mixed))
+
+    await js(`window.__rigee.store.getState().setActiveTab('ws-edit', 'tab-bom')`)
+    await sleep(600)
+    await focusEditor(groups[1]!)
+    writeFileSync(fileBom, 'name,值\nnew,1\n')
+    await js(`window.dispatchEvent(new Event('focus'))`)
+    await until(`(document.querySelector('[data-group-id="${groups[1]}"] .view-lines')?.textContent || '').includes('new')`)
+    docEnd()
+    await typeText(wc, 'y')
+    keystroke(wc, 'S', [mod])
+    await sleep(700)
+    const unmarked = readFileSync(fileBom)
+    expect('when a tool removes the byte order mark on disk, saving does not put it back', unmarked[0] !== 0xef, unmarked.subarray(0, 6).toString('hex'))
+
+    // --- a regex that backtracks forever does not freeze the app ------------------------------------
+    keystroke(wc, 'F', [mod, 'shift', ...(mac ? [] : (['alt'] as KeyModifier[]))])
+    await until(`document.activeElement === document.querySelector('.search__input')`)
+    await clickAt(wc, '.search__toggle[title="Use regular expression"]')
+    keystroke(wc, 'A', [mod])
+    await typeText(wc, '(\\w+\\s*)+=')
+    await sleep(1500)
+    const t0 = Date.now()
+    await js('1')
+    await sleep(50)
+    const lag = Date.now() - t0
+    expect('the main process stays responsive while that search runs', lag < 500, `${lag} ms`)
+    await clickAt(wc, '.search__toggle[title="Use regular expression"]')
+    keystroke(wc, 'A', [mod])
+    await typeText(wc, 'bee')
+    expect('and the next search replaces it and answers', await until(`(document.querySelector('.search__summary')?.textContent || '').includes('result')`, 6000),
+      await js(`document.querySelector('.search__summary')?.textContent`))
+
+    // --- quitting with unsaved changes -------------------------------------------------------
+    await typeText(wc, 'y')
+    await until(`!!document.querySelector('.tab__close--dirty')`)
+    await sleep(300)
+    answer('cancel')
+    app.quit()
+    await sleep(800)
+    expect('quitting with unsaved changes, and choosing Cancel, keeps the app and its window',
+      !!window && !window.isDestroyed() && !quitting)
+
+    console.log('[smoke:editing]\n  ' + trail.join('\n  '))
+    console.log(`[smoke:editing] ${trail.length - failed.length}/${trail.length} passed`)
+    app.exit(failed.length === 0 ? 0 : 1)
+  } catch (err) {
+    console.error('[smoke:editing] threw:', err)
+    console.log('[smoke:editing]\n  ' + trail.join('\n  '))
+    app.exit(1)
+  }
+}
+
+/**
  * Regression check for the crash on the way out.
  *
  * Close the window on macOS and the app keeps running, but every WebContentsView it owned is
@@ -1520,7 +2265,7 @@ async function runPersistSmoke(): Promise<void> {
       report.keybindingsSaved === 'ctrl+a' &&
       // A version that is merely reported is a version nobody notices going backwards: the
       // migration in main only runs for documents whose number says they need it.
-      doc.version === 3 &&
+      doc.version === PERSISTED_STATE_VERSION &&
       report.groupsOnDisk === 2 &&
       report.groupsOnDisk === info.groupsInMemory &&
       sizes.length === groups.length &&
@@ -2727,6 +3472,9 @@ app.whenReady().then(() => {
   // actually need a resolved PATH await the same promise.
   void ensureShellPath().then(() => mark('shell PATH resolved'))
   registerHandlers()
+  registerUnsavedHandlers()
+  installMenu()
+  forwardShortcuts(shellWc, (action) => emit(shellWc(), 'shortcuts:run', { action }))
   createWindow()
   app.on('activate', () => { if (!window) createWindow() })
 })
@@ -2758,6 +3506,13 @@ app.on('before-quit', (event) => {
   // The second pass, after teardown re-issues the quit. Let it through.
   if (quitting) return
   event.preventDefault()
+
+  // Unsaved edits are asked about BEFORE anything is torn down: a Cancel has to find every shell
+  // and plugin still running, and the page's own objection would arrive after they were gone.
+  if (hasUnsavedChanges()) {
+    void confirmUnsaved(window, shellWc(), true).then((go) => { if (go) app.quit() })
+    return
+  }
 
   quitting = (async () => {
     // Synchronous, and first: killing the ptys stops anything still writing to a pipe we are
@@ -2792,6 +3547,10 @@ function registerHandlers(): void {
           : (process.env.SHELL ?? '/bin/bash'),
       homeDir: homedir()
     }
+  })
+
+  handle('window:toggleFullScreen', () => {
+    if (window && !window.isDestroyed()) window.setFullScreen(!window.isFullScreen())
   })
 
   // --- persistence -------------------------------------------------------
@@ -2894,7 +3653,10 @@ function registerHandlers(): void {
 
   // --- clipboard ---------------------------------------------------------
   handle('clipboard:write', ({ text }) => clipboard.writeText(text))
-  handle('clipboard:read', () => clipboard.readText())
+  // `clipboard.selection` is Electron 44's PRIMARY selection, and exists on Linux only.
+  handle('clipboard:read', async (args) =>
+    args?.selection ? ((await clipboard.selection?.readText()) ?? '') : clipboard.readText()
+  )
 
   // --- filesystem --------------------------------------------------------
   handle('fs:list', (dir) => {
@@ -2920,7 +3682,11 @@ function registerHandlers(): void {
     if (size > MAX_EDITABLE_BYTES) {
       return { content: '', truncated: true, tooLarge: true }
     }
-    return { content: readFileSync(path, 'utf8'), truncated: false, tooLarge: false }
+    const bytes = readFileSync(path)
+    // Read as UTF-8 regardless, but say so when it is not: a GBK file decoded as UTF-8 is full of
+    // replacement characters, and saving that back would destroy every one of them. The editor
+    // opens such a file read-only.
+    return { content: bytes.toString('utf8'), truncated: false, tooLarge: false, notUtf8: !isUtf8(bytes) }
   })
 
   handle('fs:writeFile', ({ path, content }) => { writeFileSync(path, content, 'utf8') })

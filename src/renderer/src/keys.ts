@@ -4,6 +4,8 @@
  * A chord is written the way a user would type it: `ctrl+a`, `cmd+shift+p`, `alt+`` `. Only the
  * prefix is a chord; the keys pressed after it are single characters, because that is what tmux
  * does and what the muscle memory expects.
+ *
+ * Every other shortcut — copy and paste included — is in keymap.ts, in Ghostty's syntax.
  */
 
 export interface Chord {
@@ -40,14 +42,23 @@ export function parseChord(spec: string): Chord | null {
   return chord.key ? chord : null
 }
 
-export function matchesChord(e: KeyboardEvent, chord: Chord): boolean {
+/**
+ * `base` is what the key types with no modifiers, when the caller knows it. The settings dialog
+ * records a prefix that way — Option+A as `alt+a`, not the `alt+å` macOS composes — so a match has
+ * to accept it too; `e.key` alone still matches a prefix recorded before it did.
+ */
+export function matchesChord(e: KeyboardEvent, chord: Chord, base?: string): boolean {
+  const key = e.key === ' ' ? 'space' : e.key.toLowerCase()
   return (
     e.ctrlKey === chord.ctrl &&
     e.metaKey === chord.meta &&
     e.altKey === chord.alt &&
-    // Shift is not compared for punctuation, where the key itself already encodes it.
-    (chord.shift ? e.shiftKey : true) &&
-    e.key.toLowerCase() === chord.key
+    // Shift is not compared for punctuation, where the key itself already encodes it — `|` is
+    // Shift+\\ whether or not the chord says so. For a letter it is compared exactly: Ctrl+Shift+A
+    // is a chord of its own (Ghostty's select-all off macOS), and a Ctrl+A prefix that also armed
+    // on it would take it away.
+    (/^[a-z]$/.test(chord.key) ? e.shiftKey === chord.shift : chord.shift ? e.shiftKey : true) &&
+    (key === chord.key || (base !== undefined && base.toLowerCase() === chord.key))
   )
 }
 
@@ -57,6 +68,7 @@ export function matchesChord(e: KeyboardEvent, chord: Chord): boolean {
  * start of a line.
  */
 export function chordBytes(chord: Chord): string {
+  if (chord.key === 'space') return chord.ctrl ? '\x00' : chord.alt ? '\x1b ' : ' '
   if (chord.ctrl && chord.key.length === 1) {
     const code = chord.key.toUpperCase().charCodeAt(0)
     // Ctrl-A..Ctrl-Z map to 0x01..0x1a; the handful of Ctrl-punctuation codes follow the same
@@ -80,39 +92,6 @@ export function formatChord(spec: string, isMac: boolean): string {
   return isMac ? parts.join('') : parts.join('+')
 }
 
-
-// ---------------------------------------------------------------------------
-// Clipboard
-// ---------------------------------------------------------------------------
-
-export type ClipboardAction = 'copy' | 'paste' | null
-
-/**
- * Which clipboard action a keystroke means inside a terminal.
- *
- * A terminal cannot use the plain Ctrl+C / Ctrl+V that every other app uses: Ctrl+C is SIGINT and
- * Ctrl+V is the "quote the next character literally" prefix, and stealing either would break the
- * shell. So the conventions diverge by platform — macOS keeps Cmd, everywhere else adds Shift,
- * which is what GNOME Terminal, Konsole, Windows Terminal and VS Code's terminal all settled on.
- *
- * xterm.js binds none of this itself. It exposes `getSelection()` and `paste()` and leaves the
- * policy to the host, so without this the selection is visible and completely unreachable.
- */
-export function clipboardAction(
-  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
-  isMac: boolean
-): ClipboardAction {
-  const key = e.key.toLowerCase()
-  if (key !== 'c' && key !== 'v') return null
-
-  if (isMac) {
-    // Cmd, and not Ctrl — Ctrl+C must still reach the shell as SIGINT.
-    if (!e.metaKey || e.ctrlKey || e.altKey) return null
-  } else if (!e.ctrlKey || !e.shiftKey || e.metaKey || e.altKey) {
-    return null
-  }
-  return key === 'c' ? 'copy' : 'paste'
-}
 
 // ---------------------------------------------------------------------------
 // Prefix state machine
@@ -150,17 +129,19 @@ export type PrefixOutcome =
  * modifier permanently unreachable.
  */
 export function resolvePrefixKey(
-  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
+  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'> & { code?: string },
   bindings: PrefixBindings,
-  armed: boolean
+  armed: boolean,
+  unshifted?: (code: string) => string | undefined
 ): PrefixOutcome {
   const prefix = parseChord(bindings.prefix)
   if (!prefix) return { kind: 'passthrough' }
   const ev = e as KeyboardEvent
+  const base = e.code && unshifted ? unshifted(e.code) : undefined
 
   if (armed) {
     if (MODIFIER_KEYS.has(e.key)) return { kind: 'hold' }
-    if (matchesChord(ev, prefix)) return { kind: 'literal', bytes: chordBytes(prefix) }
+    if (matchesChord(ev, prefix, base)) return { kind: 'literal', bytes: chordBytes(prefix) }
 
     for (const command of ['splitRight', 'splitDown', 'closePane'] as const) {
       if (sameKey(e.key, bindings[command])) return { kind: 'command', command }
@@ -168,7 +149,7 @@ export function resolvePrefixKey(
     return { kind: 'swallow' }
   }
 
-  return matchesChord(ev, prefix) ? { kind: 'arm' } : { kind: 'passthrough' }
+  return matchesChord(ev, prefix, base) ? { kind: 'arm' } : { kind: 'passthrough' }
 }
 
 /**

@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
 import { CenterPane } from './components/CenterPane'
 import { PluginOverlays, PluginViewSlot, slotLabel } from './components/PluginHost'
 import { StatusBar } from './components/StatusBar'
 import { Splitter } from './components/Splitter'
-import { SettingsDialog } from './components/SettingsDialog'
 import { isMac, rpc } from './ipc'
+import { useShortcuts } from './shortcuts'
+import { installUnsavedBridge } from './editing'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
-import { activeGroup, allTabs } from './groups'
+import { allTabs } from './groups'
 import { setDisabledPlugins, setDiskPlugins } from './plugins/registry'
 import {
   nextGroupId,
@@ -25,9 +26,21 @@ import {
   type WorkspaceUiState
 } from '@shared/types'
 
+/**
+ * The shortcuts dialog, fetched the first time it opens. It is the largest piece of UI the shell
+ * has and the one used least, and `pnpm perf:check` holds the entry chunk to a budget that
+ * everything on screen at startup has to fit in.
+ */
+const loadSettingsDialog = (): Promise<typeof import('./components/SettingsDialog')> => import('./components/SettingsDialog')
+const SettingsDialog = lazy(() => loadSettingsDialog().then((m) => ({ default: m.SettingsDialog })))
+// Fetched once startup is over, so that opening it — Cmd+, mid-sentence — is instant and no
+// keystroke falls into the gap between asking for the dialog and the dialog being there.
+setTimeout(() => { void loadSettingsDialog() }, 3000)
+
 export function App(): React.ReactElement {
   const ready = useApp((s) => s.ready)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpen = useApp((s) => s.settingsOpen)
+  const setSettingsOpen = useApp((s) => s.setSettingsOpen)
   const layout = useApp((s) => s.layout)
   const setLayout = useApp((s) => s.setLayout)
 
@@ -87,6 +100,7 @@ export function App(): React.ReactElement {
   }, [])
 
   useShortcuts()
+  useEffect(installUnsavedBridge, [])
   usePersistence()
   useScratchTerminal()
 
@@ -153,7 +167,11 @@ export function App(): React.ReactElement {
 
       <StatusBar />
       <PluginOverlays />
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsDialog onClose={() => setSettingsOpen(false)} />
+        </Suspense>
+      )}
     </div>
   )
 }
@@ -193,7 +211,9 @@ function TitleBar({ onSettings }: { onSettings: () => void }): React.ReactElemen
       {workspace && <span className="titlebar__context">{workspace.name}</span>}
       <button
         className="icon-button"
-        title="Key bindings"
+        title="Keyboard shortcuts"
+        // Never takes the focus: clicking it must leave the keyboard wherever the user was typing.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onSettings}
         style={{ marginLeft: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
@@ -213,50 +233,6 @@ function Splash(): React.ReactElement {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
-}
-
-/** Cmd/Ctrl shortcuts for the things worth reaching without the mouse. */
-function useShortcuts(): void {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      const mod = isMac() ? e.metaKey : e.ctrlKey
-      if (!mod) return
-      const s = useApp.getState()
-      const ws = s.activeWorkspaceId
-      if (!ws) return
-
-      if (e.key === 't') {
-        e.preventDefault()
-        s.openTab(ws, newTerminalTab())
-      } else if (e.key === 'w') {
-        e.preventDefault()
-        // The active group's active tab — the one the user is looking at. Closing it may take the
-        // group with it, which `closeTabs` handles.
-        const active = activeGroup(rowOf(s, ws)).activeTabId
-        if (active) s.closeTab(ws, active)
-      } else if (e.key === '\\') {
-        // Cmd/Ctrl+\ is VS Code's Split Editor, and the fingers that reach for it are the same
-        // ones this feature is for. The strip's button does the same thing with the mouse.
-        e.preventDefault()
-        s.splitTab(ws)
-      } else if (e.key >= '1' && e.key <= '9') {
-        // Cmd/Ctrl+1..9 jumps to a column, as VS Code does. Swallowed even when the column does
-        // not exist: half-pressing your way to a group that is not there should do nothing, not
-        // fall through to whatever the terminal would have made of the digit.
-        e.preventDefault()
-        const group = rowOf(s, ws).groups[Number(e.key) - 1]
-        if (group) s.focusGroup(ws, group.id)
-      } else if (e.key === 'b') {
-        e.preventDefault()
-        s.setLayout({ leftCollapsed: !s.layout.leftCollapsed })
-      } else if (e.key === 'g' && e.shiftKey) {
-        e.preventDefault()
-        s.setLayout({ rightCollapsed: !s.layout.rightCollapsed })
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
 }
 
 /**
