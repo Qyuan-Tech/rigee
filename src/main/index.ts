@@ -624,6 +624,32 @@ async function runExplorerSmoke(): Promise<void> {
         if (expandedOf('ws-exp0').length !== 0) return fail('collapse-did-nothing')
         trail.push('toggle works both ways')
 
+        // Source control's colours. Only with a fixture that says what to expect: name -> badge,
+        // where a folder expects '•', the colour it takes from a change beneath it.
+        const expect = ${process.env.RIGEE_SMOKE_EXPECT_DECOR ?? 'null'}
+        if (expect) {
+          setExpanded('ws-exp0', [roots[0], ...Object.keys(expect).filter(k => k.includes('/')).map(k => roots[0] + '/' + k.split('/')[0])])
+          const seen = () => Object.fromEntries([...document.querySelectorAll('.explorer__body .row')]
+            .filter(r => r.querySelector('.explorer__badge'))
+            .map(r => [r.querySelector('.row__label').textContent, r.querySelector('.explorer__badge').textContent]))
+          const want = Object.fromEntries(Object.entries(expect).map(([k, v]) => [k.split('/').pop(), v]))
+          let got = {}
+          for (let i = 0; i < 40; i++) {
+            got = seen()
+            if (JSON.stringify(Object.entries(got).sort()) === JSON.stringify(Object.entries(want).sort())) break
+            await sleep(250)
+          }
+          trail.push('decorations: ' + JSON.stringify(got))
+          if (JSON.stringify(Object.entries(got).sort()) !== JSON.stringify(Object.entries(want).sort())) {
+            return fail('decorations-wrong', { got, want })
+          }
+          const clean = [...document.querySelectorAll('.explorer__body .row')]
+            .find(r => r.querySelector('.row__label').textContent === 'clean.txt')
+          if (!clean || clean.querySelector('.explorer__badge') || clean.querySelector('.row__label').style.color) {
+            return fail('clean-file-decorated')
+          }
+        }
+
         // And it reaches disk, so a restart keeps it.
         setExpanded('ws-exp0', [roots[0]])
         await sleep(2000)

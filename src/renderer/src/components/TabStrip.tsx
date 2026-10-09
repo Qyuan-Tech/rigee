@@ -25,6 +25,17 @@ import type { GroupId, Tab, TabId } from '@shared/types'
 /** Stable identity, so a group that has not been created yet cannot cause a render loop. */
 const EMPTY_TABS: Tab[] = []
 
+/**
+ * Which of the three things a tab is, for its colour: a terminal, a file, or a web page. Diffs and
+ * PDFs are files; anything a plugin adds that is neither stays uncoloured.
+ */
+function tabKind(tab: Tab): 'terminal' | 'file' | 'web' | 'other' {
+  if (tab.kind === 'terminal') return 'terminal'
+  if (tab.kind === 'editor') return 'file'
+  if (ownerOf(tab.viewType) === 'browser') return 'web'
+  return isFileTab(tab, isDocumentViewType) || ownerOf(tab.viewType) === 'scm' ? 'file' : 'other'
+}
+
 function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
   if (tab.kind === 'terminal') return <TerminalIcon size={13} />
   const name = iconFor(tab.kind === 'editor' ? tab.viewType : tab.viewType)
@@ -144,6 +155,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           key={tab.id}
           draggable
           className={`tab${tab.id === activeId ? ' tab--active' : ''}`}
+          data-kind={tabKind(tab)}
           // The tab id travels on the drag, not just the index: a drop may land in ANOTHER group,
           // where an index from this strip would mean something entirely different.
           onDragStart={(e) => {

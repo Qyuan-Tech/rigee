@@ -26,6 +26,7 @@ import { editorFontSize, monoFamily } from '../fonts'
 import * as icons from '../icons'
 import { isMac, rpc } from '../ipc'
 import { onRevealInFile, onViewRevealed, setFileDirty } from '../editing'
+import { setFileDecorations, useFileDecoration } from '../decorations'
 import { useActiveWorkspace } from '../store'
 import * as api from './api'
 
@@ -98,6 +99,9 @@ const host: ShellHost = {
   setFileDirty,
   onRevealInFile,
   onViewRevealed,
+
+  setFileDecorations,
+  useFileDecoration,
 
   // The three file operations a plugin may perform, named rather than handed the whole `rpc`
   // object. That object also carries `terminal:spawn`, `state:saveWorkspaces` and every other

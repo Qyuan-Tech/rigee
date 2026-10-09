@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { RepoStatus } from '../protocol'
+import { setFileDecorations, type FileDecoration } from '@rigee/plugin-api'
+import type { GitFileChange, GitStatusLetter, RepoStatus } from '../protocol'
 
 /**
  * Where repository statuses live now that the shell's store has no `scm` slice.
@@ -35,6 +36,39 @@ export const useScm = create<ScmState>()(() => ({ byRepo: {} }))
  */
 export function setRepoStatus(status: RepoStatus): void {
   useScm.setState((s) => ({ byRepo: { ...s.byRepo, [status.root]: status } }))
+  setFileDecorations(`scm:${status.root}`, decorationsOf(status))
+}
+
+/** VS Code's colours and letters, and the order a folder picks between them: conflicts first. */
+const LOOK: Partial<Record<GitStatusLetter, FileDecoration>> = {
+  U: { color: 'var(--git-conflict)', badge: '!', tooltip: 'Conflicted', weight: 5 },
+  M: { color: 'var(--git-modified)', badge: 'M', tooltip: 'Modified', weight: 4 },
+  T: { color: 'var(--git-modified)', badge: 'T', tooltip: 'Type changed', weight: 4 },
+  D: { color: 'var(--git-deleted)', badge: 'D', tooltip: 'Deleted', weight: 3 },
+  A: { color: 'var(--git-added)', badge: 'A', tooltip: 'Added', weight: 2 },
+  R: { color: 'var(--git-added)', badge: 'R', tooltip: 'Renamed', weight: 2 },
+  C: { color: 'var(--git-added)', badge: 'C', tooltip: 'Copied', weight: 2 },
+  '?': { color: 'var(--git-untracked)', badge: 'U', tooltip: 'Untracked', weight: 1 }
+}
+
+/**
+ * What the explorer should colour, for one status snapshot. The working tree's letter wins over
+ * the index's, since it is what the file on disk is now; a file staged as added and then edited
+ * is still new to the repository, so it stays A.
+ */
+function decorationsOf(status: RepoStatus): Record<string, FileDecoration> {
+  const out: Record<string, FileDecoration> = {}
+  const add = (c: GitFileChange, letter: GitStatusLetter | '.'): void => {
+    const look = letter === '.' ? undefined : LOOK[letter]
+    // `?` records for a directory end in a slash, which the shell reads as "all of it".
+    if (look) out[`${status.root}/${c.path}`] = look
+  }
+  for (const c of status.untracked) add(c, '?')
+  for (const c of [...status.staged, ...status.unstaged]) {
+    add(c, c.index === 'A' ? 'A' : c.worktree !== '.' ? c.worktree : c.index)
+  }
+  for (const c of status.conflicts) add(c, 'U')
+  return out
 }
 
 /** The status of one repository, or undefined before its first read lands. */

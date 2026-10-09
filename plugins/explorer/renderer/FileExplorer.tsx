@@ -6,9 +6,10 @@ import {
   openFile,
   setPluginState,
   useActiveWorkspace,
+  useFileDecoration,
   usePluginState
 } from '@rigee/plugin-api'
-import type { FileStat } from '@rigee/plugin-api'
+import type { FileDecoration, FileStat } from '@rigee/plugin-api'
 
 /** This plugin's id, which is also the key its per-workspace state is filed under. */
 const PLUGIN_ID = 'explorer'
@@ -156,6 +157,7 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
   const isOpen = open.has(path)
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
+  const decoration = useFileDecoration(path)
 
   useEffect(() => {
     if (!isOpen || children !== null) return
@@ -179,7 +181,7 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
         <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
           <icons.Chevron size={12} open={isOpen} />
         </span>
-        <span className="row__label">{name}</span>
+        <Label name={name} decoration={decoration} />
       </div>
       {isOpen && error && (
         <div className="row" style={{ paddingLeft: 8 + (depth + 1) * 12 }}>
@@ -200,6 +202,7 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
 }
 
 function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.ReactElement {
+  const decoration = useFileDecoration(stat.path)
   return (
     <div
       className="row row--clickable"
@@ -214,8 +217,22 @@ function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.Rea
       <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
         <icons.File size={12} />
       </span>
-      <span className="row__label">{stat.name}</span>
+      <Label name={stat.name} decoration={decoration} />
     </div>
+  )
+}
+
+/** A row's name, coloured as source control says — and its letter, for files that have one. */
+function Label({ name, decoration }: { name: string; decoration: FileDecoration | undefined }): React.ReactElement {
+  return (
+    <>
+      <span className="row__label" style={decoration && { color: decoration.color }}>{name}</span>
+      {decoration && (
+        <span className="explorer__badge" style={{ color: decoration.color }} title={decoration.tooltip}>
+          {decoration.badge ?? '•'}
+        </span>
+      )}
+    </>
   )
 }
 

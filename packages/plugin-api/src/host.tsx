@@ -149,6 +149,10 @@ export interface ShellHost {
   onRevealInFile: (tabId: TabId, cb: (selection: TextSelection) => void) => () => void
   onViewRevealed: (viewId: string, cb: () => void) => () => void
 
+  // --- file decorations ---------------------------------------------------
+  setFileDecorations: (source: string, decorations: Record<string, FileDecoration>) => void
+  useFileDecoration: (path: string) => FileDecoration | undefined
+
   // --- files (permissioned) ----------------------------------------------
   readFile: (path: string) => Promise<{ content: string; truncated: boolean; tooLarge: boolean; notUtf8?: boolean }>
   writeFile: (path: string, content: string) => Promise<void>
@@ -338,6 +342,28 @@ export const setPluginState = (
  */
 export const setFileDirty = (path: string, dirty: boolean, handlers?: FileHandlers): void =>
   shell().setFileDirty(path, dirty, handlers)
+
+/** How a file's name is drawn in the tree: source control's colours, in VS Code's manner. */
+export interface FileDecoration {
+  /** A CSS colour, usually one of the theme's variables: `var(--git-modified)`. */
+  color: string
+  /** One or two characters shown at the end of the row — `M`, `U`, `A`. */
+  badge?: string
+  tooltip?: string
+  /** Which wins when two decorations meet on one folder. Higher is more important. */
+  weight?: number
+}
+
+/**
+ * Replace every decoration one source publishes, keyed by absolute path. A path ending in a
+ * separator covers the folder and everything inside it. An empty record withdraws the source.
+ * Folders above a decorated path take its colour, so collapsed trees still show where changes are.
+ */
+export const setFileDecorations = (source: string, decorations: Record<string, FileDecoration>): void =>
+  shell().setFileDecorations(source, decorations)
+
+/** The decoration to draw for a path. A hook: re-renders when that path's decoration changes. */
+export const useFileDecoration = (path: string): FileDecoration | undefined => shell().useFileDecoration(path)
 
 /**
  * Where the cursor should go in the file this tab shows — the target of a search result or any

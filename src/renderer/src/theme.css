@@ -59,6 +59,11 @@
   --git-conflict: #e8848c;
   --git-ignored: #6b7287;
 
+  /* --- tab kinds: one colour each, so a terminal, a file and a page are told apart at a glance --- */
+  --kind-terminal: #7fce97;
+  --kind-file: #6cb6ff;
+  --kind-web: #f0a45d;
+
   /* --- metrics --- */
   --titlebar-h: 40px;
   --tabstrip-h: 38px;
@@ -707,18 +712,34 @@ textarea:focus {
   position: absolute;
   inset: 0 0 auto 0;
   height: 2px;
-  background: var(--accent-gradient);
+  background: var(--kind, var(--accent-gradient));
+}
+
+.tab[data-kind='terminal'] { --kind: var(--kind-terminal); }
+.tab[data-kind='file'] { --kind: var(--kind-file); }
+.tab[data-kind='web'] { --kind: var(--kind-web); }
+
+.tab--active[data-kind]:not([data-kind='other']) {
+  background: color-mix(in srgb, var(--kind) 9%, var(--bg));
+}
+
+/* A terminal's title is a command line or a path; set it like one. */
+.tab[data-kind='terminal'] .tab__label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
 }
 
 .tab__icon {
   display: grid;
   place-items: center;
-  color: var(--fg-faint);
+  color: var(--kind, var(--fg-faint));
+  opacity: 0.8;
   flex: 0 0 auto;
 }
 
 .tab--active .tab__icon {
-  color: var(--accent);
+  color: var(--kind, var(--accent));
+  opacity: 1;
 }
 
 .tab__label {
@@ -1477,6 +1498,15 @@ textarea:focus {
 
 /* Dropping folders here is how a multi-root workspace gets collected, so the target has to be
    visible the moment a drag enters it — otherwise it reads as "this does not accept drops". */
+.explorer__badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0 8px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+}
+
 .explorer__body--dropping {
   border-color: var(--accent);
   background: var(--accent-dim);
