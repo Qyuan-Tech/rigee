@@ -22,23 +22,43 @@ import {
 import { lookupShortcut, unshiftedKey } from '../shortcuts'
 import { rowOf, useApp } from '../store'
 import { getTerminal, paneKey } from '../terminals'
-import { DEFAULT_KEYBINDINGS } from '@shared/types'
+import { DEFAULT_KEYBINDINGS, type AppSettings } from '@shared/types'
+import { namedWorkspaceFile, workspaceFilesDirProblem } from '@shared/workspaceFiles'
+
+type Page = 'general' | 'shortcuts'
+
+const PAGES: ReadonlyArray<readonly [Page, string]> = [
+  ['general', 'General'],
+  ['shortcuts', 'Keyboard Shortcuts']
+]
+
+/** Where the dialog was last left, so it opens there again — for the rest of this session. */
+let lastPage: Page = 'general'
 
 /**
- * Keyboard shortcuts: the table of what every key does, and the tmux-style prefix.
+ * Settings: the General page, and the keyboard shortcuts.
  *
- * Chords are captured by pressing them rather than typed as text — writing a chord out is a
- * guessing game about spelling, and pressing it is unambiguous. The text box at the bottom is for
- * the other direction: pasting `keybind = …` lines straight out of a Ghostty config.
+ * Both pages are drafts until Save, and one Save keeps both — two buttons that each kept half of
+ * what was changed would be a trap for whoever edits one page and leaves from the other.
  *
- * What is edited is the list of the user's CHANGES, as Ghostty lines on top of the platform's
- * defaults; the table is that list applied. Keeping the list as the source of truth is what lets
- * the two views agree, and what gets saved — so a default that improves in a later release still
- * reaches every key the user never touched.
+ * On the shortcuts page, chords are captured by pressing them rather than typed as text — writing
+ * a chord out is a guessing game about spelling, and pressing it is unambiguous. The text box at
+ * the bottom is for the other direction: pasting `keybind = …` lines straight out of a Ghostty
+ * config.
+ *
+ * What is edited there is the list of the user's CHANGES, as Ghostty lines on top of the
+ * platform's defaults; the table is that list applied. Keeping the list as the source of truth is
+ * what lets the two views agree, and what gets saved — so a default that improves in a later
+ * release still reaches every key the user never touched.
  */
 export function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElement {
   const stored = useApp((s) => s.keybindings)
   const setKeybindings = useApp((s) => s.setKeybindings)
+  const storedSettings = useApp((s) => s.settings)
+  const setSettings = useApp((s) => s.setSettings)
+  const [page, setPage] = useState<Page>(lastPage)
+  const [filesDir, setFilesDir] = useState(storedSettings.workspaceFilesDir ?? '')
+  const dirProblem = workspaceFilesDirProblem(filesDir)
   const mac = isMac()
   const defaultLines = defaultBinds(platform())
   const defaults = useMemo(() => buildKeymap(defaultLines, []).keymap, [defaultLines])
@@ -62,14 +82,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
   /** The unusable lines the last Save stopped to point out; the next Save goes ahead with them. */
   const [warned, setWarned] = useState<string | null>(null)
   const filterInput = useRef<HTMLInputElement>(null)
+  const dirInput = useRef<HTMLInputElement>(null)
+
+  const showPage = (next: Page): void => {
+    lastPage = next
+    setPage(next)
+    // A chord half-captured, or a remark about one, belongs to the page being left.
+    setCapture(null)
+    setNotice(null)
+  }
 
   // Take the keyboard, and give it back on the way out. Opened with Cmd+, from a terminal, the
   // terminal would otherwise still have it and the first thing typed would go to the shell behind
-  // the dialog; closed, the filter box that had it disappears, and without this the keyboard is
-  // left on <body> — the terminal the dialog was opened from would hear nothing until clicked.
+  // the dialog; closed, the field that had it disappears, and without this the keyboard is left
+  // on <body> — the terminal the dialog was opened from would hear nothing until clicked.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    filterInput.current?.focus()
     return () => {
       // Only somewhere that takes typing — a terminal, an editor, a text box — and only in the
       // column the user is working in now. A button clicked to get here (the gear) would keep the
@@ -79,6 +107,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
       else focusActiveTerminal()
     }
   }, [])
+
+  // Declared after the effect above, so that one has seen where the keyboard was before this moves
+  // it: to the first field of whichever page is showing.
+  useEffect(() => {
+    ;(page === 'shortcuts' ? filterInput : dirInput).current?.focus()
+  }, [page])
 
   /** Replace the table with an edited copy of it, stored as the difference from the defaults. */
   const commit = (next: Map<string, Binding>): void => {
@@ -217,6 +251,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
 
   const save = (): void => {
     if (!prefixValid) return
+    // A folder that cannot be used is pointed out where it was typed, not saved.
+    if (dirProblem) {
+      showPage('general')
+      return
+    }
     const binds = text !== null
       ? text.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() !== '')
       : lines
@@ -233,12 +272,18 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
       setLines(binds)
       setText(null)
       setWarned(warning)
+      // Said where the lines are, which need not be the page Save was pressed on.
+      lastPage = 'shortcuts'
+      setPage('shortcuts')
       setNotice(`${fresh.length === 1 ? 'One line' : `${fresh.length} lines`} in “Your changes” cannot be used and will be skipped — see the list under it. Save again to save anyway.`)
       return
     }
     const next = { ...stored, ...prefix, binds }
     setKeybindings(next)
     void rpc['state:saveKeybindings']({ keybindings: next })
+    const settings = withFilesDir(storedSettings, filesDir)
+    setSettings(settings)
+    void rpc['state:saveSettings']({ settings })
     onClose()
   }
 
@@ -254,129 +299,155 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
 
   return (
     <div className="modal__scrim" onMouseDown={onClose}>
-      <div className="modal modal--shortcuts" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal__title">Keyboard shortcuts</div>
-        <div className="shortcuts__intro">
-          The defaults are Ghostty’s, so the same keys work in both. Press + to add a key to an
-          action, hover a key to remove it.
-        </div>
-        <input
-          ref={filterInput}
-          className="shortcuts__filter"
-          placeholder="Filter by action or key"
-          value={filter}
-          spellCheck={false}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-
-        <div className="shortcuts__scroll">
-          {GROUP_ORDER.map((group) => {
-            const inGroup = shown.filter((r) => ACTIONS[splitAction(r.action)[0]]?.group === group)
-            if (inGroup.length === 0) return null
-            return (
-              <div key={group}>
-                <div className="shortcuts__group">{group}</div>
-                {inGroup.map((r) => (
-                  <div key={r.action} className={`shortcuts__row${r.changed ? ' shortcuts__row--changed' : ''}`}>
-                    <span className="shortcuts__label">
-                      {actionLabel(r.action)}
-                      <small>{r.action}</small>
-                    </span>
-                    <span className="shortcuts__keys">
-                      {chips(r.bindings, mac).map(({ label, bindings }) => (
-                        <span key={label} className="shortcuts__chip">
-                          {label}
-                          <button title="Remove" onClick={() => remove(...bindings)}>×</button>
-                        </span>
-                      ))}
-                      {capture?.kind === 'action' && capture.action === r.action ? (
-                        <span className="shortcuts__chip shortcuts__chip--capturing">press keys… Esc cancels</span>
-                      ) : (
-                        <button className="shortcuts__add" title="Add a key" onClick={() => { setNotice(null); setCapture({ kind: 'action', action: r.action }) }}>
-                          +
-                        </button>
-                      )}
-                    </span>
-                    {r.changed && (
-                      <button className="shortcuts__reset" title="Back to the default" onClick={() => resetAction(r.action)}>
-                        ↺
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )
-          })}
-
-          <div className="shortcuts__section">
-            <div className="shortcuts__group">tmux-style prefix</div>
-            <div className="shortcuts__intro">
-              Press the prefix, let go, then one key. Pressing the prefix twice sends it to the shell.
-            </div>
-            <div className="shortcuts__prefix">
-              <span>Prefix</span>
-              <button className="btn" onClick={() => { setNotice(null); setCapture({ kind: 'prefix' }) }}>
-                {capture?.kind === 'prefix'
-                  ? 'press a key combination…'
-                  : prefix.prefix
-                    ? formatChord(prefix.prefix, mac)
-                    : 'none'}
+      <div className="modal modal--settings" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings__head">
+          <div className="modal__title">Settings</div>
+          <div className="settings__tabs" role="tablist">
+            {PAGES.map(([id, label]) => (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={page === id}
+                className={`settings__tab${page === id ? ' settings__tab--active' : ''}`}
+                onClick={() => showPage(id)}
+              >
+                {label}
               </button>
-              {prefix.prefix && (
-                <button className="btn" title="Turn the prefix off" onClick={() => setPrefix((p) => ({ ...p, prefix: '' }))}>
-                  Off
-                </button>
-              )}
-              <PrefixKey label="split right" value={prefix.splitRight} onChange={(v) => setPrefix((p) => ({ ...p, splitRight: v }))} />
-              <PrefixKey label="split down" value={prefix.splitDown} onChange={(v) => setPrefix((p) => ({ ...p, splitDown: v }))} />
-              <PrefixKey label="close pane" value={prefix.closePane} onChange={(v) => setPrefix((p) => ({ ...p, closePane: v }))} />
-            </div>
-          </div>
-
-          <div className="shortcuts__section">
-            <div className="shortcuts__group">Your changes, as Ghostty config</div>
-            <div className="shortcuts__intro">
-              One per line, applied over the defaults — <code>super+k=unbind</code>,{' '}
-              <code>performable:super+c=copy_to_clipboard</code>. Lines copied from a Ghostty config,
-              <code> keybind = …</code> and all, work as they are.
-            </div>
-            <textarea
-              className="shortcuts__text"
-              spellCheck={false}
-              value={text ?? lines.join('\n')}
-              placeholder="No changes — every key does what it does in Ghostty."
-              onChange={(e) => setText(e.target.value)}
-              onBlur={applyText}
-            />
-            {errors.length > 0 && (
-              <div className="shortcuts__errors">
-                {errors.map((e, i) => (
-                  <div key={i}>skipped “{e.line}”: {e.message}</div>
-                ))}
-              </div>
-            )}
+            ))}
           </div>
         </div>
+
+        {page === 'general' ? (
+          <GeneralPage dir={filesDir} problem={dirProblem} inputRef={dirInput} onChange={setFilesDir} />
+        ) : (
+          <>
+            <div className="shortcuts__intro">
+              The defaults are Ghostty’s, so the same keys work in both. Press + to add a key to an
+              action, hover a key to remove it.
+            </div>
+            <input
+              ref={filterInput}
+              className="shortcuts__filter"
+              placeholder="Filter by action or key"
+              value={filter}
+              spellCheck={false}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+
+            <div className="shortcuts__scroll">
+              {GROUP_ORDER.map((group) => {
+                const inGroup = shown.filter((r) => ACTIONS[splitAction(r.action)[0]]?.group === group)
+                if (inGroup.length === 0) return null
+                return (
+                  <div key={group}>
+                    <div className="shortcuts__group">{group}</div>
+                    {inGroup.map((r) => (
+                      <div key={r.action} className={`shortcuts__row${r.changed ? ' shortcuts__row--changed' : ''}`}>
+                        <span className="shortcuts__label">
+                          {actionLabel(r.action)}
+                          <small>{r.action}</small>
+                        </span>
+                        <span className="shortcuts__keys">
+                          {chips(r.bindings, mac).map(({ label, bindings }) => (
+                            <span key={label} className="shortcuts__chip">
+                              {label}
+                              <button title="Remove" onClick={() => remove(...bindings)}>×</button>
+                            </span>
+                          ))}
+                          {capture?.kind === 'action' && capture.action === r.action ? (
+                            <span className="shortcuts__chip shortcuts__chip--capturing">press keys… Esc cancels</span>
+                          ) : (
+                            <button className="shortcuts__add" title="Add a key" onClick={() => { setNotice(null); setCapture({ kind: 'action', action: r.action }) }}>
+                              +
+                            </button>
+                          )}
+                        </span>
+                        {r.changed && (
+                          <button className="shortcuts__reset" title="Back to the default" onClick={() => resetAction(r.action)}>
+                            ↺
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+
+              <div className="shortcuts__section">
+                <div className="shortcuts__group">tmux-style prefix</div>
+                <div className="shortcuts__intro">
+                  Press the prefix, let go, then one key. Pressing the prefix twice sends it to the shell.
+                </div>
+                <div className="shortcuts__prefix">
+                  <span>Prefix</span>
+                  <button className="btn" onClick={() => { setNotice(null); setCapture({ kind: 'prefix' }) }}>
+                    {capture?.kind === 'prefix'
+                      ? 'press a key combination…'
+                      : prefix.prefix
+                        ? formatChord(prefix.prefix, mac)
+                        : 'none'}
+                  </button>
+                  {prefix.prefix && (
+                    <button className="btn" title="Turn the prefix off" onClick={() => setPrefix((p) => ({ ...p, prefix: '' }))}>
+                      Off
+                    </button>
+                  )}
+                  <PrefixKey label="split right" value={prefix.splitRight} onChange={(v) => setPrefix((p) => ({ ...p, splitRight: v }))} />
+                  <PrefixKey label="split down" value={prefix.splitDown} onChange={(v) => setPrefix((p) => ({ ...p, splitDown: v }))} />
+                  <PrefixKey label="close pane" value={prefix.closePane} onChange={(v) => setPrefix((p) => ({ ...p, closePane: v }))} />
+                </div>
+              </div>
+
+              <div className="shortcuts__section">
+                <div className="shortcuts__group">Your changes, as Ghostty config</div>
+                <div className="shortcuts__intro">
+                  One per line, applied over the defaults — <code>super+k=unbind</code>,{' '}
+                  <code>performable:super+c=copy_to_clipboard</code>. Lines copied from a Ghostty config,
+                  <code> keybind = …</code> and all, work as they are.
+                </div>
+                <textarea
+                  className="shortcuts__text"
+                  spellCheck={false}
+                  value={text ?? lines.join('\n')}
+                  placeholder="No changes — every key does what it does in Ghostty."
+                  onChange={(e) => setText(e.target.value)}
+                  onBlur={applyText}
+                />
+                {errors.length > 0 && (
+                  <div className="shortcuts__errors">
+                    {errors.map((e, i) => (
+                      <div key={i}>skipped “{e.line}”: {e.message}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
         {notice && <div className="shortcuts__notice">{notice}</div>}
 
         <div className="modal__actions">
-          <button
-            className="btn"
-            onClick={() => {
-              setLines([])
-              setText(null)
-              setPrefix({
-                prefix: DEFAULT_KEYBINDINGS.prefix,
-                splitRight: DEFAULT_KEYBINDINGS.splitRight,
-                splitDown: DEFAULT_KEYBINDINGS.splitDown,
-                closePane: DEFAULT_KEYBINDINGS.closePane
-              })
-              setNotice(null)
-            }}
-          >
-            Reset all
-          </button>
+          {/* Every key back to Ghostty's. Only beside the keys: on the General page it would read
+              as resetting everything there too. */}
+          {page === 'shortcuts' && (
+            <button
+              className="btn"
+              onClick={() => {
+                setLines([])
+                setText(null)
+                setPrefix({
+                  prefix: DEFAULT_KEYBINDINGS.prefix,
+                  splitRight: DEFAULT_KEYBINDINGS.splitRight,
+                  splitDown: DEFAULT_KEYBINDINGS.splitDown,
+                  closePane: DEFAULT_KEYBINDINGS.closePane
+                })
+                setNotice(null)
+              }}
+            >
+              Reset all
+            </button>
+          )}
           <span style={{ flex: 1 }} />
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn btn--primary" disabled={!prefixValid} onClick={save}>Save</button>
@@ -384,6 +455,77 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
       </div>
     </div>
   )
+}
+
+/**
+ * The General page: where saved workspaces go.
+ *
+ * A text box as well as a picker. Picking is how most people will set it, but a path typed or
+ * pasted — `~/Workspaces` — is quicker for anyone who already knows where they want it, and the
+ * picker can make the folder too.
+ */
+function GeneralPage({
+  dir,
+  problem,
+  inputRef,
+  onChange
+}: {
+  dir: string
+  problem: string | null
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onChange: (dir: string) => void
+}): React.ReactElement {
+  const choose = async (): Promise<void> => {
+    const picked = await rpc['workspace:pickFolder']({
+      message: 'Choose the folder workspaces are saved in',
+      defaultPath: dir.trim() || undefined
+    })
+    if (picked) onChange(picked)
+  }
+  const example = namedWorkspaceFile(dir, 'myworkspace', platform() === 'win32' ? '\\' : '/')
+
+  return (
+    <div className="shortcuts__scroll">
+      <div className="shortcuts__group">Workspace files</div>
+      <div className="shortcuts__intro">
+        Where <b>Save Workspace As…</b> puts a workspace: in a folder of its own, named after the
+        workspace, so the repos it brings together can stay wherever they already are.
+      </div>
+      <div className="settings__field">
+        <input
+          ref={inputRef}
+          className="settings__path"
+          value={dir}
+          spellCheck={false}
+          placeholder="Not set — ask where, every time"
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button className="btn" onClick={() => void choose()}>Choose…</button>
+        {dir && (
+          <button className="btn" title="Ask where, every time" onClick={() => onChange('')}>
+            Clear
+          </button>
+        )}
+      </div>
+      {problem ? (
+        <div className="settings__note settings__note--error">{problem}</div>
+      ) : dir.trim() ? (
+        <div className="settings__note">
+          A workspace named <code>myworkspace</code> is saved as <code>{example}</code>
+        </div>
+      ) : (
+        <div className="settings__note">Save Workspace As… asks where to save, every time.</div>
+      )}
+    </div>
+  )
+}
+
+/** The stored settings with this folder in them — or without one, when the box was emptied. */
+function withFilesDir(settings: AppSettings, dir: string): AppSettings {
+  const next = { ...settings }
+  if (dir.trim()) next.workspaceFilesDir = dir.trim()
+  else delete next.workspaceFilesDir
+  return next
 }
 
 function PrefixKey({
@@ -413,6 +555,7 @@ const EXTRA_ROWS: readonly string[] = [
   ...Object.entries(ACTIONS)
     .filter(([name, spec]) => !spec.param && name !== 'ignore')
     .map(([name]) => name),
+  'close_tab:other', 'close_tab:right',
   'new_split:right', 'new_split:down', 'new_split:left', 'new_split:up', 'new_split:auto',
   'goto_split:previous', 'goto_split:next',
   'goto_split:up', 'goto_split:down', 'goto_split:left', 'goto_split:right',

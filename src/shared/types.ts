@@ -257,6 +257,27 @@ export const DEFAULT_KEYBINDINGS: KeyBindings = {
 }
 
 // ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/**
+ * Preferences other than key bindings: the settings dialog's General page.
+ *
+ * One object rather than more top-level fields, so the next preference is a field here and not
+ * another change to the document's shape. Fields this build does not know are kept, as
+ * `KeyBindings` keeps them, so a preference written by a newer build survives a round trip
+ * through an older one.
+ */
+export interface AppSettings {
+  /**
+   * The folder "Save Workspace As…" files workspaces under, each in a folder of its own:
+   * `<this>/<name>/<name>.code-workspace`. A leading `~` is the home directory. Unset means ask
+   * with a save dialog every time, which is all it did before this existed.
+   */
+  workspaceFilesDir?: string
+}
+
+// ---------------------------------------------------------------------------
 // Layout + persistence
 // ---------------------------------------------------------------------------
 
@@ -319,6 +340,8 @@ export interface PersistedState {
    * everything is enabled, which is the only sensible reading of silence.
    */
   disabledPlugins?: string[]
+  /** Optional for the same reason: absent means every preference at its default. */
+  settings?: AppSettings
 }
 
 export const PERSISTED_STATE_VERSION = 4 as const

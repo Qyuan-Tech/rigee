@@ -14,25 +14,30 @@ import {
 } from 'node:fs'
 import { isUtf8 } from 'node:buffer'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { deflateSync } from 'node:zlib'
+import { popupContextMenu } from './contextMenu'
 import { ensureShellPath } from './env'
 import { installMenu } from './menu'
 import { forwardShortcuts } from './shortcuts'
 import { confirmUnsaved, hasUnsavedChanges, registerUnsavedHandlers, resetUnsaved } from './unsaved'
 import { PtyManager } from './pty/manager'
-import { parseWorkspaceFile, serializeWorkspaceFile } from './workspaceFile'
+import { parseWorkspaceFile, resolveWorkspaceFilesDir, serializeWorkspaceFile } from './workspaceFile'
 import { emit, handle } from './ipc'
 import {
+  appSettings,
   disabledPlugins,
   EXPLORER_PLUGIN_ID,
   loadState,
   saveAllUi,
   saveDisabledPlugins,
   saveKeybindings,
+  saveSettings,
   saveWorkspaces
 } from './store'
+import { namedWorkspaceFile, WORKSPACE_FILE_EXTENSION, workspaceNameProblem } from '@shared/workspaceFiles'
 import type { PluginHost } from './plugins/host'
 import {
   approvePlugin,
@@ -241,6 +246,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
     else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
+    else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -295,11 +301,15 @@ function createWindow(): void {
 
 /**
  * End-to-end check of splitting: open a terminal, split it twice, and assert that each pane ends
- * up with its own live pty and its own xterm instance.
+ * up with its own live pty and its own xterm instance — and that a split starts in the directory
+ * the pane it came from had `cd`'d into, not back at the workspace's folder.
  */
 async function runSplitSmoke(): Promise<void> {
   const wc = shellWc()
   if (!wc) { app.exit(1); return }
+  // Somewhere no shell starts by accident, named so that seeing it in a pane can mean one thing.
+  const elsewhere = join(tmpdir(), `rigee-split-cwd-${process.pid}`)
+  mkdirSync(elsewhere, { recursive: true })
   try {
     const result = (await wc.executeJavaScript(
       `(async () => {
@@ -349,6 +359,27 @@ async function runSplitSmoke(): Promise<void> {
         if (st.ids.length !== 1) return JSON.stringify({ ok: false, stage: 'first-pane', trail })
         trail.push('1 pane bound')
 
+        const read = (hh) => {
+          const b = hh.term.buffer.active
+          let out = ''
+          for (let i = 0; i < b.length; i++) out += (b.getLine(i)?.translateToString(true) ?? '')
+          return out
+        }
+        const waitFor = async (hh, text) => {
+          for (let i = 0; i < 60; i++) {
+            if (read(hh).includes(text)) return true
+            await sleep(250)
+          }
+          return false
+        }
+
+        // Somewhere else first. The arithmetic is so the line typed cannot pass for its output.
+        const elsewhere = ${JSON.stringify(elsewhere)}
+        const marker = elsewhere.split(/[\\\\/]/).pop()
+        const first = getTerminal(paneKey(st.t.id, st.ids[0]))
+        first.term.input(" cd '" + elsewhere + "' && echo CWD-READY-$((6*7))" + String.fromCharCode(13), true)
+        if (!(await waitFor(first, 'CWD-READY-42'))) return JSON.stringify({ ok: false, stage: 'cd-never-ran', trail })
+
         // Split beside, exactly as the keybinding does.
         // Deliver it where a real keypress lands. The binding runs from xterm's key hook, so a
         // window-level dispatch would never reach it.
@@ -363,6 +394,15 @@ async function runSplitSmoke(): Promise<void> {
           return JSON.stringify({ ok: false, stage: 'split-1-failed', trail,
             shape: st.t ? JSON.stringify(st.t.root) : 'no tab' })
         }
+
+        // The new pane opened where the first one had gone, not where the workspace is.
+        const second = getTerminal(paneKey(st.t.id, st.t.activeLeafId))
+        second.term.input(' pwd' + String.fromCharCode(13), true)
+        if (!(await waitFor(second, marker))) {
+          return JSON.stringify({ ok: false, stage: 'split-did-not-inherit-the-directory', trail,
+            screen: read(second).slice(-400) })
+        }
+        trail.push('split opened in ' + marker)
 
         // Split below.
         press({ key: 'd', metaKey: true, shiftKey: true })
@@ -389,12 +429,6 @@ async function runSplitSmoke(): Promise<void> {
         const active = st.t.activeLeafId
         const h = getTerminal(paneKey(st.t.id, active))
         h.term.input('echo SPLIT-OK-$((8*8))' + String.fromCharCode(13), true)
-        const read = (hh) => {
-          const b = hh.term.buffer.active
-          let out = ''
-          for (let i = 0; i < b.length; i++) out += (b.getLine(i)?.translateToString(true) ?? '')
-          return out
-        }
         for (let i = 0; i < 40; i++) {
           await sleep(250)
           if (read(h).includes('SPLIT-OK-64')) {
@@ -411,9 +445,11 @@ async function runSplitSmoke(): Promise<void> {
       true
     )) as string
     console.log('[smoke:split]', result)
+    rmSync(elsewhere, { recursive: true, force: true })
     app.exit(JSON.parse(result).ok ? 0 : 1)
   } catch (err) {
     console.error('[smoke:split] threw:', err)
+    rmSync(elsewhere, { recursive: true, force: true })
     app.exit(1)
   }
 }
@@ -1162,7 +1198,8 @@ async function runKeysSmoke(): Promise<void> {
     }
     return false
   }
-  const dialogReady = `window.__rigee.store.getState().settingsOpen && document.activeElement === document.querySelector('.shortcuts__filter')`
+  // Open, and holding the keyboard: on whichever page it opened on, that page's first field has it.
+  const dialogReady = `window.__rigee.store.getState().settingsOpen && !!document.activeElement?.closest('.modal--settings')`
   const state = (): Promise<{
     tabs: number
     activeTab: string | null
@@ -1421,7 +1458,7 @@ async function runKeysSmoke(): Promise<void> {
       await waitFor(dialogReady)
       r = await press('W', ['meta'], undefined, 300)
       st = await state()
-      expect('Cmd+W closes the shortcuts dialog', !st.settingsOpen && r.prevented[0] === true, { st, r })
+      expect('Cmd+W closes the settings dialog', !st.settingsOpen && r.prevented[0] === true, { st, r })
       expect('and the terminal has the keyboard again', st.focus.includes('xterm-helper-textarea'), st.focus)
 
       // unconsumed: runs the action once, however many listeners the key passes.
@@ -1447,7 +1484,7 @@ async function runKeysSmoke(): Promise<void> {
       expect('Cmd+B toggles the left panel', (await state()).leftCollapsed === !left)
       await press('B', ['meta'])
       await press(',', ['meta'], undefined, 100)
-      expect('Cmd+, opens the shortcuts', await waitFor(dialogReady))
+      expect('Cmd+, opens the settings', await waitFor(dialogReady))
       await press('Escape', [], undefined, 300)
       expect('and Escape closes them', !(await state()).settingsOpen)
     }
@@ -1937,14 +1974,18 @@ async function runShutdownSmoke(): Promise<void> {
  * End-to-end check on the tab strip: its context menu, and the split button beside it.
  *
  * The close and row arithmetic is covered by `pnpm panes:selftest`. What only a real window can
- * show is the wiring: that a right-click on a terminal or a browser tab produces no menu at all,
- * that one on a file tab does, that the buttons reach the store — and that the split button makes
- * a SECOND strip whose contents are governed by what the tab is. Driven through DOM events rather
- * than the store so the components are genuinely in the loop.
+ * show is the wiring: that a right-click on ANY tab — terminal, page or file — offers the same
+ * menu, that what is picked reaches the store, that a sweep asks before stopping a program still
+ * running in a terminal — and that the split button makes a SECOND strip whose contents are
+ * governed by what the tab is. Driven through DOM events rather than the store so the components
+ * are genuinely in the loop; the menu itself is native, so it is answered through its probe.
  */
 async function runTabsSmoke(): Promise<void> {
   const wc = shellWc()
   if (!wc) { app.exit(1); return }
+  // The "still running" question must never appear on a screen during a test. Cancel is the
+  // answer that proves it was asked: the terminal survives a sweep it would otherwise have died in.
+  process.env.RIGEE_SMOKE_RUNNING_ANSWER = 'cancel'
   try {
     const result = (await wc.executeJavaScript(
       `(async () => {
@@ -1975,11 +2016,44 @@ async function runTabsSmoke(): Promise<void> {
           const strip = strips()[i]
           return strip ? [...strip.querySelectorAll('.tab')] : []
         }
-        const items = () => [...document.querySelectorAll('.menu .menu__item')]
         const rightClick = (el) => el.dispatchEvent(
           new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 20 }))
-        const fail = (stage, extra) =>
-          JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+        const fail = (stage, extra) => {
+          window.__rigee.menus.answer = null
+          return JSON.stringify(Object.assign({ ok: false, stage, trail }, extra || {}))
+        }
+
+        // The tab menu is native, so it is answered here instead of clicked: what it offered is
+        // kept, and the row named is what the user "picked". null dismisses it.
+        let offered = null
+        const pickFrom = async (el, id) => {
+          offered = null
+          window.__rigee.menus.answer = (items) => { offered = items; window.__rigee.menus.answer = null; return id }
+          rightClick(el)
+          await sleep(250)
+          return offered
+        }
+        const labels = () => (offered || []).filter(i => i.kind === 'item')
+          .map(i => i.label + (i.enabled === false ? '[off]' : ''))
+        const paneIdsOf = (tab) => {
+          const ids = (n) => n.kind === 'leaf' ? [n.paneId].filter(Boolean) : n.children.flatMap(ids)
+          return ids(tab.root)
+        }
+        const runningIn = (tab) => window.rigee.invoke('terminal:running', { paneIds: paneIdsOf(tab) })
+        const liveTab = (id) => row().groups.flatMap(g => g.tabs).find(t => t.id === id)
+        /**
+         * Settled at a prompt. A shell still reading its rc files has things in the foreground too,
+         * and a sweep would rightly ask about them. One that never started — its tab was never on
+         * screen — has nothing running at all.
+         */
+        const idle = async (tab) => {
+          for (let i = 0; i < 60; i++) {
+            const live = liveTab(tab.id)
+            if (!live || paneIdsOf(live).length === 0 || (await runningIn(live)).length === 0) return true
+            await sleep(250)
+          }
+          return false
+        }
 
         /*
          * One empty group, whatever the previous phase left behind.
@@ -2017,44 +2091,74 @@ async function runTabsSmoke(): Promise<void> {
         if (strips().length !== 1) return fail('fixture-spread-over-groups', { n: strips().length })
         if (tabEls(0).length !== 5) return fail('wrong-tab-count', { n: tabEls(0).length })
 
-        // Neither a terminal nor a browser tab may offer the menu.
-        rightClick(tabEls(0)[0])
-        await sleep(150)
-        if (document.querySelector('.menu')) return fail('menu-on-terminal')
-        rightClick(tabEls(0)[2])
-        await sleep(150)
-        if (document.querySelector('.menu')) return fail('menu-on-browser')
-        trail.push('no menu on terminal or browser')
+        // Every kind of tab offers the same menu, the same four commands.
+        const want = 'Close|Close Others|Close to the Right|Close All'
+        for (const [i, kind] of [[0, 'terminal'], [2, 'browser'], [1, 'file']]) {
+          if (!(await pickFrom(tabEls(0)[i], null))) return fail('no-menu-on-' + kind)
+          trail.push(kind + ' menu: ' + labels().join(' | '))
+          if (labels().map(l => l.replace('[off]', '')).join('|') !== want) return fail('wrong-menu-on-' + kind, { labels: labels() })
+        }
+        if (document.querySelector('.menu')) return fail('an-html-menu-appeared-as-well')
+        // Greyed, not missing, where there is nothing for a command to do.
+        await pickFrom(tabEls(0)[4], null)
+        if (!labels().includes('Close to the Right[off]')) return fail('right-not-greyed-on-the-last-tab', { labels: labels() })
+        if (order() !== [term.id, 'e1', 'b1', 'e2', 'e3'].join(',')) return fail('a-dismissed-menu-closed-something')
 
-        // A file tab must, with all four commands.
-        rightClick(tabEls(0)[1])
-        await sleep(150)
-        const labels = items().map(b => b.textContent + (b.disabled ? '[off]' : ''))
-        trail.push('menu: ' + labels.join(' | '))
-        if (items().length !== 4) return fail('wrong-menu-size', { labels })
-
-        items().find(b => b.textContent.includes('to the Right')).click()
+        // To the right of a file: the page and the files after it go, whatever they are.
+        await pickFrom(tabEls(0)[1], 'right')
         await sleep(250)
         trail.push('after close-right: ' + order())
-        if (order() !== [term.id, 'e1', 'b1'].join(',')) return fail('close-right-wrong')
-        if (document.querySelector('.menu')) return fail('menu-stayed-open')
+        if (order() !== [term.id, 'e1'].join(',')) return fail('close-right-wrong')
 
+        // Close Others from a file sweeps up the terminal too — an idle one without asking.
+        store.getState().openTab(ws, browser('b2'))
         store.getState().openTab(ws, editor('e4'))
-        store.getState().openTab(ws, editor('e5'))
         await sleep(300)
-        const els = tabEls(0)
-        rightClick(els[els.length - 2])
-        await sleep(150)
-        items().find(b => b.textContent.includes('Other Files')).click()
-        await sleep(250)
+        if (!(await idle(term))) return fail('terminal-never-settled-at-a-prompt')
+        await pickFrom(tabEls(0)[1], 'others')
+        await sleep(400)
         trail.push('after close-others: ' + order())
-        if (order() !== [term.id, 'b1', 'e4'].join(',')) return fail('close-others-wrong')
+        if (order() !== 'e1') return fail('close-others-wrong')
 
         // Selection must never be left pointing at a tab that is gone. Still singular with several
         // groups on screen: it is the active group's active tab, and what Cmd+W acts on.
         const activeGroup = () => row().groups.find(g => g.id === row().activeGroupId) || row().groups[0]
         const active = activeGroup().activeTabId
         if (!order().split(',').includes(active)) return fail('active-tab-dangling', { active })
+
+        // A terminal running something is asked about before a sweep stops it — and the answer
+        // here is Cancel, so it, and everything else, must still be there afterwards. It stays on
+        // screen until its program is running: only the active tab is mounted, and a terminal
+        // hidden before its shell started would never start one.
+        const busy = newTerminalTab()
+        store.getState().openTab(ws, busy)
+        let shell = null
+        for (let i = 0; i < 80 && !(shell && shell.paneId); i++) {
+          await sleep(250)
+          shell = getTerminal(paneKey(busy.id, busy.activeLeafId))
+        }
+        if (!shell || !shell.paneId || !(await idle(busy))) return fail('busy-terminal-never-started')
+        shell.term.input(' sleep 30' + String.fromCharCode(13), true)
+        let busyWith = []
+        for (let i = 0; i < 40 && busyWith.length === 0; i++) {
+          await sleep(250)
+          busyWith = await runningIn(liveTab(busy.id))
+        }
+        trail.push('running in the terminal: ' + JSON.stringify(busyWith.map(r => r.process)))
+        if (busyWith.length === 0) return fail('sleep-never-showed-as-running')
+        store.getState().openTab(ws, editor('e5'))
+        await sleep(300)
+        const before = order()
+        await pickFrom(tabEls(0)[2], 'others')
+        await sleep(600)
+        trail.push('after close-others, cancelled: ' + order())
+        if (order() !== before) return fail('a-cancelled-sweep-closed-something', { before, after: order() })
+
+        // Aimed at the busy terminal itself, the sweep has nothing else running to ask about.
+        await pickFrom(tabEls(0)[1], 'all')
+        await sleep(600)
+        trail.push('after close-all on the busy terminal: "' + order() + '"')
+        if (order() !== '') return fail('close-all-from-the-busy-terminal-left-tabs')
 
         // --- the split button -------------------------------------------------
         // Found by title rather than by position: the strip's actions grow, and an index would
@@ -2152,6 +2256,7 @@ async function runTabsSmoke(): Promise<void> {
           return fail('survivor-did-not-take-the-width-back', { sizes: row().sizes })
         }
 
+        window.__rigee.menus.answer = null
         return JSON.stringify({ ok: true, trail, active })
       })()`,
       true
@@ -2161,6 +2266,164 @@ async function runTabsSmoke(): Promise<void> {
   } catch (err) {
     console.error('[smoke:tabs] threw:', err)
     app.exit(1)
+  }
+}
+
+/**
+ * End-to-end check of filing workspaces under the folder Settings names for them.
+ *
+ * Through the real UI where there is one: the General page sets the folder, and "Save Workspace
+ * As…" then asks only for a name and writes `<folder>/<name>/<name>.code-workspace` listing the
+ * workspace's folders. Then main's side of it directly, where the UI would not let a test get: a
+ * second save of the same workspace asks nothing, saving over ANOTHER workspace's file asks first
+ * (answered Cancel, so that file must come through untouched), and a name that would climb out of
+ * the folder is refused whatever the sidebar thought of it.
+ *
+ * With RIGEE_SHOT_DIR set it also photographs the General page and the name form, which are
+ * reviewed by looking at them.
+ */
+async function runWorkspaceFilesSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const root = join(app.getPath('userData'), 'workspace-files')
+  const filed = join(root, 'Workspaces')
+  const repos = [join(root, 'repo-a'), join(root, 'repo-b')]
+  for (const dir of repos) mkdirSync(dir, { recursive: true })
+  const target = join(filed, 'myworkspace', 'myworkspace.code-workspace')
+  process.env.RIGEE_SMOKE_REPLACE_ANSWER = 'cancel'
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const shoot = async (name: string): Promise<void> => {
+    const dir = process.env.RIGEE_SHOT_DIR
+    if (!dir) return
+    const image = await wc.capturePage()
+    writeFileSync(join(dir, `${name}.png`), image.toPNG())
+    trail.push(`photographed ${name}`)
+  }
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:workspacefiles]', JSON.stringify({ ok, stage, trail, ...(extra ? { extra } : {}) }))
+    app.exit(ok ? 0 : 1)
+  }
+  // A React text box takes a value through its prototype's setter and an input event, as typing would.
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store } = window.__rigee
+    const type = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const until = async (test, ms = 8000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }`
+
+  try {
+    // --- Settings: the General page ------------------------------------------------
+    const page = await js<{ ok: boolean; stage?: string; note?: string }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => store.getState().ready, 15000))) return { ok: false, stage: 'never-ready' }
+      store.getState().setSettingsOpen(true)
+      const general = await until(() => [...document.querySelectorAll('.settings__tab')].find(b => b.textContent === 'General'))
+      if (!general) return { ok: false, stage: 'no-general-page' }
+      general.click()
+      const box = await until(() => document.querySelector('.settings__path'))
+      if (!box) return { ok: false, stage: 'no-folder-box' }
+      if (document.activeElement !== box) return { ok: false, stage: 'folder-box-does-not-have-the-keyboard' }
+      type(box, 'relative/path')
+      await sleep(150)
+      const refused = document.querySelector('.settings__note--error')?.textContent || ''
+      if (!refused) return { ok: false, stage: 'relative-folder-not-refused' }
+      type(box, ${JSON.stringify(filed)})
+      await sleep(150)
+      return { ok: true, note: document.querySelector('.settings__note')?.textContent || '' }
+    })()`)
+    if (!page.ok) return finish(false, page.stage ?? 'settings')
+    trail.push(`General page says: ${page.note}`)
+    if (!page.note?.includes(target)) return finish(false, 'example-path-wrong', page.note)
+    await shoot('settings-general')
+
+    await js(`(async () => {
+      ${helpers}
+      document.querySelector('.modal__actions .btn--primary').click()
+      await until(() => !store.getState().settingsOpen)
+    })()`)
+    // The dialog sends the save and closes without waiting for it, so the document gets a moment.
+    let onDisk: { settings?: { workspaceFilesDir?: string } } = {}
+    for (let i = 0; i < 20 && onDisk.settings?.workspaceFilesDir !== filed; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      try { onDisk = JSON.parse(readFileSync(join(app.getPath('userData'), 'workspaces.json'), 'utf8')) } catch { /* not yet */ }
+    }
+    trail.push(`settings on disk: ${JSON.stringify(onDisk.settings)}`)
+    if (onDisk.settings?.workspaceFilesDir !== filed) return finish(false, 'folder-not-saved')
+
+    // --- Save Workspace As…: only a name ------------------------------------------------
+    const form = await js<{ ok: boolean; stage?: string; initial?: string; path?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-files', name: 'repo-a', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: ${JSON.stringify(repos)}.map(path => ({ path, name: path.split('/').pop(), isGitRepo: false, repoRoot: null }))
+      })
+      await sleep(300)
+      const plus = document.querySelector('.section-header button[title="Open…"]')
+      if (!plus) return { ok: false, stage: 'no-open-button' }
+      plus.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      const item = await until(() => [...document.querySelectorAll('.menu__item')].find(b => b.textContent.includes('Save Workspace As')))
+      if (!item) return { ok: false, stage: 'no-save-as-item' }
+      item.click()
+      const input = await until(() => document.querySelector('.saveas input'))
+      if (!input) return { ok: false, stage: 'name-form-never-appeared' }
+      const initial = input.value
+      type(input, 'my/work')
+      await sleep(150)
+      if (!document.querySelector('.saveas__error')) return { ok: false, stage: 'separator-in-name-not-refused' }
+      type(input, 'myworkspace')
+      await sleep(150)
+      return { ok: true, initial, path: document.querySelector('.saveas__path')?.textContent || '' }
+    })()`)
+    if (!form.ok) return finish(false, form.stage ?? 'form')
+    trail.push(`name form opened with "${form.initial}", would write ${form.path}`)
+    if (form.initial !== 'repo-a') return finish(false, 'name-form-did-not-start-from-the-workspace-name')
+    if (form.path !== target) return finish(false, 'name-form-path-wrong', form.path)
+    await shoot('save-as-form')
+
+    const saved = await js<{ ok: boolean; stage?: string; name?: string; filePath?: string }>(`(async () => {
+      ${helpers}
+      document.querySelector('.saveas input').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-files' && w.filePath))
+      if (!ws) return { ok: false, stage: 'enter-did-not-save' }
+      if (document.querySelector('.saveas')) return { ok: false, stage: 'name-form-stayed-open' }
+      return { ok: true, name: ws.name, filePath: ws.filePath }
+    })()`)
+    if (!saved.ok) return finish(false, saved.stage ?? 'save')
+    trail.push(`saved as "${saved.name}" at ${saved.filePath}`)
+    if (saved.filePath !== target || saved.name !== 'myworkspace') return finish(false, 'saved-in-the-wrong-place', saved)
+    const written = parseWorkspaceFile(readFileSync(target, 'utf8'), target)
+    trail.push(`file lists ${written.folders.map((f) => f.path).join(', ')}`)
+    if (written.name !== 'myworkspace' || written.folders.map((f) => f.path).join() !== repos.join()) {
+      return finish(false, 'file-content-wrong', written)
+    }
+
+    // --- main's side ------------------------------------------------------------------
+    const folders = repos.map((path) => ({ path, name: basename(path) }))
+    const before = readFileSync(target, 'utf8')
+    const outcomes = await js<{ again: unknown; other: unknown; climb: string }>(`(async () => {
+      const save = (args) => window.rigee.invoke('workspace:saveWorkspaceFile', args)
+      const folders = ${JSON.stringify(folders)}
+      const again = await save({ name: 'myworkspace', folders, location: 'named', current: ${JSON.stringify(target)} })
+      const other = await save({ name: 'myworkspace', folders: folders.slice(1), location: 'named', current: null })
+      const climb = await save({ name: '../escape', folders, location: 'named' }).then(() => '', (e) => String(e && e.message || e))
+      return { again, other, climb }
+    })()`)
+    trail.push(`saved again: ${JSON.stringify(outcomes.again)}; another workspace, same name: ${JSON.stringify(outcomes.other)}; ../escape: ${outcomes.climb}`)
+    if (outcomes.again !== target) return finish(false, 'resaving-its-own-file-asked-or-failed')
+    if (outcomes.other !== null || readFileSync(target, 'utf8') !== before) return finish(false, 'replaced-another-workspaces-file-without-asking')
+    if (!outcomes.climb || existsSync(join(filed, '..', 'escape'))) return finish(false, 'a-climbing-name-was-not-refused')
+
+    finish(true, 'filed')
+  } catch (err) {
+    console.error('[smoke:workspacefiles] threw:', err)
+    finish(false, 'threw')
   }
 }
 
@@ -2840,6 +3103,16 @@ async function runPluginsSmoke(): Promise<void> {
     // being on disk — a packaged app has no src/ to open.
     const textFixture = join(app.getPath('userData'), 'smoke.ts')
     writeFileSync(textFixture, 'export const answer = 42\n', 'utf8')
+    // Three by two, RGBA, half of it transparent: small enough to inline, odd enough that a viewer
+    // reporting the wrong size cannot pass by accident.
+    const imageFixture = join(app.getPath('userData'), 'smoke.png')
+    writeFileSync(
+      imageFixture,
+      Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAFElEQVR4nGP4z8DwHwgbQBQDMgcAeyoI+eLGsqMAAAAASUVORK5CYII=', 'base64')
+    )
+    // And one bigger than any pane, which has to open shrunk to fit.
+    const bigImageFixture = join(app.getPath('userData'), 'smoke-big.png')
+    writeFileSync(bigImageFixture, solidPng(2000, 1500))
 
     const result = (await wc.executeJavaScript(
       `(async () => {
@@ -2859,6 +3132,11 @@ async function runPluginsSmoke(): Promise<void> {
         trail.push('.pdf resolves to ' + pdfView + ', .ts resolves to ' + textView)
         if (pdfView !== 'pdf.preview') return fail('pdf-editor-not-declared')
         if (textView !== 'text-editor.monaco') return fail('text-editor-is-not-the-floor')
+        const imageViews = ['/tmp/a.png', '/tmp/A.JPG', '/tmp/a.webp', '/tmp/a.gif'].map(p => plugins.resolveViewType(p))
+        trail.push('images resolve to ' + [...new Set(imageViews)].join(','))
+        if (imageViews.some(v => v !== 'image.preview')) return fail('image-viewer-not-declared', { imageViews })
+        // SVG is source people edit, and there is no "open with" to get back to the text.
+        if (plugins.resolveViewType('/tmp/a.svg') !== 'text-editor.monaco') return fail('svg-taken-from-the-text-editor')
 
         // The source control panel is in the right rail and visible by default, so its plugin
         // should come up on its own shortly after first paint.
@@ -2890,6 +3168,7 @@ async function runPluginsSmoke(): Promise<void> {
         trail.push('plugins loaded: ' + loaded.join(',') )
         if (!loaded.includes('text-editor')) return fail('text-editor-not-active')
         if (loaded.includes('pdf')) return fail('pdf-plugin-loaded-for-a-text-file')
+        if (loaded.includes('image')) return fail('image-plugin-loaded-for-a-text-file')
         if (loaded.includes('browser')) return fail('browser-plugin-loaded-unprompted')
 
         // --- the activity bar -------------------------------------------------
@@ -2998,6 +3277,77 @@ async function runPluginsSmoke(): Promise<void> {
       readFileSync(join(app.getPath('userData'), 'workspaces.json'), 'utf8')
     ).disabledPlugins as string[] | undefined
 
+    /*
+     * Last, because it is the one that builds the main-side host from the renderer: an image. The
+     * viewer loads on demand, reads the bytes through its main half, and shows the picture at its
+     * own size — it is smaller than the pane, and fitting never enlarges.
+     */
+    const imageActiveBefore = host.active().includes('image')
+    const shown = JSON.parse(
+      (await wc.executeJavaScript(
+        `(async () => {
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+          const { store, plugins } = window.__rigee
+          const fail = (stage, extra) => JSON.stringify(Object.assign({ ok: false, stage }, extra || {}))
+          store.getState().openTab('__scratch__', {
+            id: 'plugins-smoke-image', kind: 'editor', title: 'smoke.png', pinned: false,
+            filePath: ${JSON.stringify(imageFixture)}, repoId: null, readOnly: true,
+            viewType: plugins.resolveViewType(${JSON.stringify(imageFixture)})
+          })
+          let pic = null
+          for (let i = 0; i < 60; i++) {
+            pic = document.querySelector('.image__picture')
+            if (pic && pic.complete && pic.naturalWidth > 0 && pic.style.width) break
+            await sleep(250)
+          }
+          if (!pic || pic.naturalWidth !== 3 || pic.naturalHeight !== 2) {
+            return fail('image-never-shown', { natural: pic ? [pic.naturalWidth, pic.naturalHeight] : null })
+          }
+          const info = document.querySelector('.image__info')?.textContent || ''
+          const zoom = document.querySelector('.image__zoom')?.textContent || ''
+          let shown = info + ' at ' + zoom + ', drawn ' + pic.style.width + ' × ' + pic.style.height
+          if (!info.startsWith('3 × 2 · PNG')) return fail('image-info-wrong', { shown })
+          if (zoom !== '100%' || pic.style.width !== '3px') return fail('a-small-image-was-enlarged-to-fit', { shown })
+          if (!(await plugins.activated()).includes('image')) return fail('image-plugin-not-active')
+
+          // A picture bigger than the pane opens fitted, and the keys move between that and its
+          // real size.
+          const big = ${JSON.stringify(bigImageFixture)}
+          store.getState().openTab('__scratch__', {
+            id: 'plugins-smoke-big', kind: 'editor', title: 'smoke-big.png', pinned: false,
+            filePath: big, repoId: null, readOnly: true, viewType: plugins.resolveViewType(big)
+          })
+          let el = null
+          for (let i = 0; i < 60; i++) {
+            el = document.querySelector('.image__picture')
+            if (el && el.naturalWidth === 2000 && el.style.width) break
+            await sleep(250)
+          }
+          if (!el || el.naturalWidth !== 2000) return fail('big-image-never-shown')
+          const zoomNow = () => document.querySelector('.image__zoom')?.textContent || ''
+          const fitOn = () => [...document.querySelectorAll('.image__bar .btn')]
+            .some(b => b.textContent === 'Fit' && b.classList.contains('btn--primary'))
+          const fitted = zoomNow()
+          if (!fitOn() || !(parseInt(fitted) < 100)) return fail('big-image-not-fitted', { fitted })
+          const view = document.querySelector('.image__viewport')
+          const key = async (k) => {
+            view.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+            await sleep(200)
+          }
+          await key('1')
+          if (zoomNow() !== '100%' || el.style.width !== '2000px' || fitOn()) return fail('1-is-not-actual-size', { zoom: zoomNow() })
+          await key('-')
+          const smaller = zoomNow()
+          if (!(parseInt(smaller) < 100)) return fail('minus-did-not-zoom-out', { smaller })
+          await key('0')
+          if (zoomNow() !== fitted || !fitOn()) return fail('0-did-not-fit-again', { zoom: zoomNow(), fitted })
+          shown += '; 2000 × 1500 opened at ' + fitted + ', 1 → 100%, − → ' + smaller + ', 0 → ' + zoomNow()
+          return JSON.stringify({ ok: true, shown })
+        })()`,
+        true
+      )) as string
+    ) as { ok: boolean }
+
     const ok =
       info.ok &&
       (JSON.parse(off) as { ok: boolean }).ok &&
@@ -3008,7 +3358,10 @@ async function runPluginsSmoke(): Promise<void> {
       !active.includes('browser') &&
       refused &&
       (disabled ?? []).includes('scm') &&
-      !host.active().includes('scm')
+      !host.active().includes('scm') &&
+      shown.ok &&
+      !imageActiveBefore &&
+      host.active().includes('image')
 
     console.log(
       '[smoke:plugins]',
@@ -3020,7 +3373,9 @@ async function runPluginsSmoke(): Promise<void> {
         disableInRenderer: JSON.parse(off),
         mainActiveAfterDisabling: host.active(),
         disabledPluginRefusedInMain: refused,
-        disabledOnDisk: disabled
+        disabledOnDisk: disabled,
+        image: shown,
+        imageMainHalfLoadedOnDemand: !imageActiveBefore && host.active().includes('image')
       })
     )
     app.exit(ok ? 0 : 1)
@@ -3043,6 +3398,42 @@ async function runPluginsSmoke(): Promise<void> {
  * The xref offsets have to be right: pdf.js can reconstruct a broken table, and a fixture that
  * quietly exercises the recovery path instead of the normal one is not the test anyone wanted.
  */
+/**
+ * A PNG of any size, in one colour: for the image viewer's checks, which need a picture bigger
+ * than the pane and cannot count on the repo's own images — a packaged app has no build/ folder.
+ */
+function solidPng(width: number, height: number): Buffer {
+  const crc = (bytes: Buffer): number => {
+    let c = ~0
+    for (const b of bytes) {
+      c ^= b
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+    }
+    return ~c >>> 0
+  }
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const out = Buffer.alloc(12 + data.length)
+    out.writeUInt32BE(data.length, 0)
+    body.copy(out, 4)
+    out.writeUInt32BE(crc(body), 8 + data.length)
+    return out
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header.set([8, 2, 0, 0, 0], 8) // 8-bit truecolour, no interlace
+  // Each row: filter byte 0, then RGB — the accent's indigo, so a screenshot shows it plainly.
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: width }, () => [0x81, 0x8c, 0xf8]).flat())])
+  const pixels = Buffer.concat(Array.from({ length: height }, () => row))
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(pixels)),
+    chunk('IEND', Buffer.alloc(0))
+  ])
+}
+
 function minimalPdf(marker: string): Buffer {
   const content = `BT /F1 24 Tf 40 500 Td (${marker}) Tj ET\n`
   const objects = [
@@ -3594,6 +3985,7 @@ function registerHandlers(): void {
     saveAllUi(ui)
   })
   handle('state:saveKeybindings', ({ keybindings }) => { saveKeybindings(keybindings) })
+  handle('state:saveSettings', ({ settings }) => { saveSettings(settings) })
   handle('plugins:list', () =>
     installedPlugins().map((p) => ({ ...p, rendererUrl: rendererEntryUrl(p.manifest.id) }))
   )
@@ -3617,12 +4009,16 @@ function registerHandlers(): void {
     await pluginHost?.setDisabled(disabled)
   })
 
+  // --- menus -------------------------------------------------------------
+  handle('menu:popup', ({ items }) => (window ? popupContextMenu(window, items) : null))
+
   // --- workspaces --------------------------------------------------------
-  handle('workspace:pickFolder', async () => {
+  handle('workspace:pickFolder', async (args) => {
     if (!window) return null
     const res = await dialog.showOpenDialog(window, {
       properties: ['openDirectory', 'createDirectory'],
-      message: 'Add a folder to this workspace'
+      message: args?.message ?? 'Add a folder to this workspace',
+      ...(args?.defaultPath ? { defaultPath: resolveWorkspaceFilesDir(args.defaultPath, homedir()) ?? undefined } : {})
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]!
   })
@@ -3638,10 +4034,13 @@ function registerHandlers(): void {
 
   handle('workspace:pickWorkspaceFile', async () => {
     if (!window) return null
+    // Starting where saved workspaces are kept, when there is such a place.
+    const filed = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
     const res = await dialog.showOpenDialog(window, {
       properties: ['openFile'],
       filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
-      message: 'Open a workspace file'
+      message: 'Open a workspace file',
+      ...(filed ? { defaultPath: filed } : {})
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]!
   })
@@ -3665,16 +4064,33 @@ function registerHandlers(): void {
     return { name: parsed.name, folders }
   })
 
-  handle('workspace:saveWorkspaceFile', async ({ suggestedName, folders }) => {
+  handle('workspace:saveWorkspaceFile', async ({ name, folders, location, current }) => {
     if (!window) return null
-    const res = await dialog.showSaveDialog(window, {
-      defaultPath: `${suggestedName}.code-workspace`,
-      filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
-      message: 'Save workspace as'
-    })
-    if (res.canceled || !res.filePath) return null
-    writeFileSync(res.filePath, serializeWorkspaceFile(folders, res.filePath), 'utf8')
-    return res.filePath
+    let target: string
+    if (location === 'named') {
+      // Checked here whatever the sidebar said: the name becomes two path segments, and one that
+      // could climb out of the folder the user chose must never reach the filesystem.
+      const problem = workspaceNameProblem(name)
+      if (problem) throw new Error(problem)
+      const dir = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
+      if (!dir) throw new Error('Choose a folder for workspace files in Settings first.')
+      target = namedWorkspaceFile(dir, name, sep)
+      // Another workspace's file of the same name is asked about, as a save dialog would ask. This
+      // workspace's own file is simply the save the user asked for.
+      const ours = !!current && resolve(current) === target
+      if (existsSync(target) && !ours && !(await confirmReplace(window, target))) return null
+      mkdirSync(dirname(target), { recursive: true })
+    } else {
+      const res = await dialog.showSaveDialog(window, {
+        defaultPath: current ?? `${name}${WORKSPACE_FILE_EXTENSION}`,
+        filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+        message: 'Save workspace as'
+      })
+      if (res.canceled || !res.filePath) return null
+      target = res.filePath
+    }
+    writeFileSync(target, serializeWorkspaceFile(folders, target), 'utf8')
+    return target
   })
 
   // --- clipboard ---------------------------------------------------------
@@ -3721,19 +4137,57 @@ function registerHandlers(): void {
   registerPluginHandlers()
 }
 
+/** The question a save dialog asks before it overwrites a file, for a save that has no dialog. */
+async function confirmReplace(win: BrowserWindow, file: string): Promise<boolean> {
+  // `smoke:workspacefiles` answers for the user: the question must never appear during a test.
+  const scripted = process.env.RIGEE_SMOKE ? process.env.RIGEE_SMOKE_REPLACE_ANSWER : undefined
+  if (scripted === 'replace' || scripted === 'cancel') return scripted === 'replace'
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Replace', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    message: `“${basename(file)}” already exists. Do you want to replace it?`,
+    detail: `A workspace file with the same name is already in ${dirname(file)}. Replacing it overwrites the folders it lists.`
+  })
+  return response === 0
+}
+
 function registerTerminalHandlers(): void {
   const mgr = (): PtyManager => {
     if (!ptys) throw new Error('window not ready')
     return ptys
   }
 
-  handle('terminal:spawn', async ({ workspaceId, cwd, cols, rows }) => {
+  handle('terminal:spawn', async ({ workspaceId, cwd, cwdFrom, cols, rows }) => {
     // A packaged app starts with a minimal PATH, so the shell must be findable before we spawn.
     await ensureShellPath()
-    return mgr().spawn({ workspaceId, cwd, cols, rows })
+    return mgr().spawn({ workspaceId, cwd, cwdFrom, cols, rows })
   })
   handle('terminal:resize', ({ paneId, cols, rows }) => { mgr().resize(paneId, cols, rows) })
   handle('terminal:kill', ({ paneId }) => { mgr().kill(paneId) })
+  handle('terminal:running', ({ paneIds }) => mgr().running(paneIds))
+
+  handle('dialog:closeRunning', async ({ processes, tabs }) => {
+    // `smoke:tabs` answers for the user, the way `smoke:editing` answers the unsaved-changes dialog.
+    const scripted = process.env.RIGEE_SMOKE ? process.env.RIGEE_SMOKE_RUNNING_ANSWER : undefined
+    if (scripted === 'close' || scripted === 'cancel') return scripted === 'close'
+    const one = processes.length === 1
+    const options = {
+      type: 'warning' as const,
+      buttons: ['Close', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      message: one ? `“${processes[0]}” is still running` : `${processes.length} programs are still running`,
+      detail:
+        `Closing ${tabs === 1 ? 'the tab' : `these ${tabs} tabs`} will stop ` +
+        (one ? 'it.' : `them: ${[...new Set(processes)].join(', ')}.`)
+    }
+    const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options)
+    return response === 0
+  })
   handle('terminal:requestPort', ({ workspaceId }) => { mgr().establishPort(workspaceId) })
   handle('terminal:disconnect', ({ workspaceId }) => { mgr().disconnect(workspaceId) })
 }

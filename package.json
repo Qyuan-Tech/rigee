@@ -55,7 +55,8 @@
     "smoke:migrate": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=migrate electron .",
     "smoke:diskplugin": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=diskplugin electron .",
     "smoke:keys": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=keys electron .",
-    "smoke:editing": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=editing electron ."
+    "smoke:editing": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=editing electron .",
+    "smoke:workspacefiles": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=workspacefiles electron ."
   },
   "dependencies": {
     "@parcel/watcher": "2.6.0",

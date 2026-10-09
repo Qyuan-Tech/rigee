@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client'
 import './plugins/shellHost'
 import { App } from './App'
 import { PluginsView } from './components/PluginsView'
+import { menuProbe } from './contextMenu'
 import { activatedPlugins } from './plugins/activate'
 import { bind } from './plugins/bindings'
 import { resolveViewType } from './plugins/registry'
@@ -23,6 +24,9 @@ import './theme.css'
  * `plugins` is here for `pnpm smoke:plugins`, which has to assert a negative the DOM cannot show:
  * that opening a text file did NOT load the PDF plugin. Both are cordis-free lookups, so reaching
  * for them from the smoke script cannot itself change what is loaded.
+ *
+ * `menus` is for `pnpm smoke:tabs`: the tab strip's menu is native, so the check answers it here
+ * rather than clicking it.
  */
 declare global {
   interface Window {
@@ -32,6 +36,7 @@ declare global {
       paneKey: typeof paneKey
       newTerminalTab: typeof newTerminalTab
       plugins: { activated: typeof activatedPlugins; resolveViewType: typeof resolveViewType }
+      menus: typeof menuProbe
     }
   }
 }
@@ -40,7 +45,8 @@ window.__rigee = {
   getTerminal,
   paneKey,
   newTerminalTab,
-  plugins: { activated: activatedPlugins, resolveViewType }
+  plugins: { activated: activatedPlugins, resolveViewType },
+  menus: menuProbe
 }
 
 /*

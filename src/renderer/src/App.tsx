@@ -27,7 +27,7 @@ import {
 } from '@shared/types'
 
 /**
- * The shortcuts dialog, fetched the first time it opens. It is the largest piece of UI the shell
+ * The settings dialog, fetched the first time it opens. It is the largest piece of UI the shell
  * has and the one used least, and `pnpm perf:check` holds the entry chunk to a budget that
  * everything on screen at startup has to fit in.
  */
@@ -94,6 +94,7 @@ export function App(): React.ReactElement {
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
       if (activeUi) store.setLayout(activeUi.layout)
       if (state.keybindings) store.setKeybindings(state.keybindings)
+      if (state.settings) store.setSettings(state.settings)
       store.setReady(true)
     })()
     return () => { cancelled = true }
@@ -211,7 +212,7 @@ function TitleBar({ onSettings }: { onSettings: () => void }): React.ReactElemen
       {workspace && <span className="titlebar__context">{workspace.name}</span>}
       <button
         className="icon-button"
-        title="Keyboard shortcuts"
+        title="Settings"
         // Never takes the focus: clicking it must leave the keyboard wherever the user was typing.
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSettings}

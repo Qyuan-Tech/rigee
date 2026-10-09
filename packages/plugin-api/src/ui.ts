@@ -100,6 +100,7 @@ export interface IconSet {
   CollapseLeft: ComponentType<IconProps>
   CollapseRight: ComponentType<IconProps>
   Search: ComponentType<IconProps>
+  Image: ComponentType<IconProps>
   /** The one icon with a state: `open` rotates it. */
   Chevron: ComponentType<IconProps & { open?: boolean }>
 }

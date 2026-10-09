@@ -23,6 +23,7 @@ import { isDuplicableViewType, resolveViewType, viewTypeForLegacyKind } from './
 import {
   DEFAULT_KEYBINDINGS,
   DEFAULT_PANEL_LAYOUT,
+  type AppSettings,
   type PanelLayout,
   type Tab,
   type TabGroup,
@@ -74,8 +75,10 @@ interface AppState {
   pluginStateByWorkspace: Record<WorkspaceId, Record<PluginId, Record<string, unknown>>>
 
   keybindings: KeyBindings
+  /** Preferences other than key bindings: the settings dialog's General page. */
+  settings: AppSettings
   /**
-   * Whether the shortcuts dialog is open. Here rather than in App's local state because Cmd+, opens
+   * Whether the settings dialog is open. Here rather than in App's local state because Cmd+, opens
    * it from a key handler that is nowhere near the component tree.
    */
   settingsOpen: boolean
@@ -124,6 +127,7 @@ interface AppState {
     patch: Record<string, unknown>
   ) => void
   setKeybindings: (keybindings: KeyBindings) => void
+  setSettings: (settings: AppSettings) => void
   setSettingsOpen: (open: boolean) => void
 }
 
@@ -136,6 +140,7 @@ export const useApp = create<AppState>()(
     layout: { ...DEFAULT_PANEL_LAYOUT },
     pluginStateByWorkspace: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
+    settings: {},
     settingsOpen: false,
     dirtyFiles: {},
 
@@ -309,6 +314,7 @@ export const useApp = create<AppState>()(
       }),
 
     setKeybindings: (keybindings) => set({ keybindings }),
+    setSettings: (settings) => set({ settings }),
     setSettingsOpen: (settingsOpen) => set({ settingsOpen })
   }))
 )

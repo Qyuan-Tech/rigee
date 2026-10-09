@@ -222,6 +222,15 @@ export const SearchIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** A framed landscape: a picture, which every image viewer's icon already is. */
+export const ImageIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <circle cx="5.75" cy="6.25" r="1.1" />
+    <path d="m2.5 11.5 3.3-3.1a1 1 0 0 1 1.4 0l1.3 1.3 1.6-1.6a1 1 0 0 1 1.4 0l2 2" />
+  </Svg>
+)
+
 /** A puzzle piece: plugins. The one icon everyone already reads as "extensions". */
 export const PluginIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>
@@ -260,5 +269,6 @@ export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
   branch: BranchIcon,
   folder: FolderIcon,
   plugin: PluginIcon,
-  search: SearchIcon
+  search: SearchIcon,
+  image: ImageIcon
 }

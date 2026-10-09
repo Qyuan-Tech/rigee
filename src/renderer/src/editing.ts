@@ -1,5 +1,6 @@
 import { allTabs } from './groups'
 import { onEvent, rpc } from './ipc'
+import { leaves } from './paneTree'
 import { viewsIn } from './plugins/registry'
 import { rowOf, useApp } from './store'
 import type { TabId, WorkspaceId } from '@shared/types'
@@ -56,14 +57,33 @@ async function discardAll(paths: readonly string[]): Promise<void> {
   for (const path of paths) await handlers.get(path)?.discard().catch(() => undefined)
 }
 
+interface CloseOptions {
+  /**
+   * The tab a bulk close was aimed at: "Close Others" on this one. Any OTHER tab it would take with
+   * a program still running in its terminal is asked about first. The tab aimed at is not: it was
+   * chosen, exactly as pressing its × chooses it.
+   */
+  sweptFrom?: TabId
+}
+
 /**
- * Close tabs, asking first about any unsaved file that would go with them.
+ * Close tabs, asking first about any unsaved file that would go with them — and, for a sweep,
+ * about any program still running in a terminal it would stop.
  *
  * Only files that would really be gone: a file still open in another tab — the same document in
  * two columns — keeps its changes there, and asking about it would be asking about nothing. Save
  * saves them and closes; Don't Save drops the changes and closes; Cancel closes nothing.
  */
-export async function closeTabsSafely(workspaceId: WorkspaceId, tabIds: readonly TabId[]): Promise<boolean> {
+export async function closeTabsSafely(
+  workspaceId: WorkspaceId,
+  tabIds: readonly TabId[],
+  options: CloseOptions = {}
+): Promise<boolean> {
+  if (options.sweptFrom !== undefined) {
+    const collateral = tabIds.filter((id) => id !== options.sweptFrom)
+    if (!(await confirmRunning(workspaceId, collateral, tabIds.length))) return false
+  }
+
   const s = useApp.getState()
   const closing = new Set(tabIds)
   const remaining = Object.values(s.rowsByWorkspace).flatMap((row) => allTabs(row)).filter((t) => !closing.has(t.id))
@@ -84,6 +104,25 @@ export async function closeTabsSafely(workspaceId: WorkspaceId, tabIds: readonly
   }
   useApp.getState().closeTabs(workspaceId, [...tabIds])
   return true
+}
+
+/**
+ * Ask before stopping programs still running in the terminals among `tabIds`. True means go ahead:
+ * nothing there is running, the platform cannot tell, or the user said close them anyway.
+ *
+ * A shell idling at its prompt is not asked about — closing one loses nothing — which keeps the
+ * question rare enough to be read when it does come: an agent mid-task, a build, a server.
+ */
+async function confirmRunning(workspaceId: WorkspaceId, tabIds: readonly TabId[], closing: number): Promise<boolean> {
+  const ids = new Set(tabIds)
+  const paneIds = allTabs(rowOf(useApp.getState(), workspaceId)).flatMap((t) =>
+    t.kind === 'terminal' && ids.has(t.id) ? leaves(t.root).flatMap((l) => (l.paneId ? [l.paneId] : [])) : []
+  )
+  if (paneIds.length === 0) return true
+  // A question that cannot be answered does not stop the close: the user asked for it.
+  const running = await rpc['terminal:running']({ paneIds }).catch(() => [])
+  if (running.length === 0) return true
+  return rpc['dialog:closeRunning']({ processes: running.map((r) => r.process), tabs: closing })
 }
 
 /**

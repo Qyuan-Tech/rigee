@@ -7,8 +7,9 @@
  * Pure functions, no Electron and no filesystem. Worth testing on their own because the failure
  * modes are invisible: a split that nests instead of absorbing, or a removal that leaves a
  * one-child split behind, both still render — they just accumulate wrapper nodes and make the
- * size arithmetic drift. A bulk tab close that sweeps up a terminal is worse than invisible, it
- * takes a running process with it.
+ * size arithmetic drift. A bulk tab close that sweeps up the wrong tabs is worse than invisible:
+ * it takes a running process or a page with it. And a workspace name that climbs out of its folder
+ * writes a file somewhere nobody asked for.
  */
 
 import {
@@ -50,7 +51,7 @@ import {
   type KeyEventLike,
   type Keymap
 } from '../src/shared/keymap.ts'
-import { isFileTab, nextActiveTab, tabsToClose } from '../src/renderer/src/tabs.ts'
+import { isCloseCommand, isFileTab, nextActiveTab, tabsToClose } from '../src/renderer/src/tabs.ts'
 import {
   activateTab,
   allTabs,
@@ -65,7 +66,12 @@ import {
   singleGroupRow,
   splitGroup
 } from '../src/renderer/src/groups.ts'
-import { parseWorkspaceFile, serializeWorkspaceFile } from '../src/main/workspaceFile.ts'
+import { parseWorkspaceFile, resolveWorkspaceFilesDir, serializeWorkspaceFile } from '../src/main/workspaceFile.ts'
+import {
+  namedWorkspaceFile,
+  workspaceFilesDirProblem,
+  workspaceNameProblem
+} from '../src/shared/workspaceFiles.ts'
 import type { PaneNode, Tab } from '../src/shared/types.ts'
 
 let failures = 0
@@ -328,6 +334,46 @@ console.log('\n.code-workspace files')
   eq('what is written parses back to the same paths',
     parseWorkspaceFile(written, file).folders.map((f) => f.path).join(','),
     '/projects/group/api,/elsewhere/web')
+}
+
+console.log('\nnamed workspace files')
+{
+  eq('a plain name is fine', workspaceNameProblem('myworkspace'), null)
+  eq('so is one with spaces and dots inside', workspaceNameProblem('jira migrate v2.1'), null)
+  eq('and one in another script', workspaceNameProblem('我的工作区'), null)
+  check('an empty name is not', workspaceNameProblem('') !== null)
+  check('nor only spaces', workspaceNameProblem('   ') !== null)
+  check('nor a leading or trailing space', workspaceNameProblem(' a') !== null && workspaceNameProblem('a ') !== null)
+  // The checks that keep a name from climbing out of the folder it is filed under.
+  check('nor ..', workspaceNameProblem('..') !== null)
+  check('nor a separator either way', workspaceNameProblem('a/b') !== null && workspaceNameProblem('a\\b') !== null)
+  check('nor ../escape', workspaceNameProblem('../escape') !== null)
+  check('nor what Windows refuses', [':', '*', '?', '"', '<', '>', '|'].every((c) => workspaceNameProblem(`a${c}b`) !== null))
+  check('nor a control character', workspaceNameProblem('a\u0007b') !== null)
+  check('nor a trailing dot', workspaceNameProblem('name.') !== null)
+
+  eq('filed in a folder of its own', namedWorkspaceFile('/w', 'my', '/'), '/w/my/my.code-workspace')
+  eq('a trailing separator is not doubled', namedWorkspaceFile('/w/', 'my', '/'), '/w/my/my.code-workspace')
+  eq('the root works', namedWorkspaceFile('/', 'my', '/'), '/my/my.code-workspace')
+  eq('Windows separators', namedWorkspaceFile('C:\\ws', 'my', '\\'), 'C:\\ws\\my\\my.code-workspace')
+  eq('a drive root', namedWorkspaceFile('C:\\', 'my', '\\'), 'C:\\my\\my.code-workspace')
+
+  eq('no folder is fine', workspaceFilesDirProblem(''), null)
+  eq('an absolute one is', workspaceFilesDirProblem('/Users/me/Workspaces'), null)
+  eq('so is one from home', workspaceFilesDirProblem('~/Workspaces'), null)
+  eq('and home itself', workspaceFilesDirProblem('~'), null)
+  eq('and a Windows path', workspaceFilesDirProblem('D:\\Workspaces'), null)
+  eq('and a share', workspaceFilesDirProblem('\\\\server\\share'), null)
+  check('a relative one is not', workspaceFilesDirProblem('Workspaces') !== null)
+  check('nor ~user, which is somebody else\'s home', workspaceFilesDirProblem('~bob/ws') !== null)
+
+  eq('unset resolves to nothing', resolveWorkspaceFilesDir(undefined, '/home/me'), null)
+  eq('blank too', resolveWorkspaceFilesDir('  ', '/home/me'), null)
+  eq('~ is home', resolveWorkspaceFilesDir('~', '/home/me'), '/home/me')
+  eq('~/ is under it', resolveWorkspaceFilesDir('~/Workspaces', '/home/me'), '/home/me/Workspaces')
+  eq('an absolute path is kept, tidied', resolveWorkspaceFilesDir('/w/./x/', '/home/me'), '/w/x')
+  eq('a relative one is refused, not resolved against wherever the app started',
+    resolveWorkspaceFilesDir('ws', '/home/me'), null)
 }
 
 console.log('\nshortcuts: parsing Ghostty syntax')
@@ -621,38 +667,45 @@ console.log('\ntab strip')
     !isFileTab({ id: 'z', kind: 'custom', title: 'z', pinned: false,
                  viewType: 'ghost.view', state: {} }, isDocument))
 
-  // The whole point of the feature: terminals and browsers share the strip and must come through
-  // every bulk close untouched. A swept-up terminal takes a running process with it.
+  // One strip, one set of commands: terminals, pages and files are swept alike, whichever kind
+  // of tab the menu was opened on. A running program is asked about by the caller, not skipped.
   const mixed = [terminal('t1'), editor('e1'), browser('b1'), editor('e2'), diff('d1'), terminal('t2')]
 
-  eq('close others spares terminals and browsers',
-    tabsToClose(mixed, 'e1', 'others', isDocument).join(','), 'e2,d1')
-  eq('close to the right spares them too',
-    tabsToClose(mixed, 'e1', 'right', isDocument).join(','), 'e2,d1')
-  eq('close all means all FILES',
-    tabsToClose(mixed, 'e1', 'all', isDocument).join(','), 'e1,e2,d1')
+  eq('close others takes every other kind of tab',
+    tabsToClose(mixed, 'e1', 'others').join(','), 't1,b1,e2,d1,t2')
+  eq('close to the right takes terminals and pages too',
+    tabsToClose(mixed, 'e1', 'right').join(','), 'b1,e2,d1,t2')
+  eq('close all means all',
+    tabsToClose(mixed, 'e1', 'all').join(','), 't1,e1,b1,e2,d1,t2')
 
-  eq('close to the right of the last file tab is empty',
-    tabsToClose(mixed, 'd1', 'right', isDocument).length, 0)
+  // The same commands from a terminal or a page as from a file.
+  eq('close others from a terminal',
+    tabsToClose(mixed, 't1', 'others').join(','), 'e1,b1,e2,d1,t2')
+  eq('close to the right from a page',
+    tabsToClose(mixed, 'b1', 'right').join(','), 'e2,d1,t2')
+
+  eq('close to the right of the last tab is empty',
+    tabsToClose(mixed, 't2', 'right').length, 0)
   eq('close others excludes the target',
-    tabsToClose(mixed, 'e2', 'others', isDocument).join(','), 'e1,d1')
+    tabsToClose(mixed, 'e2', 'others').includes('e2'), false)
+  eq('close others with nothing else open is empty',
+    tabsToClose([terminal('only')], 'only', 'others').length, 0)
 
-  // A terminal between two editors is skipped, not treated as the right-hand boundary.
-  eq('a terminal in the middle does not stop the sweep',
-    tabsToClose([editor('a'), terminal('t'), editor('b')], 'a', 'right', isDocument).join(','), 'b')
-
-  eq('an unknown tab closes nothing', tabsToClose(mixed, 'nope', 'all', isDocument).length, 0)
+  eq('an unknown tab closes nothing', tabsToClose(mixed, 'nope', 'all').length, 0)
 
   // Pinned: TabBase says pinned tabs survive "close others", so they must also survive the
   // narrower sweep, but not an explicit close-all. Matches VSCode.
-  const withPinned = [editor('p', true), editor('x'), editor('y')]
+  const withPinned = [editor('p', true), editor('x'), terminal('y')]
   eq('a pinned tab survives close others',
-    tabsToClose(withPinned, 'x', 'others', isDocument).join(','), 'y')
+    tabsToClose(withPinned, 'x', 'others').join(','), 'y')
   eq('and survives close to the right',
-    tabsToClose([editor('a'), editor('p', true), editor('z')], 'a', 'right', isDocument).join(','),
+    tabsToClose([editor('a'), browser('p'), editor('z')].map((t) => (t.id === 'p' ? { ...t, pinned: true } : t)), 'a', 'right').join(','),
     'z')
   eq('but close all takes it',
-    tabsToClose(withPinned, 'x', 'all', isDocument).join(','), 'p,x,y')
+    tabsToClose(withPinned, 'x', 'all').join(','), 'p,x,y')
+
+  check('the menu ids are close commands', ['others', 'right', 'all'].every(isCloseCommand))
+  check('and nothing else is', !isCloseCommand('close') && !isCloseCommand(''))
 
   // Selection after a bulk close. Computed once, so it cannot walk through doomed tabs.
   const ids = (...xs: string[]): Set<string> => new Set(xs)

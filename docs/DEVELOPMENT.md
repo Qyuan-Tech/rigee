@@ -17,12 +17,12 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 273 checks on the split tree, the group row, key chords, the shortcut table and the tab strip |
+| `pnpm panes:selftest` | 309 checks on the split tree, the group row, key chords, the shortcut table, the tab strip and the rules for naming workspace files |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
-| `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not |
+| `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
-| `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys |
-| `pnpm smoke:tabs` | the tab strip's menu and its split button: copy a file, move a terminal |
+| `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
+| `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split button: copy a file, move a terminal |
 | `pnpm smoke:persist` | builds tabs, splits and a two-group row, then reads back what reached disk |
 | `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
@@ -30,6 +30,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:editing` | workspace search, opening a result, saving, the unsaved-changes prompts, a file changed on disk, in-file find |
 | `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
+| `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |

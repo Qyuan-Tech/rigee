@@ -15,6 +15,7 @@ import {
 } from '@shared/keymap'
 import { newTerminalTab, rowOf, useApp } from './store'
 import { closeTabsSafely, revealView } from './editing'
+import { tabsToClose } from './tabs'
 import { closeTerminalPane, getTerminal, inheritFontSize, paneKey } from './terminals'
 
 /**
@@ -219,10 +220,19 @@ export function runAppAction(action: string, fromTerminal: string | null = null)
       else void closeTabsSafely(ws, [tab.id])
       return true
     }
-    case 'close_tab':
-      if (!group.activeTabId) return false
-      void closeTabsSafely(ws, [group.activeTabId])
+    case 'close_tab': {
+      const active = group.activeTabId
+      if (!active) return false
+      // The tab strip's "Close Others" and "Close to the Right", from the keyboard.
+      if (param === 'other' || param === 'right') {
+        const ids = tabsToClose(tabs, active, param === 'other' ? 'others' : 'right')
+        if (ids.length === 0) return false
+        void closeTabsSafely(ws, ids, { sweptFrom: active })
+        return true
+      }
+      void closeTabsSafely(ws, [active])
       return true
+    }
     case 'goto_tab':
       // Clamped to the last tab, as Ghostty's is: Cmd+8 with three tabs open goes to the third.
       return tabs.length > 0 && show(Math.min(Number(param), tabs.length) - 1)

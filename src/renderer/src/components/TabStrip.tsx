@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { canDuplicate, groupById } from '../groups'
+import { useCallback, useRef } from 'react'
+import { canDuplicate, groupById, groupOfTab } from '../groups'
 import { CloseIcon, FileIcon, ICONS, SplitIcon, TerminalIcon } from '../icons'
 import { ensurePlugin } from '../plugins/activate'
 import { tabFactory } from '../plugins/bindings'
@@ -11,10 +11,11 @@ import {
   isDuplicableViewType,
   ownerOf
 } from '../plugins/registry'
+import { popupMenu } from '../contextMenu'
 import { closeTabsSafely } from '../editing'
-import { newTerminalTab, nextTabId, useActiveWorkspace, useApp, useRow } from '../store'
-import { isFileTab, tabsToClose } from '../tabs'
-import type { GroupId, Tab, TabId } from '@shared/types'
+import { newTerminalTab, nextTabId, rowOf, useActiveWorkspace, useApp, useRow } from '../store'
+import { isCloseCommand, isFileTab, tabsToClose } from '../tabs'
+import type { GroupId, Tab, TabId, WorkspaceId } from '@shared/types'
 
 /**
  * A tab's icon, asked for by name in the owning plugin's manifest.
@@ -47,8 +48,8 @@ function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
  * The strip belonging to ONE editor group.
  *
  * Everything it does is scoped to that group: which tabs it shows, which one is active, where a new
- * terminal goes, and what "Close Other Files" reaches. That scoping is the whole difference from
- * the single strip this replaced — with two groups on screen, a bulk close that swept both would be
+ * terminal goes, and what "Close Others" reaches. That scoping is the whole difference from the
+ * single strip this replaced — with two groups on screen, a bulk close that swept both would be
  * astonishing, and VS Code scopes it the same way.
  */
 export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement {
@@ -62,7 +63,6 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
   const setActiveTab = useApp((s) => s.setActiveTab)
   // Every close from the strip goes through the check for unsaved changes.
   const closeTab = (workspaceId: string, tabId: TabId): void => { void closeTabsSafely(workspaceId, [tabId]) }
-  const closeTabs = (workspaceId: string, tabIds: TabId[]): void => { void closeTabsSafely(workspaceId, tabIds) }
   const dirtyFiles = useApp((s) => s.dirtyFiles)
   const openTab = useApp((s) => s.openTab)
   const moveTab = useApp((s) => s.moveTab)
@@ -70,26 +70,6 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? null
   const dragFrom = useRef<number | null>(null)
-  const [menu, setMenu] = useState<{ x: number; y: number; tabId: TabId } | null>(null)
-
-  useEffect(() => {
-    if (!menu) return
-    const dismiss = (): void => setMenu(null)
-    window.addEventListener('mousedown', dismiss)
-    window.addEventListener('keydown', dismiss)
-    window.addEventListener('blur', dismiss)
-    return () => {
-      window.removeEventListener('mousedown', dismiss)
-      window.removeEventListener('keydown', dismiss)
-      window.removeEventListener('blur', dismiss)
-    }
-  }, [menu])
-
-  // A tab can vanish while its menu is open — a shell exiting closes its terminal tab, and the
-  // SCM panel drops a diff tab when the file stops differing.
-  useEffect(() => {
-    if (menu && !tabs.some((t) => t.id === menu.tabId)) setMenu(null)
-  }, [menu, tabs])
 
   const addTerminal = useCallback(() => {
     if (!workspace) return
@@ -175,15 +155,11 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
             else setActiveTab(workspace.id, tab.id)
           }}
           onContextMenu={(e) => {
-            // There is no useful default menu on the strip, so swallow it either way.
+            // There is no useful default menu on the strip.
             e.preventDefault()
-            if (!isFileTab(tab, isDocumentViewType)) return
-            // Select as well as target. Partly because acting on a tab you cannot see is
-            // disorienting, but mostly because a visible browser tab is a native WebContentsView
-            // composited ON TOP of this whole page: the menu would be drawn underneath it and
-            // simply not appear. Selecting a file tab hides every browser view (see CenterPane).
+            // Select as well as target: a command acting on a tab you cannot see is disorienting.
             setActiveTab(workspace.id, tab.id)
-            setMenu({ x: e.clientX, y: e.clientY, tabId: tab.id })
+            void showTabMenu(workspace.id, tab.id, tabs)
           }}
           title={tabTooltip(tab)}
         >
@@ -238,74 +214,37 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           <SplitIcon size={14} />
         </button>
       </div>
-
-      {menu && (
-        <TabMenu
-          x={menu.x}
-          y={menu.y}
-          tabs={tabs}
-          tabId={menu.tabId}
-          onClose={(ids) => { setMenu(null); closeTabs(workspace.id, ids) }}
-        />
-      )}
     </div>
   )
 }
 
-function TabMenu({
-  x,
-  y,
-  tabs,
-  tabId,
-  onClose
-}: {
-  x: number
-  y: number
-  tabs: Tab[]
-  tabId: TabId
-  onClose: (ids: TabId[]) => void
-}): React.ReactElement | null {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState({ left: x, top: y })
+/**
+ * A tab's context menu: the same commands on every kind of tab — terminal, page or file — as VS
+ * Code has them. Greyed rather than left out when there is nothing for one to do, so the menu keeps
+ * its shape from tab to tab.
+ *
+ * Native, and that is what lets terminals and pages have it at all. A browser tab's page is a
+ * native view composited over the whole document and right-clicking a tab selects it, so a menu
+ * drawn in the DOM opened underneath the page and never appeared; this menu used to be offered on
+ * file tabs only for exactly that reason.
+ */
+async function showTabMenu(workspaceId: WorkspaceId, tabId: TabId, tabs: readonly Tab[]): Promise<void> {
+  const none = (command: 'others' | 'right'): boolean => tabsToClose(tabs, tabId, command).length === 0
+  const choice = await popupMenu([
+    { kind: 'item', id: 'close', label: 'Close' },
+    { kind: 'item', id: 'others', label: 'Close Others', enabled: !none('others') },
+    { kind: 'item', id: 'right', label: 'Close to the Right', enabled: !none('right') },
+    { kind: 'separator' },
+    { kind: 'item', id: 'all', label: 'Close All' }
+  ])
+  if (!choice) return
 
-  // Keep the menu on screen. useLayoutEffect rather than useEffect so the corrected position is
-  // committed before the browser paints — with useEffect the menu would flash at the edge first.
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const { width, height } = el.getBoundingClientRect()
-    setPos({
-      left: Math.max(4, Math.min(x, window.innerWidth - width - 4)),
-      top: Math.max(4, Math.min(y, window.innerHeight - height - 4))
-    })
-  }, [x, y])
-
-  if (!tabs.some((t) => t.id === tabId)) return null
-
-  const others = tabsToClose(tabs, tabId, 'others', isDocumentViewType)
-  const toRight = tabsToClose(tabs, tabId, 'right', isDocumentViewType)
-
-  return (
-    <div className="menu" ref={ref} style={pos} onMouseDown={(e) => e.stopPropagation()}>
-      <button className="menu__item" onClick={() => onClose([tabId])}>
-        <span>Close</span>
-      </button>
-      <button className="menu__item" disabled={others.length === 0} onClick={() => onClose(others)}>
-        <span>Close Other Files</span>
-      </button>
-      <button className="menu__item" disabled={toRight.length === 0} onClick={() => onClose(toRight)}>
-        <span>Close Files to the Right</span>
-      </button>
-      <div className="menu__sep" />
-      {/* Named for what it does. "Close All" above a surviving terminal tab would be a lie. */}
-      <button
-        className="menu__item"
-        onClick={() => onClose(tabsToClose(tabs, tabId, 'all', isDocumentViewType))}
-      >
-        <span>Close All Files</span>
-      </button>
-    </div>
-  )
+  // Worked out again from the store as it is now, not from the strip the menu opened over: a menu
+  // stays up as long as the user takes over it, and a shell can exit or a diff drop out meanwhile.
+  const group = groupOfTab(rowOf(useApp.getState(), workspaceId), tabId)
+  if (!group) return
+  if (choice === 'close') void closeTabsSafely(workspaceId, [tabId])
+  else if (isCloseCommand(choice)) void closeTabsSafely(workspaceId, tabsToClose(group.tabs, tabId, choice), { sweptFrom: tabId })
 }
 
 function tabTooltip(tab: Tab): string {

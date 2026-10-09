@@ -11,6 +11,7 @@
  */
 
 import type {
+  AppSettings,
   FileStat,
   PersistedState,
   Tab,
@@ -59,6 +60,16 @@ export interface InstalledPluginInfo {
   rendererUrl: string | null
 }
 
+/**
+ * One row of a native context menu: a command to pick, or a separator.
+ *
+ * Plain data, because it crosses the bridge. What a command DOES stays with whoever asked for the
+ * menu, which gets back the `id` of the row picked.
+ */
+export type ContextMenuItem =
+  | { kind: 'item'; id: string; label: string; enabled?: boolean }
+  | { kind: 'separator' }
+
 /** renderer -> main -> renderer. Every one of these is awaited. */
 export interface IpcRequests {
   // --- app -------------------------------------------------------------
@@ -84,6 +95,8 @@ export interface IpcRequests {
   /** Persist every workspace's UI in one write, so switching away cannot lose the previous one. */
   'state:saveAllUi': (args: { ui: Record<WorkspaceId, WorkspaceUiState> }) => void
   'state:saveKeybindings': (args: { keybindings: KeyBindings }) => void
+  /** The settings dialog's General page. Replaces what is stored, unknown fields included. */
+  'state:saveSettings': (args: { settings: AppSettings }) => void
   /**
    * Switch plugins on and off.
    *
@@ -100,6 +113,23 @@ export interface IpcRequests {
   'app:saveAllDone': (args: { id: number; ok: boolean }) => void
   /** Ask the user about unsaved files a closing tab would take with it. A native dialog. */
   'dialog:unsaved': (args: { files: string[]; quitting: boolean }) => 'save' | 'discard' | 'cancel'
+  /**
+   * Ask before closing tabs stops programs still running in their terminals — `processes` names
+   * them, `tabs` is how many tabs are closing. True means close anyway. A native dialog.
+   */
+  'dialog:closeRunning': (args: { processes: string[]; tabs: number }) => boolean
+
+  // --- menus -----------------------------------------------------------
+  /**
+   * Show a native context menu at the pointer. Resolves with the id of the row picked, or null when
+   * the menu was dismissed.
+   *
+   * Native rather than drawn in the page, because a browser tab's page is a native view composited
+   * OVER the page: a menu drawn in the DOM anywhere near one is drawn underneath it, and never
+   * appears. The tab strip is exactly that case — right-clicking a browser tab puts its page on
+   * screen, right where the menu opens.
+   */
+  'menu:popup': (args: { items: ContextMenuItem[] }) => string | null
 
   // --- shortcuts -------------------------------------------------------
   /**
@@ -109,8 +139,12 @@ export interface IpcRequests {
   'shortcuts:setLayout': (args: { map: Record<string, string> }) => void
 
   // --- workspaces ------------------------------------------------------
-  /** Opens a native directory picker; returns null if the user cancelled. */
-  'workspace:pickFolder': () => string | null
+  /**
+   * Opens a native directory picker; returns null if the user cancelled. Without arguments it asks
+   * for a folder to add to the workspace; the settings dialog asks for something else, starting
+   * from wherever its answer currently is.
+   */
+  'workspace:pickFolder': (args?: { message?: string; defaultPath?: string }) => string | null
   /** Resolves whether a path is a git work tree and where its root is. */
   'workspace:probeFolder': (path: string) => { isGitRepo: boolean; repoRoot: string | null }
   /** Picks a `.code-workspace` file to open; null if cancelled. */
@@ -124,12 +158,19 @@ export interface IpcRequests {
     folders: WorkspaceFolder[]
   }
   /**
-   * Prompt for a location and write a `.code-workspace` file holding these folders. Returns the
-   * path written, or null if the user cancelled.
+   * Write a `.code-workspace` file holding these folders. Returns the path written, or null if the
+   * user cancelled.
+   *
+   * `named` files it without asking where: `<folder>/<name>/<name>.code-workspace`, under the
+   * workspace files folder from Settings, asking only before it replaces some other workspace's
+   * file. `pick` asks where with a save dialog, and `name` is only what it suggests.
    */
   'workspace:saveWorkspaceFile': (args: {
-    suggestedName: string
+    name: string
     folders: { path: string; name: string }[]
+    location: 'named' | 'pick'
+    /** The file this workspace came from, if any: replaced without asking, and where `pick` starts. */
+    current?: string | null
   }) => string | null
 
   // --- clipboard -------------------------------------------------------
@@ -163,11 +204,22 @@ export interface IpcRequests {
   'terminal:spawn': (args: {
     workspaceId: WorkspaceId
     cwd: string
+    /**
+     * A live pane whose directory this one starts in — where that pane's shell is NOW, `cd` and
+     * all. A split opens beside the pane it was split from, as it does in Ghostty and iTerm. `cwd`
+     * stands in when that pane is gone or its directory cannot be read.
+     */
+    cwdFrom?: PtyPaneId
     cols: number
     rows: number
   }) => { paneId: PtyPaneId }
   'terminal:resize': (args: { paneId: PtyPaneId; cols: number; rows: number }) => void
   'terminal:kill': (args: { paneId: PtyPaneId }) => void
+  /**
+   * Which of these panes have a program running in the foreground rather than a shell waiting at
+   * its prompt, and what each program is called. Empty where the platform cannot tell (Windows).
+   */
+  'terminal:running': (args: { paneIds: PtyPaneId[] }) => Array<{ paneId: PtyPaneId; process: string }>
   /** Establish the MessagePort carrying this workspace's terminal bytes, both directions. */
   'terminal:requestPort': (args: { workspaceId: WorkspaceId }) => void
   /** Kill every pane of a workspace and drop its port. */
@@ -229,10 +281,13 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'state:saveWorkspaces',
   'state:saveAllUi',
   'state:saveKeybindings',
+  'state:saveSettings',
   'state:setDisabledPlugins',
   'app:setDirtyFiles',
   'app:saveAllDone',
   'dialog:unsaved',
+  'dialog:closeRunning',
+  'menu:popup',
   'shortcuts:setLayout',
   'workspace:pickFolder',
   'workspace:probeFolder',
@@ -247,6 +302,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'terminal:spawn',
   'terminal:resize',
   'terminal:kill',
+  'terminal:running',
   'terminal:requestPort',
   'terminal:disconnect',
   'plugin:invoke',

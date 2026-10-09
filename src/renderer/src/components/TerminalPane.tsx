@@ -42,6 +42,7 @@ import {
   ensureTerminal,
   findInPane,
   getTerminal,
+  inheritCwd,
   inheritFontSize,
   newlineBytes,
   paneFontSize,
@@ -56,7 +57,8 @@ import {
   scrollToSelection,
   selectAllInPane,
   sendToPane,
-  setPaneFontSize
+  setPaneFontSize,
+  takeCwdSource
 } from '../terminals'
 import { rowOf, useApp } from '../store'
 import type { PaneNode, TerminalTab } from '@shared/types'
@@ -142,8 +144,10 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   const split = useCallback(
     (direction: 'row' | 'column', before = false) => {
       const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, direction, newLeaf(), before)
-      // The new pane starts at the size of the one it was split from, as it does in Ghostty.
+      // The new pane starts at the size of the one it was split from, and in its directory, as it
+      // does in Ghostty.
       inheritFontSize(paneKey(tab.id, newLeafId), paneKey(tab.id, tab.activeLeafId))
+      inheritCwd(paneKey(tab.id, newLeafId), paneKey(tab.id, tab.activeLeafId))
       setZoomed(null)
       patch(() => ({ root, activeLeafId: newLeafId }))
     },
@@ -835,7 +839,9 @@ function LeafView({
         try {
           const { paneId } = await rpc['terminal:spawn']({
             workspaceId,
+            // The workspace's folder is only where a pane starts when it was not split from one.
             cwd,
+            cwdFrom: takeCwdSource(key),
             cols: handle.term.cols,
             rows: handle.term.rows
           })

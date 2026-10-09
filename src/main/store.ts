@@ -6,6 +6,7 @@ import {
   DEFAULT_KEYBINDINGS,
   DEFAULT_PANEL_LAYOUT,
   PERSISTED_STATE_VERSION,
+  type AppSettings,
   type PanelLayout,
   type PersistedState,
   type Tab,
@@ -33,7 +34,8 @@ const EMPTY: PersistedState = {
   activeWorkspaceId: null,
   ui: {},
   keybindings: { ...DEFAULT_KEYBINDINGS },
-  disabledPlugins: []
+  disabledPlugins: [],
+  settings: {}
 }
 
 function statePath(): string {
@@ -72,6 +74,7 @@ function migrate(raw: unknown): PersistedState {
 
   const workspaces = Array.isArray(doc.workspaces) ? (doc.workspaces as Workspace[]) : []
   const keybindings = cleanKeybindings(doc.keybindings)
+  const settings = cleanSettings(doc.settings)
   let ui =
     doc.ui && typeof doc.ui === 'object' ? (doc.ui as Record<WorkspaceId, WorkspaceUiState>) : {}
 
@@ -105,10 +108,11 @@ function migrate(raw: unknown): PersistedState {
 
   if (version !== PERSISTED_STATE_VERSION) {
     // A document from the FUTURE — an older build reading what a newer one wrote. Keep the
-    // workspaces and the key bindings, which are version-stable and expensive to recreate, and
-    // drop only the UI, whose shape is the thing we cannot read. Wiping everything here is how a
-    // developer swapping branches against their real userData loses every project they had open.
-    return { ...EMPTY, workspaces, activeWorkspaceId: (doc.activeWorkspaceId as WorkspaceId | null) ?? null, keybindings }
+    // workspaces, the key bindings and the settings, which are version-stable and expensive to
+    // recreate, and drop only the UI, whose shape is the thing we cannot read. Wiping everything
+    // here is how a developer swapping branches against their real userData loses every project
+    // they had open.
+    return { ...EMPTY, workspaces, activeWorkspaceId: (doc.activeWorkspaceId as WorkspaceId | null) ?? null, keybindings, settings }
   }
 
   return {
@@ -119,7 +123,9 @@ function migrate(raw: unknown): PersistedState {
     keybindings,
     // No version bump for this one: an absent field means "nothing disabled", which is exactly
     // what every document written before the plugins view existed means.
-    disabledPlugins: Array.isArray(doc.disabledPlugins) ? (doc.disabledPlugins as string[]) : []
+    disabledPlugins: Array.isArray(doc.disabledPlugins) ? (doc.disabledPlugins as string[]) : [],
+    // Nor for this: absent means every preference at its default.
+    settings
   }
 }
 
@@ -261,6 +267,30 @@ function cleanKeybindings(raw: unknown): KeyBindings {
   }
   if (Array.isArray(doc.binds)) out.binds = doc.binds.filter((l): l is string => typeof l === 'string')
   else delete out.binds
+  return out
+}
+
+export function saveSettings(settings: AppSettings): void {
+  const state = loadState()
+  state.settings = cleanSettings(settings)
+  flush()
+}
+
+/** Read without touching disk twice: main files workspaces where these say to. */
+export function appSettings(): AppSettings {
+  return loadState().settings ?? {}
+}
+
+/**
+ * Settings from disk or from the renderer, made safe to hold — the same rules as key bindings:
+ * check the shape of what this build knows, and keep what it does not.
+ */
+function cleanSettings(raw: unknown): AppSettings {
+  const doc = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const out: AppSettings = { ...doc }
+  const dir = typeof doc.workspaceFilesDir === 'string' ? doc.workspaceFilesDir.trim() : ''
+  if (dir) out.workspaceFilesDir = dir
+  else delete out.workspaceFilesDir
   return out
 }
 

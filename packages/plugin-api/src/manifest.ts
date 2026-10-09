@@ -59,6 +59,7 @@ export type IconName =
   | 'folder'
   | 'plugin'
   | 'search'
+  | 'image'
 
 /**
  * A file matcher, in the only two forms worth supporting before someone asks for a third:
@@ -100,10 +101,11 @@ export interface TabContribution {
   displayName: string
   icon?: IconName
   /**
-   * Whether this tab is a document for the bulk-close commands ("Close Other Files").
+   * Whether this tab shows a document — a diff does, a browser tab does not — which is how the
+   * tab strip tells files from everything else.
    *
-   * A diff is; a browser tab is not, for the same reason a terminal is not — closing it throws
-   * away navigation state the user did not ask to lose.
+   * It used to decide what the bulk-close commands reached. They reach every tab now, as in VS
+   * Code, and a program a sweep would stop is asked about instead.
    */
   isDocument?: boolean
   /**

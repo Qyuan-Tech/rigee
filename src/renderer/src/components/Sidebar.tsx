@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { rpc } from '../ipc'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { platform, rpc } from '../ipc'
 import {
   ChevronIcon,
   CollapseAllIcon,
@@ -16,6 +16,7 @@ import { closeTabsSafely } from '../editing'
 import { allTabs } from '../groups'
 import { nextTabId, nextWorkspaceId, rowOf, useActiveWorkspace, useApp } from '../store'
 import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
+import { namedWorkspaceFile, workspaceNameProblem } from '@shared/workspaceFiles'
 
 /**
  * The workspace list, and nothing else.
@@ -38,7 +39,10 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const setActive = useApp((s) => s.setActiveWorkspace)
   const add = useApp((s) => s.addWorkspace)
   const remove = useApp((s) => s.removeWorkspace)
+  const workspaceFilesDir = useApp((s) => s.settings.workspaceFilesDir)
   const [menuOpen, setMenuOpen] = useState(false)
+  /** The name form "Save Workspace As…" shows when there is a workspace files folder to save in. */
+  const [naming, setNaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -51,6 +55,15 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
       window.removeEventListener('keydown', dismiss)
     }
   }, [menuOpen])
+
+  // A click anywhere else puts the name form away, as it does the menu. Keys do not: they are
+  // what is typed into it.
+  useEffect(() => {
+    if (!naming) return
+    const dismiss = (): void => setNaming(false)
+    window.addEventListener('mousedown', dismiss)
+    return () => window.removeEventListener('mousedown', dismiss)
+  }, [naming])
 
   const persist = useCallback(() => {
     const s = useApp.getState()
@@ -109,25 +122,58 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   }, [add, persist])
 
   /**
-   * Write the active workspace's folders out as a `.code-workspace` file.
+   * Write the active workspace's folders out as a `.code-workspace` file, which is then the file
+   * this workspace is — its name is the file's. True once written; false if the user cancelled or
+   * it failed, having said why.
+   */
+  const writeWorkspaceFile = useCallback(
+    async (name: string, location: 'named' | 'pick'): Promise<boolean> => {
+      const s = useApp.getState()
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
+      if (!ws || ws.folders.length === 0) return false
+      try {
+        const path = await rpc['workspace:saveWorkspaceFile']({
+          name,
+          folders: ws.folders.map((f) => ({ path: f.path, name: f.name })),
+          location,
+          current: ws.filePath ?? null
+        })
+        if (!path) return false
+        const saved = (path.split(/[\\/]/).pop() ?? name).replace(/\.code-workspace$/i, '')
+        // Read again: the save may have waited on a dialog, and the list may have changed meanwhile.
+        const now = useApp.getState()
+        now.setWorkspaces(now.workspaces.map((w) => (w.id === ws.id ? { ...w, name: saved, filePath: path } : w)))
+        persist()
+        setError(null)
+        return true
+      } catch (e) {
+        // A folder that cannot be written to is the user's to fix, not a crash of ours.
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      }
+    },
+    [persist]
+  )
+
+  /**
+   * "Save Workspace As…".
    *
    * This is the only way a multi-root workspace comes into existence, exactly as in VS Code:
    * there is no "new workspace" command. You collect folders — by dropping them on the explorer
    * or adding them — and then save the result.
+   *
+   * With a workspace files folder in Settings, a name is all there is to ask: the file goes in a
+   * folder of its own under it. Without one, a save dialog asks where, as it always did.
    */
-  const saveWorkspaceAs = useCallback(async () => {
+  const saveWorkspaceAs = useCallback(() => {
     const s = useApp.getState()
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
     if (!ws || ws.folders.length === 0) return
-    const path = await rpc['workspace:saveWorkspaceFile']({
-      suggestedName: ws.name,
-      folders: ws.folders.map((f) => ({ path: f.path, name: f.name }))
-    })
-    if (!path) return
-    const name = (path.split(/[\\/]/).pop() ?? ws.name).replace(/\.code-workspace$/i, '')
-    s.setWorkspaces(s.workspaces.map((w) => (w.id === ws.id ? { ...w, name, filePath: path } : w)))
-    persist()
-  }, [persist])
+    if (s.settings.workspaceFilesDir) setNaming(true)
+    else void writeWorkspaceFile(ws.name, 'pick')
+  }, [writeWorkspaceFile])
+
+  const activeWorkspace = workspaces.find((w) => w.id === activeId)
 
   const addFolder = useCallback(async () => {
     const s = useApp.getState()
@@ -182,9 +228,19 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
           onFolder={() => { setMenuOpen(false); void openFolder() }}
           onWorkspaceFile={() => { setMenuOpen(false); void openWorkspaceFile() }}
           onAddFolder={() => { setMenuOpen(false); void addFolder() }}
-          onSaveAs={() => { setMenuOpen(false); void saveWorkspaceAs() }}
+          onSaveAs={() => { setMenuOpen(false); saveWorkspaceAs() }}
           canAddFolder={activeId !== null && activeId !== SCRATCH_WORKSPACE_ID}
-          canSave={(workspaces.find((w) => w.id === activeId)?.folders.length ?? 0) > 0}
+          canSave={(activeWorkspace?.folders.length ?? 0) > 0}
+        />
+      )}
+
+      {naming && activeWorkspace && workspaceFilesDir && (
+        <SaveAsForm
+          initialName={activeWorkspace.name}
+          dir={workspaceFilesDir}
+          onSave={async (name) => { if (await writeWorkspaceFile(name, 'named')) setNaming(false) }}
+          onElsewhere={async (name) => { setNaming(false); await writeWorkspaceFile(name, 'pick') }}
+          onCancel={() => setNaming(false)}
         />
       )}
 
@@ -287,6 +343,88 @@ function OpenMenu({
       <button className="menu__item" disabled={!canSave} onClick={onSaveAs}>
         <span>Save Workspace As…</span>
       </button>
+    </div>
+  )
+}
+
+/**
+ * "Save Workspace As…" when Settings names a folder for workspace files: only the name is asked,
+ * and the path it will be written to is shown as it is typed.
+ *
+ * In the side bar, where the menu it replaces was, rather than a dialog in the middle of the
+ * window: the middle may be a browser page, which is a native view drawn over the document and
+ * would cover the dialog. Nothing is ever drawn over the side bar.
+ */
+function SaveAsForm({
+  initialName,
+  dir,
+  onSave,
+  onElsewhere,
+  onCancel
+}: {
+  initialName: string
+  dir: string
+  onSave: (name: string) => Promise<void>
+  onElsewhere: (name: string) => Promise<void>
+  onCancel: () => void
+}): React.ReactElement {
+  const [name, setName] = useState(initialName)
+  // While a save is under way — it may be waiting on "replace it?" — a second press would race it.
+  const [busy, setBusy] = useState(false)
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    input.current?.focus()
+    input.current?.select()
+  }, [])
+
+  const problem = workspaceNameProblem(name)
+  const target = namedWorkspaceFile(dir, name, platform() === 'win32' ? '\\' : '/')
+  const run = (action: (name: string) => Promise<void>): void => {
+    setBusy(true)
+    void action(name).finally(() => setBusy(false))
+  }
+
+  return (
+    <div className="menu menu--inline saveas" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="saveas__title">Save workspace as</div>
+      <input
+        ref={input}
+        value={name}
+        spellCheck={false}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          // Enter mid-composition picks a candidate in the input method; it does not save.
+          if (e.nativeEvent.isComposing) return
+          if (e.key === 'Enter' && !problem && !busy) {
+            e.preventDefault()
+            run(onSave)
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            onCancel()
+          }
+        }}
+      />
+      {problem ? (
+        <div className="saveas__error">{problem}</div>
+      ) : (
+        <div className="saveas__path" title={target}>{target}</div>
+      )}
+      <div className="saveas__actions">
+        <button
+          className="saveas__elsewhere"
+          title="Choose where to save it instead"
+          disabled={busy}
+          onClick={() => run(onElsewhere)}
+        >
+          Elsewhere…
+        </button>
+        <span style={{ flex: 1 }} />
+        <button className="btn" onClick={onCancel}>Cancel</button>
+        <button className="btn btn--primary" disabled={!!problem || busy} onClick={() => run(onSave)}>
+          Save
+        </button>
+      </div>
     </div>
   )
 }

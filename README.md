@@ -31,9 +31,11 @@ running your own shell.
 ```
 
 - **Left** — workspaces and a file tree. A workspace is a named set of folders, like a VS Code
-  multi-root workspace.
-- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, a diff, or a Chromium
-  page. Mix them freely and drag to reorder.
+  multi-root workspace. Choose a workspace files folder in Settings and *Save Workspace As…* asks
+  only for a name, filing it as `<folder>/<name>/<name>.code-workspace`.
+- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a diff, or a
+  Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
+  Others, Close to the Right and Close All.
 - **Right** — source control, aware of every git repo in the workspace at once.
 
 ## Install
@@ -80,6 +82,8 @@ an app launched from Finder inherits almost none of it.
 | Browser tabs — navigation, persistent logins, DevTools, `target=_blank` opens a tab | works |
 | Terminals — one pseudo-terminal per pane, running your login shell | works |
 | Split panes — Cmd+D beside, Shift+Cmd+D below (Ctrl+Shift+O / E elsewhere), draggable dividers | works |
+| A split opens in the directory its pane had `cd`'d into (macOS and Linux) | works |
+| Tab menu — Close, Close Others, Close to the Right, Close All, on every kind of tab | works |
 | Keyboard shortcuts — Ghostty's defaults, every one rebindable, Ghostty config lines accepted | works |
 | Scratch workspace — terminals without setting anything up | works |
 | Source control — status, diff, stage, unstage, discard, commit, amend | works |
@@ -88,7 +92,9 @@ an app launched from Finder inherits almost none of it.
 | HTTP auth prompt in browser tabs | works |
 | Restoring tabs, splits and browser pages on next launch | works |
 | PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
-| Plugins — the editor, explorer, PDF, source control and the browser are all plugins | works |
+| Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan | works |
+| Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
+| Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
 | Terminals surviving a restart | **no** — the layout returns, the running processes do not |
@@ -97,8 +103,8 @@ an app launched from Finder inherits almost none of it.
 
 Rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
-the text editor, the PDF reader, source control and the browser are each a folder under
-`plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+the text editor, the PDF reader, the image viewer, source control and the browser are each a folder
+under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
 
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
 open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.
@@ -132,7 +138,13 @@ contribution points and the traps.
 ## Terminals
 
 Each pane is its own pseudo-terminal running your login shell, and each terminal tab holds a tree
-of panes you can split and resize.
+of panes you can split and resize. A new split starts in the directory the pane it came from is in
+now — wherever you `cd`'d to — rather than back at the workspace's first folder. (On Windows, where
+a shell's directory cannot be read from outside, it starts where that pane started.)
+
+Closing several tabs at once — Close Others, Close to the Right, Close All — asks first if it would
+stop a program still running in a terminal it sweeps up. A shell sitting at its prompt closes
+without a word.
 
 They do not outlive the app: quitting Rigee ends the shells and whatever they were running. If
 you need something to survive that, start it under a multiplexer inside a pane — typing `tmux` or
@@ -141,9 +153,9 @@ you need something to survive that, start it under a multiplexer inside a pane �
 ### Keyboard shortcuts
 
 The shortcuts are [Ghostty](https://ghostty.org)'s defaults, so the same keys do the same things in
-both. Every one can be changed from the gear in the title bar (or `Cmd`+`,`), by pressing the new
-key, or by pasting `keybind = …` lines straight out of a Ghostty config. Right-click a pane to see
-the current ones.
+both. Every one can be changed in Settings — the gear in the title bar, or `Cmd`+`,` — by pressing
+the new key, or by pasting `keybind = …` lines straight out of a Ghostty config. Right-click a pane
+to see the current ones.
 
 | | macOS | Windows / Linux |
 |---|---|---|
@@ -175,7 +187,7 @@ In the editor the keys are Monaco's own, as in VS Code: `Cmd`+`S` saves, `Cmd`+`
 
 While a browser tab has the keyboard, the page gets its keys — `Cmd`+`B` is bold in a web editor,
 not the side panel — except the ones every browser keeps for itself: switching, opening and closing
-tabs, plus searching the workspace and opening the shortcuts.
+tabs, plus searching the workspace and opening Settings.
 
 On Windows and Linux, plain `Ctrl`+letter stays with the shell — `Ctrl`+`C` interrupts, `Ctrl`+`D`
 ends input, `Ctrl`+`W` deletes a word — which is why everything there has a `Shift` in it.
@@ -205,7 +217,7 @@ collapsed panel leaves a labelled strip on that edge — click it to bring the p
 | Linux | `~/.config/rigee` |
 | Windows | `%APPDATA%\rigee` |
 
-`workspaces.json` holds your workspaces, open tabs, split layouts and key bindings. It is written
+`workspaces.json` holds your workspaces, open tabs, split layouts, key bindings and settings. It is written
 when things change, every 15 seconds, and on close, so an unexpected quit loses at most the last
 few seconds of layout. Deleting the directory resets the app and loses nothing but layout.
 

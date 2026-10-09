@@ -1,4 +1,7 @@
 import { MessageChannelMain, type MessagePortMain, type WebContents } from 'electron'
+import { execFile } from 'node:child_process'
+import { statSync } from 'node:fs'
+import { readFile, readlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import type { IPty } from 'node-pty'
 
@@ -30,6 +33,8 @@ const MAX_PENDING_BYTES = 4 * 1024 * 1024
 export interface SpawnOptions {
   workspaceId: string
   cwd: string
+  /** A live pane to start beside: in the directory its shell is in now. `cwd` if that fails. */
+  cwdFrom?: string
   cols: number
   rows: number
   /** Extra environment for this terminal, e.g. a workspace-specific variable. */
@@ -40,10 +45,15 @@ interface Pane {
   id: string
   pty: IPty
   workspaceId: string
+  /** Where the shell started: what `cwdOf` answers when where it is now cannot be read. */
+  cwd: string
   /** Bytes waiting for the next flush. */
   pending: string[]
   pendingBytes: number
 }
+
+/** A process asked about that never answers must not hold up a split, or a close. */
+const PROBE_TIMEOUT_MS = 2000
 
 interface Workspace {
   port: MessagePortMain | null
@@ -87,12 +97,14 @@ export class PtyManager {
   async spawn(opts: SpawnOptions): Promise<{ paneId: string }> {
     const pty = await this.load()
     const { file, args } = defaultShell()
+    // A split starts where the pane it came from is now, not back at the workspace's first folder.
+    const cwd = (opts.cwdFrom ? await this.cwdOf(opts.cwdFrom) : null) ?? (opts.cwd || homedir())
 
     const child = pty.spawn(file, args, {
       name: 'xterm-256color',
       cols: Math.max(2, opts.cols),
       rows: Math.max(1, opts.rows),
-      cwd: opts.cwd || homedir(),
+      cwd,
       env: {
         ...process.env,
         ...opts.env,
@@ -105,7 +117,7 @@ export class PtyManager {
     })
 
     const paneId = `pane${++this.seq}`
-    const pane: Pane = { id: paneId, pty: child, workspaceId: opts.workspaceId, pending: [], pendingBytes: 0 }
+    const pane: Pane = { id: paneId, pty: child, workspaceId: opts.workspaceId, cwd, pending: [], pendingBytes: 0 }
     this.panes.set(paneId, pane)
     this.workspace(opts.workspaceId).panes.add(paneId)
 
@@ -138,6 +150,44 @@ export class PtyManager {
     const pane = this.panes.get(paneId)
     if (!pane) return
     try { pane.pty.kill() } catch { /* already gone */ }
+  }
+
+  /**
+   * The directory a pane's shell is in now, after any `cd` — or, when that cannot be read, the one
+   * it started in. Null for a pane that has gone.
+   *
+   * Asked of the operating system rather than reported by the shell. An OSC 7 report needs shell
+   * integration nobody has to have set up, and from inside an ssh session it names a directory on
+   * the other machine. The SHELL is asked, not whatever program runs in front of it: where `claude`
+   * was started is where its shell still is, and that is the answer VS Code's split gives too.
+   */
+  async cwdOf(paneId: string): Promise<string | null> {
+    const pane = this.panes.get(paneId)
+    if (!pane) return null
+    const now = await processCwd(pane.pty.pid)
+    return now && isDirectory(now) ? now : pane.cwd
+  }
+
+  /**
+   * Which of these panes have a program in the foreground rather than a shell at its prompt, and
+   * what each program is called. Asked before a bulk close stops them.
+   *
+   * "In the foreground" is the terminal's own answer: its foreground process group is not the
+   * shell's. Comparing NAMES instead would call every pane busy for somebody whose login shell
+   * `exec`s another one from its rc file. Windows has no such answer to give, so nothing there
+   * counts as running.
+   */
+  async running(paneIds: readonly string[]): Promise<Array<{ paneId: string; process: string }>> {
+    if (process.platform === 'win32') return []
+    const panes = paneIds.flatMap((id) => this.panes.get(id) ?? [])
+    if (panes.length === 0) return []
+    const groups = await foregroundGroups(panes.map((p) => p.pty.pid))
+    return panes
+      .filter((p) => {
+        const group = groups.get(p.pty.pid)
+        return group !== undefined && group > 0 && group !== p.pty.pid
+      })
+      .map((p) => ({ paneId: p.id, process: programName(p.pty.process) }))
   }
 
   /** Hand the renderer one end of a dedicated channel for this workspace's terminal bytes. */
@@ -229,4 +279,64 @@ function defaultShell(): { file: string; args: string[] } {
   }
   const file = process.env.SHELL ?? '/bin/bash'
   return { file, args: process.platform === 'darwin' ? ['-l'] : [] }
+}
+
+/** A child's output even when it exits non-zero: `ps` does that when one of the pids has gone. */
+function run(file: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: PROBE_TIMEOUT_MS, encoding: 'utf8' }, (_err, stdout) => resolve(stdout ?? ''))
+  })
+}
+
+/**
+ * Where a process is now. Linux says so in /proc. macOS has no /proc, but lsof is part of the base
+ * system there and answers in about a tenth of a second — `-b` and `-w` so a hung network mount
+ * can neither block it nor fill its output with warnings. Windows offers nothing comparable, so a
+ * split there starts where the pane it came from started.
+ */
+async function processCwd(pid: number): Promise<string | null> {
+  if (process.platform === 'win32') return null
+  if (process.platform === 'linux') return readlink(`/proc/${pid}/cwd`).catch(() => null)
+  const lsof = process.platform === 'darwin' ? '/usr/sbin/lsof' : 'lsof'
+  const out = await run(lsof, ['-a', '-n', '-P', '-b', '-w', '-p', String(pid), '-d', 'cwd', '-Fn'])
+  const line = out.split('\n').find((l) => l.startsWith('n'))
+  return line ? line.slice(1) : null
+}
+
+/**
+ * Each process's terminal foreground process group — `tpgid` — by pid. A pid that has gone, or a
+ * system that will not say, is simply missing, and missing counts as not running.
+ */
+async function foregroundGroups(pids: readonly number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  if (process.platform === 'linux') {
+    await Promise.all(
+      pids.map(async (pid) => {
+        const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => '')
+        // The command name sits in parentheses and may contain anything, parentheses included; the
+        // fields after the LAST `)` are fixed, and tpgid is the sixth of them.
+        const tpgid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[5])
+        if (stat && Number.isInteger(tpgid)) out.set(pid, tpgid)
+      })
+    )
+    return out
+  }
+  for (const line of (await run('ps', ['-o', 'pid=,tpgid=', '-p', pids.join(',')])).split('\n')) {
+    const [pid, tpgid] = line.trim().split(/\s+/).map(Number)
+    if (Number.isInteger(pid) && Number.isInteger(tpgid)) out.set(pid!, tpgid!)
+  }
+  return out
+}
+
+/** `claude`, not `/usr/local/bin/claude`; `bash`, not the `-bash` a login shell is listed as. */
+function programName(raw: string): string {
+  return raw.replace(/^-/, '').split(/[\\/]/).pop() || raw
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
 }

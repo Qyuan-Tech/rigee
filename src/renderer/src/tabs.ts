@@ -3,9 +3,9 @@
  *
  * Extracted from the component and the store for the same reason `paneTree.ts` and the prefix
  * state machine in `keys.ts` were: the failure modes here are quiet ones. A bulk close that
- * sweeps up a terminal takes a running process with it, and a selection rule that is off by one
- * lands the user on a tab they did not ask for — neither throws, and both are tedious to
- * reproduce by hand once tabs, splits and a browser are in play.
+ * sweeps up the wrong tabs takes a running process or a page with it, and a selection rule that
+ * is off by one lands the user on a tab they did not ask for — neither throws, and both are
+ * tedious to reproduce by hand once tabs, splits and a browser are in play.
  */
 
 import type { Tab, TabId } from '@shared/types'
@@ -23,9 +23,9 @@ export type DocumentPredicate = (viewType: string) => boolean
 /**
  * A tab showing a document: an editor, or a plugin tab that says it is one (a diff).
  *
- * The bulk-close commands are scoped to these. Terminals and browser tabs share the strip but are
- * not documents — closing a terminal kills a shell that may be running something, and "close
- * everything to the right" is not a bargain anyone wants to make with a running process.
+ * What the strip draws as a file. It used to also be all the bulk-close commands would reach;
+ * they reach every tab now, the way they do in VS Code, and a running program a sweep would stop
+ * is asked about first instead (see `closeTabsSafely`).
  */
 export function isFileTab(tab: Tab, isDocument: DocumentPredicate): boolean {
   if (tab.kind === 'editor') return true
@@ -34,19 +34,21 @@ export function isFileTab(tab: Tab, isDocument: DocumentPredicate): boolean {
 }
 
 export type CloseCommand =
-  /** Every other file tab, wherever it sits. */
+  /** Every other tab, wherever it sits. */
   | 'others'
-  /** File tabs positioned after this one. Position is the strip order, which the user can drag. */
+  /** Tabs positioned after this one. Position is the strip order, which the user can drag. */
   | 'right'
-  /** Every file tab, this one included. */
+  /** Every tab, this one included. */
   | 'all'
 
-export function tabsToClose(
-  tabs: readonly Tab[],
-  tabId: TabId,
-  command: CloseCommand,
-  isDocument: DocumentPredicate
-): TabId[] {
+export const isCloseCommand = (s: string): s is CloseCommand => s === 'others' || s === 'right' || s === 'all'
+
+/**
+ * The tabs a bulk close takes, of every kind alike — terminal, page and file. One strip, one set
+ * of commands: a menu that offered "Close to the Right" on a file but nothing on the terminal
+ * beside it read as a strip with two kinds of tab in it, which is exactly what it should not be.
+ */
+export function tabsToClose(tabs: readonly Tab[], tabId: TabId, command: CloseCommand): TabId[] {
   const index = tabs.findIndex((t) => t.id === tabId)
   if (index < 0) return []
 
@@ -54,17 +56,15 @@ export function tabsToClose(
   // close-all, which is what VSCode does and what `TabBase.pinned` already promises. Nothing in
   // the UI sets the flag yet; honouring it here means whoever adds the toggle gets the behaviour
   // rather than having to remember this file.
-  const sweepable = (t: Tab): boolean => isFileTab(t, isDocument) && !t.pinned
+  const sweepable = (t: Tab): boolean => !t.pinned
 
   switch (command) {
     case 'others':
       return tabs.filter((t) => t.id !== tabId && sweepable(t)).map((t) => t.id)
     case 'right':
-      // Counted over the whole strip, not over the file tabs alone: a terminal sitting between
-      // two editors is skipped, not treated as the boundary.
       return tabs.slice(index + 1).filter(sweepable).map((t) => t.id)
     case 'all':
-      return tabs.filter((t) => isFileTab(t, isDocument)).map((t) => t.id)
+      return tabs.map((t) => t.id)
   }
 }
 

@@ -105,6 +105,20 @@ export function parseWorkspaceFile(text: string, filePath: string): ParsedWorksp
 }
 
 /**
+ * The workspace files folder from Settings as an absolute path, or null when none is set.
+ *
+ * A leading `~` is the home directory, the way a shell reads it. Anything still relative after that
+ * is refused rather than resolved: relative to where the app happened to be started is not a place
+ * anybody meant.
+ */
+export function resolveWorkspaceFilesDir(raw: string | undefined, home: string): string | null {
+  const dir = raw?.trim()
+  if (!dir) return null
+  const expanded = dir === '~' ? home : /^~[\\/]/.test(dir) ? join(home, dir.slice(2)) : dir
+  return isAbsolute(expanded) ? resolve(expanded) : null
+}
+
+/**
  * Render a workspace file. Folders below the file's own directory are written relative, the way
  * VS Code does it, so a workspace checked in beside its repos still resolves on another machine.
  */

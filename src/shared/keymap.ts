@@ -284,8 +284,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   close_tab: {
     scope: 'app',
     group: 'Tabs',
-    param: { required: false, valid: oneOf('this'), hint: 'this' },
-    label: () => 'Close tab',
+    // Ghostty's modes. As with the tab strip's menu, `other` and `right` reach every kind of tab.
+    param: { required: false, valid: oneOf('this', 'other', 'right'), hint: 'this | other | right' },
+    label: (p) =>
+      p === 'other' ? 'Close the other tabs' : p === 'right' ? 'Close the tabs to the right' : 'Close tab',
     repeats: false
   },
   goto_tab: {
@@ -359,7 +361,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   /** Rigee: find in every file of the workspace, VS Code's Cmd+Shift+F. */
   search_workspace: { scope: 'app', group: 'Search', label: () => 'Search the workspace', repeats: false },
 
-  open_config: { scope: 'app', group: 'Window', label: () => 'Keyboard shortcuts', repeats: false },
+  open_config: { scope: 'app', group: 'Window', label: () => 'Settings', repeats: false },
   toggle_fullscreen: { scope: 'app', group: 'Window', label: () => 'Full screen', repeats: false },
   /** Rigee: the side panels. */
   toggle_left_panel: { scope: 'app', group: 'Window', label: () => 'Show or hide the left panel', repeats: false },

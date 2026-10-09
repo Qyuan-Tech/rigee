@@ -57,6 +57,17 @@ let SearchAddonCtor: (new () => SearchAddon) | null = null
  */
 const pendingFontSize = new Map<string, number>()
 
+/**
+ * The pane a pane about to be created should start in the directory of, keyed like `handles`.
+ *
+ * Ghostty's `window-inherit-working-directory`, for splits: the new pane opens where the one it
+ * was split from is NOW — `cd` and all — rather than back at the workspace's first folder, which in
+ * a workspace of several repos is very often somewhere else entirely. Only main can ask a process
+ * where it is, so all that is kept here is which pane to ask about; the question is put when the
+ * new pane's shell is spawned.
+ */
+const pendingCwdFrom = new Map<string, string>()
+
 /** Which pane last had the keyboard, for new tabs to inherit from. */
 let lastFocusedKey: string | null = null
 
@@ -210,6 +221,8 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
 }
 
 export function disposeTerminal(key: string): void {
+  // A split closed before its shell ever started leaves nothing behind to ask about.
+  pendingCwdFrom.delete(key)
   handles.get(key)?.dispose()
 }
 
@@ -412,6 +425,19 @@ export function inheritFontSize(toKey: string, fromKey: string | null): void {
   if (!fromKey) return
   const size = getTerminal(fromKey)?.term.options.fontSize
   if (size && size !== editorFontSize()) pendingFontSize.set(toKey, size)
+}
+
+/** A pane about to be created from `fromKey` starts in its directory. See `pendingCwdFrom`. */
+export function inheritCwd(toKey: string, fromKey: string): void {
+  const paneId = getTerminal(fromKey)?.paneId
+  if (paneId) pendingCwdFrom.set(toKey, paneId)
+}
+
+/** The pane whose directory this one should start in, if any — once, for the spawn that asks. */
+export function takeCwdSource(key: string): string | undefined {
+  const paneId = pendingCwdFrom.get(key)
+  pendingCwdFrom.delete(key)
+  return paneId
 }
 
 export const focusedTerminalKey = (): string | null => lastFocusedKey

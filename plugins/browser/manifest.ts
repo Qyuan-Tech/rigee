@@ -19,8 +19,7 @@ export const manifest: PluginManifest = {
         viewType: 'browser.page',
         displayName: 'Browser',
         icon: 'globe',
-        // Not a document: "Close Other Files" must not throw away navigation state, for the same
-        // reason it leaves terminals alone.
+        // Not a document: a page, not a file, however the two share the strip.
         isDocument: false,
         // The native WebContentsView is keyed by tab id: a copy would either share the live view
         // or start a second page with none of the session the first one has.

@@ -215,10 +215,10 @@ export const creatableTabs = (): Owned<TabContribution>[] =>
   live(tabs).filter((c) => c.creatable)
 
 /**
- * Whether a plugin tab is a document, for the bulk-close commands.
+ * Whether a plugin tab is a document — what the tab strip draws as a file.
  *
- * Unknown view types are not documents: a tab whose plugin has vanished should not be swept up by
- * "Close All Files" on a guess.
+ * Unknown view types are not documents: a tab whose plugin has vanished is not called a file on a
+ * guess.
  */
 export const isDocumentViewType = (viewType: string): boolean =>
   tabs.find((c) => c.viewType === viewType)?.isDocument === true
