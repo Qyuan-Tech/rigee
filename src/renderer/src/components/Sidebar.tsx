@@ -1,22 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { platform, rpc } from '../ipc'
-import {
-  ChevronIcon,
-  CollapseAllIcon,
-  ExpandAllIcon,
-  CloseIcon,
-  CollapseLeftIcon,
-  FileIcon,
-  FolderIcon,
-  PlusIcon,
-  TerminalIcon
-} from '../icons'
-import { resolveViewType } from '../plugins/registry'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { rpc } from '../ipc'
+import { CloseIcon, CollapseLeftIcon, FolderIcon, PlusIcon, TerminalIcon } from '../icons'
+import { popupMenu } from '../contextMenu'
 import { closeTabsSafely } from '../editing'
 import { allTabs } from '../groups'
-import { nextTabId, nextWorkspaceId, rowOf, useActiveWorkspace, useApp } from '../store'
-import { SCRATCH_WORKSPACE_ID, type FileStat, type Workspace, type WorkspaceFolder } from '@shared/types'
-import { namedWorkspaceFile, workspaceNameProblem } from '@shared/workspaceFiles'
+import { nextWorkspaceId, rowOf, useApp } from '../store'
+import {
+  addFolders,
+  openAsWorkspace,
+  persistWorkspaces,
+  reason,
+  saveWorkspaceFile
+} from '../workspaces'
+import { SaveAsForm } from './LazySaveWorkspace'
+import { SCRATCH_WORKSPACE_ID, type Workspace, type WorkspaceId } from '@shared/types'
 
 /**
  * The workspace list, and nothing else.
@@ -40,10 +37,15 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const add = useApp((s) => s.addWorkspace)
   const remove = useApp((s) => s.removeWorkspace)
   const workspaceFilesDir = useApp((s) => s.settings.workspaceFilesDir)
+  const error = useApp((s) => s.workspaceError)
+  const setError = useApp((s) => s.setWorkspaceError)
   const [menuOpen, setMenuOpen] = useState(false)
-  /** The name form "Save Workspace As…" shows when there is a workspace files folder to save in. */
-  const [naming, setNaming] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  /**
+   * Which workspace the name form "Save Workspace As…" shows is for, when there is a workspace
+   * files folder to save in. Not necessarily the active one: a right-clicked workspace saves as
+   * itself without being switched to.
+   */
+  const [naming, setNaming] = useState<WorkspaceId | null>(null)
 
   useEffect(() => {
     if (!menuOpen) return
@@ -60,40 +62,15 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   // what is typed into it.
   useEffect(() => {
     if (!naming) return
-    const dismiss = (): void => setNaming(false)
+    const dismiss = (): void => setNaming(null)
     window.addEventListener('mousedown', dismiss)
     return () => window.removeEventListener('mousedown', dismiss)
   }, [naming])
 
-  const persist = useCallback(() => {
-    const s = useApp.getState()
-    void rpc['state:saveWorkspaces']({
-      // Scratch is rebuilt at boot; persisting it would let a stale copy outlive the code.
-      workspaces: s.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID),
-      activeWorkspaceId: s.activeWorkspaceId
-    })
-  }, [])
-
-  const openAsWorkspace = useCallback(
-    async (path: string) => {
-      const probe = await rpc['workspace:probeFolder'](path)
-      const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path
-      add({
-        id: nextWorkspaceId(),
-        name,
-        folders: [{ path, name, isGitRepo: probe.isGitRepo, repoRoot: probe.repoRoot }],
-        createdAt: Date.now(),
-        lastOpenedAt: Date.now()
-      } satisfies Workspace)
-      persist()
-    },
-    [add, persist]
-  )
-
   const openFolder = useCallback(async () => {
     const path = await rpc['workspace:pickFolder']()
-    if (path) await openAsWorkspace(path)
-  }, [openAsWorkspace])
+    if (path) await openAsWorkspace([path])
+  }, [])
 
   /**
    * Open a `.code-workspace` file: one workspace holding every folder the file names.
@@ -114,45 +91,26 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         createdAt: Date.now(),
         lastOpenedAt: Date.now()
       } satisfies Workspace)
-      persist()
+      persistWorkspaces()
     } catch (e) {
       // A workspace file that will not parse is the user's file, not a crash of ours.
-      setError(e instanceof Error ? e.message : String(e))
+      setError(reason(e))
     }
-  }, [add, persist])
+  }, [add, setError])
 
-  /**
-   * Write the active workspace's folders out as a `.code-workspace` file, which is then the file
-   * this workspace is — its name is the file's. True once written; false if the user cancelled or
-   * it failed, having said why.
-   */
-  const writeWorkspaceFile = useCallback(
-    async (name: string, location: 'named' | 'pick'): Promise<boolean> => {
-      const s = useApp.getState()
-      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
-      if (!ws || ws.folders.length === 0) return false
+  /** Save a workspace's file, saying here why when it could not be. True once written. */
+  const save = useCallback(
+    async (workspaceId: WorkspaceId, name: string, location: 'named' | 'pick'): Promise<boolean> => {
       try {
-        const path = await rpc['workspace:saveWorkspaceFile']({
-          name,
-          folders: ws.folders.map((f) => ({ path: f.path, name: f.name })),
-          location,
-          current: ws.filePath ?? null
-        })
-        if (!path) return false
-        const saved = (path.split(/[\\/]/).pop() ?? name).replace(/\.code-workspace$/i, '')
-        // Read again: the save may have waited on a dialog, and the list may have changed meanwhile.
-        const now = useApp.getState()
-        now.setWorkspaces(now.workspaces.map((w) => (w.id === ws.id ? { ...w, name: saved, filePath: path } : w)))
-        persist()
-        setError(null)
-        return true
+        const saved = await saveWorkspaceFile(workspaceId, name, location)
+        if (saved) setError(null)
+        return saved
       } catch (e) {
-        // A folder that cannot be written to is the user's to fix, not a crash of ours.
         setError(e instanceof Error ? e.message : String(e))
         return false
       }
     },
-    [persist]
+    [setError]
   )
 
   /**
@@ -165,47 +123,68 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
    * With a workspace files folder in Settings, a name is all there is to ask: the file goes in a
    * folder of its own under it. Without one, a save dialog asks where, as it always did.
    */
-  const saveWorkspaceAs = useCallback(() => {
-    const s = useApp.getState()
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
-    if (!ws || ws.folders.length === 0) return
-    if (s.settings.workspaceFilesDir) setNaming(true)
-    else void writeWorkspaceFile(ws.name, 'pick')
-  }, [writeWorkspaceFile])
+  const saveWorkspaceAs = useCallback(
+    (workspaceId: WorkspaceId) => {
+      const s = useApp.getState()
+      const ws = s.workspaces.find((w) => w.id === workspaceId)
+      if (!ws || ws.folders.length === 0) return
+      if (s.settings.workspaceFilesDir) setNaming(ws.id)
+      else void save(ws.id, ws.name, 'pick')
+    },
+    [save]
+  )
+
+  /**
+   * Add a folder to a workspace — and, when the workspace has been saved, to its file, so that
+   * opening the file elsewhere brings the folder along. See `addFolders`.
+   */
+  const addFolder = useCallback(async (workspaceId: WorkspaceId) => {
+    const ws = useApp.getState().workspaces.find((w) => w.id === workspaceId)
+    // Named in the picker: from the right-click menu the workspace need not be the one on screen.
+    const named = ws && ws.id !== SCRATCH_WORKSPACE_ID
+    const path = await rpc['workspace:pickFolder'](named ? { message: `Add a folder to “${ws.name}”` } : undefined)
+    if (path) await addFolders(workspaceId, [path])
+  }, [])
+
+  /** Its tabs go with it, so its unsaved files are asked about first, as closing those tabs would ask. */
+  const removeWorkspace = useCallback(
+    (workspaceId: WorkspaceId) => {
+      const ids = allTabs(rowOf(useApp.getState(), workspaceId)).map((t) => t.id)
+      void closeTabsSafely(workspaceId, ids).then((closed) => {
+        if (!closed) return
+        remove(workspaceId)
+        persistWorkspaces()
+      })
+    },
+    [remove]
+  )
+
+  /**
+   * A workspace's own menu, on right-click: what the + menu offers for the active workspace, for
+   * this one — whichever it is, without switching to it. Greyed rather than left out where there is
+   * nothing for an item to do, so the menu keeps its shape from row to row, as the tab menu does.
+   *
+   * Native, like the tab menu. Nothing could cover a menu drawn in the side bar, but two kinds of
+   * context menu in one window, drawn two different ways, would be one too many.
+   */
+  const showWorkspaceMenu = useCallback(
+    async (w: Workspace) => {
+      const scratch = w.id === SCRATCH_WORKSPACE_ID
+      const choice = await popupMenu([
+        { kind: 'item', id: 'add-folder', label: 'Add Folder to Workspace…', enabled: !scratch },
+        { kind: 'item', id: 'save-as', label: 'Save Workspace As…', enabled: w.folders.length > 0 },
+        { kind: 'separator' },
+        { kind: 'item', id: 'remove', label: 'Remove Workspace', enabled: !scratch }
+      ])
+      if (choice === 'add-folder') void addFolder(w.id)
+      else if (choice === 'save-as') saveWorkspaceAs(w.id)
+      else if (choice === 'remove') removeWorkspace(w.id)
+    },
+    [addFolder, saveWorkspaceAs, removeWorkspace]
+  )
 
   const activeWorkspace = workspaces.find((w) => w.id === activeId)
-
-  const addFolder = useCallback(async () => {
-    const s = useApp.getState()
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
-    const path = await rpc['workspace:pickFolder']()
-    if (!path) return
-
-    /*
-     * Opening a folder from Scratch makes a workspace; it does not add a folder to Scratch.
-     *
-     * Scratch is the workspace with no folders by definition, and it is synthesised at boot
-     * rather than persisted — `persist()` filters it out on every save. So a folder added here
-     * used to appear in the explorer, never appear as a workspace beside Scratch, and be silently
-     * gone on the next launch, taking the only record of it with it. There is no reading of
-     * "open this repo" that this satisfies.
-     */
-    if (!ws || ws.id === SCRATCH_WORKSPACE_ID) {
-      await openAsWorkspace(path)
-      return
-    }
-
-    if (ws.folders.some((f) => f.path === path)) return
-    const probe = await rpc['workspace:probeFolder'](path)
-    const folder: WorkspaceFolder = {
-      path,
-      name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
-      isGitRepo: probe.isGitRepo,
-      repoRoot: probe.repoRoot
-    }
-    s.setWorkspaces(s.workspaces.map((w) => (w.id === ws.id ? { ...w, folders: [...w.folders, folder] } : w)))
-    persist()
-  }, [openAsWorkspace, persist])
+  const namingWorkspace = workspaces.find((w) => w.id === naming)
 
   return (
     <div style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)', position: 'relative' }}>
@@ -227,21 +206,28 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         <OpenMenu
           onFolder={() => { setMenuOpen(false); void openFolder() }}
           onWorkspaceFile={() => { setMenuOpen(false); void openWorkspaceFile() }}
-          onAddFolder={() => { setMenuOpen(false); void addFolder() }}
-          onSaveAs={() => { setMenuOpen(false); saveWorkspaceAs() }}
+          onAddFolder={() => { setMenuOpen(false); if (activeId) void addFolder(activeId) }}
+          onSaveAs={() => { setMenuOpen(false); if (activeId) saveWorkspaceAs(activeId) }}
           canAddFolder={activeId !== null && activeId !== SCRATCH_WORKSPACE_ID}
           canSave={(activeWorkspace?.folders.length ?? 0) > 0}
         />
       )}
 
-      {naming && activeWorkspace && workspaceFilesDir && (
-        <SaveAsForm
-          initialName={activeWorkspace.name}
-          dir={workspaceFilesDir}
-          onSave={async (name) => { if (await writeWorkspaceFile(name, 'named')) setNaming(false) }}
-          onElsewhere={async (name) => { setNaming(false); await writeWorkspaceFile(name, 'pick') }}
-          onCancel={() => setNaming(false)}
-        />
+      {namingWorkspace && workspaceFilesDir && (
+        <Suspense fallback={null}>
+          <SaveAsForm
+            // A fresh form for each workspace: the name typed for one is not a name for another.
+            key={namingWorkspace.id}
+            className="menu menu--inline"
+            popup
+            title={namingWorkspace.id === activeId ? 'Save workspace as' : `Save “${namingWorkspace.name}” as`}
+            initialName={namingWorkspace.name}
+            dir={workspaceFilesDir}
+            onSave={async (name) => { if (await save(namingWorkspace.id, name, 'named')) setNaming(null) }}
+            onElsewhere={async (name) => { setNaming(null); await save(namingWorkspace.id, name, 'pick') }}
+            onCancel={() => setNaming(null)}
+          />
+        </Suspense>
       )}
 
       {error && (
@@ -257,7 +243,11 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
             <div
               key={w.id}
               className={`row row--clickable${w.id === activeId ? ' row--selected' : ''}`}
-              onClick={() => { setActive(w.id); persist() }}
+              onClick={() => { setActive(w.id); persistWorkspaces() }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                void showWorkspaceMenu(w)
+              }}
             >
               <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center' }}>
                 {scratch ? <TerminalIcon size={13} /> : <FolderIcon size={13} />}
@@ -274,14 +264,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
                       title="Remove workspace"
                       onClick={(e) => {
                         e.stopPropagation()
-                        // Its tabs go with it, so its unsaved files are asked about first, exactly as
-                        // closing those tabs one by one would ask.
-                        const ids = allTabs(rowOf(useApp.getState(), w.id)).map((t) => t.id)
-                        void closeTabsSafely(w.id, ids).then((closed) => {
-                          if (!closed) return
-                          remove(w.id)
-                          persist()
-                        })
+                        removeWorkspace(w.id)
                       }}
                     >
                       <CloseIcon size={11} />
@@ -343,88 +326,6 @@ function OpenMenu({
       <button className="menu__item" disabled={!canSave} onClick={onSaveAs}>
         <span>Save Workspace As…</span>
       </button>
-    </div>
-  )
-}
-
-/**
- * "Save Workspace As…" when Settings names a folder for workspace files: only the name is asked,
- * and the path it will be written to is shown as it is typed.
- *
- * In the side bar, where the menu it replaces was, rather than a dialog in the middle of the
- * window: the middle may be a browser page, which is a native view drawn over the document and
- * would cover the dialog. Nothing is ever drawn over the side bar.
- */
-function SaveAsForm({
-  initialName,
-  dir,
-  onSave,
-  onElsewhere,
-  onCancel
-}: {
-  initialName: string
-  dir: string
-  onSave: (name: string) => Promise<void>
-  onElsewhere: (name: string) => Promise<void>
-  onCancel: () => void
-}): React.ReactElement {
-  const [name, setName] = useState(initialName)
-  // While a save is under way — it may be waiting on "replace it?" — a second press would race it.
-  const [busy, setBusy] = useState(false)
-  const input = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    input.current?.focus()
-    input.current?.select()
-  }, [])
-
-  const problem = workspaceNameProblem(name)
-  const target = namedWorkspaceFile(dir, name, platform() === 'win32' ? '\\' : '/')
-  const run = (action: (name: string) => Promise<void>): void => {
-    setBusy(true)
-    void action(name).finally(() => setBusy(false))
-  }
-
-  return (
-    <div className="menu menu--inline saveas" onMouseDown={(e) => e.stopPropagation()}>
-      <div className="saveas__title">Save workspace as</div>
-      <input
-        ref={input}
-        value={name}
-        spellCheck={false}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          // Enter mid-composition picks a candidate in the input method; it does not save.
-          if (e.nativeEvent.isComposing) return
-          if (e.key === 'Enter' && !problem && !busy) {
-            e.preventDefault()
-            run(onSave)
-          } else if (e.key === 'Escape') {
-            e.preventDefault()
-            onCancel()
-          }
-        }}
-      />
-      {problem ? (
-        <div className="saveas__error">{problem}</div>
-      ) : (
-        <div className="saveas__path" title={target}>{target}</div>
-      )}
-      <div className="saveas__actions">
-        <button
-          className="saveas__elsewhere"
-          title="Choose where to save it instead"
-          disabled={busy}
-          onClick={() => run(onElsewhere)}
-        >
-          Elsewhere…
-        </button>
-        <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onCancel}>Cancel</button>
-        <button className="btn btn--primary" disabled={!!problem || busy} onClick={() => run(onSave)}>
-          Save
-        </button>
-      </div>
     </div>
   )
 }

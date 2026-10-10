@@ -32,7 +32,8 @@ running your own shell.
 
 - **Left** — workspaces and a file tree. A workspace is a named set of folders, like a VS Code
   multi-root workspace. Choose a workspace files folder in Settings and *Save Workspace As…* asks
-  only for a name, filing it as `<folder>/<name>/<name>.code-workspace`.
+  only for a name, filing it as `<folder>/<name>/<name>.code-workspace`. Right-click a workspace to
+  add a folder to it or save it; a folder added to a saved workspace is written into its file too.
 - **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a diff, or a
   Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
@@ -94,6 +95,10 @@ an app launched from Finder inherits almost none of it.
 | PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
 | Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
+| Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
+| A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
+| A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
+| A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
@@ -141,6 +146,14 @@ Each pane is its own pseudo-terminal running your login shell, and each terminal
 of panes you can split and resize. A new split starts in the directory the pane it came from is in
 now — wherever you `cd`'d to — rather than back at the workspace's first folder. (On Windows, where
 a shell's directory cannot be read from outside, it starts where that pane started.)
+
+A new terminal tab starts in the workspace's own folder: the one its `.code-workspace` file is in,
+once the workspace has been saved, and its first folder until then. That folder belongs to the
+workspace rather than to any one of its repos, which makes it the place to start an agent that is
+meant to see all of them. So a terminal opened in a workspace that has never been saved asks first,
+before its shell starts — save it there and then, by name if Settings has a workspace files folder,
+or *Not Now* to start in the first folder as before. It asks again with the next terminal;
+*Don't remind me again* stops it, and Settings → General turns it back on.
 
 Closing several tabs at once — Close Others, Close to the Right, Close All — asks first if it would
 stop a program still running in a terminal it sweeps up. A shell sitting at its prompt closes

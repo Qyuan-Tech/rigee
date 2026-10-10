@@ -8,6 +8,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync
@@ -24,7 +25,12 @@ import { installMenu } from './menu'
 import { forwardShortcuts } from './shortcuts'
 import { confirmUnsaved, hasUnsavedChanges, registerUnsavedHandlers, resetUnsaved } from './unsaved'
 import { PtyManager } from './pty/manager'
-import { parseWorkspaceFile, resolveWorkspaceFilesDir, serializeWorkspaceFile } from './workspaceFile'
+import {
+  addFoldersToWorkspaceFile,
+  parseWorkspaceFile,
+  resolveWorkspaceFilesDir,
+  serializeWorkspaceFile
+} from './workspaceFile'
 import { emit, handle } from './ipc'
 import {
   appSettings,
@@ -104,7 +110,9 @@ if (process.env.RIGEE_SMOKE) {
   // The keys mode types into terminals — Enter included — so its panes run a sink rather than
   // the user's shell, where every one of those keystrokes would be a command in their history.
   // And it never shows its window or takes the foreground: it runs while somebody is working.
-  if (process.env.RIGEE_SMOKE === 'keys') {
+  // The workspace files mode asks each pane's process where it started, which a real shell's rc
+  // file is free to answer differently by changing directory; a sink stays where it was put.
+  if (process.env.RIGEE_SMOKE === 'keys' || process.env.RIGEE_SMOKE === 'workspacefiles') {
     const sink = join(dir, 'sink.sh')
     writeFileSync(sink, '#!/bin/sh\nexec cat >/dev/null\n', { mode: 0o755 })
     process.env.SHELL = sink
@@ -2279,8 +2287,21 @@ async function runTabsSmoke(): Promise<void> {
  * (answered Cancel, so that file must come through untouched), and a name that would climb out of
  * the folder is refused whatever the sidebar thought of it.
  *
- * With RIGEE_SHOT_DIR set it also photographs the General page and the name form, which are
- * reviewed by looking at them.
+ * Then what a saved workspace changes about terminals, asking each pane's process where it is. A
+ * terminal in the saved workspace starts in the folder its file is in, without a word. One opened
+ * in a workspace never saved asks first, and nothing has started while it asks: Not Now starts it
+ * in the workspace's folder; the next terminal asks again, and saving from the question starts it
+ * in the folder the file went to; Don't remind me again starts it and is kept in Settings, and the
+ * next terminal does not ask. A workspace whose file has gone starts its terminals at home rather
+ * than flashing a tab that dies.
+ *
+ * And the menu a workspace opens on right-click: Add Folder on a saved workspace that is not the
+ * active one adds it there — without switching to it — and to the file, whose hand-written
+ * comment and setting survive; Save Workspace As… opens the name form for the workspace clicked;
+ * Scratch has nothing to add or remove. The folder picker is answered by RIGEE_SMOKE_PICK_FOLDER.
+ *
+ * With RIGEE_SHOT_DIR set it also photographs the General page, the name form and the question a
+ * new terminal asks, which are reviewed by looking at them.
  */
 async function runWorkspaceFilesSmoke(): Promise<void> {
   const wc = shellWc()
@@ -2307,7 +2328,7 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
   // A React text box takes a value through its prototype's setter and an input event, as typing would.
   const helpers = `
     const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-    const { store } = window.__rigee
+    const { store, getTerminal, paneKey, menus } = window.__rigee
     const type = (el, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value)
       el.dispatchEvent(new Event('input', { bubbles: true }))
@@ -2315,7 +2336,30 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     const until = async (test, ms = 8000) => {
       for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
       return null
-    }`
+    }
+    const activeTab = () => {
+      const s = store.getState()
+      const row = s.rowsByWorkspace[s.activeWorkspaceId]
+      const group = row && row.groups.find(g => g.id === row.activeGroupId)
+      return group && group.tabs.find(t => t.id === group.activeTabId)
+    }
+    // The tab strip's button, which is how a person opens one.
+    const newTerminal = async () => {
+      const before = activeTab()?.id
+      document.querySelector('.tabstrip__actions button[title="New terminal"]').click()
+      return until(() => { const t = activeTab(); return t && t.kind === 'terminal' && t.id !== before ? t : null })
+    }
+    const startedPane = (tab) => until(() => getTerminal(paneKey(tab.id, tab.activeLeafId))?.paneId, 15000)
+    const button = (root, text) => [...root.querySelectorAll('button')].find(b => b.textContent.includes(text))
+    const row = (label) => [...document.querySelectorAll('.row')].find(r => r.querySelector('.row__label')?.textContent === label)`
+  /** Where a pane's process is, as the operating system says: the question a split asks too. */
+  const whereIs = async (paneId: string | undefined): Promise<string | null> => {
+    const at = paneId ? await ptys?.cwdOf(paneId) : null
+    return at ? realpathSync(at) : null
+  }
+  const readDoc = (): { settings?: { remindToSaveWorkspace?: boolean } } => {
+    try { return JSON.parse(readFileSync(join(app.getPath('userData'), 'workspaces.json'), 'utf8')) } catch { return {} }
+  }
 
   try {
     // --- Settings: the General page ------------------------------------------------
@@ -2419,6 +2463,229 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     if (outcomes.again !== target) return finish(false, 'resaving-its-own-file-asked-or-failed')
     if (outcomes.other !== null || readFileSync(target, 'utf8') !== before) return finish(false, 'replaced-another-workspaces-file-without-asking')
     if (!outcomes.climb || existsSync(join(filed, '..', 'escape'))) return finish(false, 'a-climbing-name-was-not-refused')
+
+    // --- terminals: a saved workspace's start in its folder -------------------------------
+    const saved1 = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().setActiveWorkspace('ws-files')
+      // A beat for the strip to render for it: its button opens into the workspace it was drawn for.
+      await sleep(300)
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const paneId = await startedPane(tab)
+      if (document.querySelector('.saveprompt')) return { ok: false, stage: 'a-saved-workspace-asked-to-be-saved' }
+      return paneId ? { ok: true, paneId } : { ok: false, stage: 'saved-workspace-terminal-never-started' }
+    })()`)
+    if (!saved1.ok) return finish(false, saved1.stage ?? 'saved-terminal')
+    const savedAt = await whereIs(saved1.paneId)
+    trail.push(`a terminal in the saved workspace started in ${savedAt}`)
+    if (savedAt !== realpathSync(dirname(target))) return finish(false, 'saved-workspace-terminal-not-in-its-folder', savedAt)
+
+    // --- an unsaved workspace asks first; Not Now ----------------------------------------
+    const skipped = await js<{ ok: boolean; stage?: string; initial?: string; path?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-unsaved', name: 'repo-b', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(repos[1])}, name: 'repo-b', isGitRepo: false, repoRoot: null }]
+      })
+      await sleep(300)
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const prompt = await until(() => document.querySelector('.saveprompt'))
+      if (!prompt) return { ok: false, stage: 'unsaved-workspace-did-not-ask' }
+      const input = prompt.querySelector('input')
+      if (!input) return { ok: false, stage: 'question-has-no-name-field' }
+      if (document.activeElement !== input) return { ok: false, stage: 'question-does-not-have-the-keyboard' }
+      await sleep(500)
+      // The question comes BEFORE the shell, which is the only way the shell can start in the
+      // folder the answer creates.
+      if (getTerminal(paneKey(tab.id, tab.activeLeafId)) || document.querySelector('.term__pane')) {
+        return { ok: false, stage: 'shell-started-before-the-answer' }
+      }
+      const initial = input.value
+      const path = prompt.querySelector('.saveas__path')?.textContent || ''
+      const notNow = button(prompt, 'Not Now')
+      if (!notNow) return { ok: false, stage: 'no-not-now' }
+      notNow.click()
+      const paneId = await startedPane(tab)
+      if (!paneId) return { ok: false, stage: 'not-now-did-not-start-the-shell' }
+      return { ok: true, initial, path, paneId }
+    })()`)
+    if (!skipped.ok) return finish(false, skipped.stage ?? 'not-now')
+    const skippedAt = await whereIs(skipped.paneId)
+    trail.push(`asked with "${skipped.initial}" toward ${skipped.path}; Not Now started it in ${skippedAt}`)
+    if (skipped.initial !== 'repo-b' || skipped.path !== join(filed, 'repo-b', 'repo-b.code-workspace')) {
+      return finish(false, 'question-offered-the-wrong-name', skipped)
+    }
+    if (skippedAt !== realpathSync(repos[1]!)) return finish(false, 'not-now-started-somewhere-else', skippedAt)
+
+    // --- the next terminal asks again; saving from the question -----------------------------
+    const answered = await js<{ ok: boolean; stage?: string; name?: string; filePath?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const prompt = await until(() => document.querySelector('.saveprompt'))
+      if (!prompt) return { ok: false, stage: 'did-not-ask-again' }
+      const input = prompt.querySelector('input')
+      type(input, 'second')
+      await sleep(150)
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-unsaved' && w.filePath))
+      if (!ws) return { ok: false, stage: 'enter-did-not-save' }
+      const paneId = await startedPane(tab)
+      if (!paneId) return { ok: false, stage: 'saving-did-not-start-the-shell' }
+      if (document.querySelector('.saveprompt')) return { ok: false, stage: 'question-stayed-after-saving' }
+      return { ok: true, name: ws.name, filePath: ws.filePath, paneId }
+    })()`)
+    if (!answered.ok) return finish(false, answered.stage ?? 'save-from-question')
+    const secondFile = join(filed, 'second', 'second.code-workspace')
+    const answeredAt = await whereIs(answered.paneId)
+    trail.push(`asked again; saved as "${answered.name}" at ${answered.filePath}, and started in ${answeredAt}`)
+    if (answered.filePath !== secondFile || answered.name !== 'second') return finish(false, 'question-saved-in-the-wrong-place', answered)
+    if (parseWorkspaceFile(readFileSync(secondFile, 'utf8'), secondFile).folders.map((f) => f.path).join() !== repos[1]) {
+      return finish(false, 'question-wrote-the-wrong-folders')
+    }
+    if (answeredAt !== realpathSync(dirname(secondFile))) return finish(false, 'saved-terminal-not-in-the-new-folder', answeredAt)
+    if ((await whereIs(skipped.paneId)) !== realpathSync(repos[1]!)) return finish(false, 'saving-moved-a-running-terminal')
+
+    // --- Don't remind me again ------------------------------------------------------------------
+    const quiet = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-quiet', name: 'repo-a', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(repos[0])}, name: 'repo-a', isGitRepo: false, repoRoot: null }]
+      })
+      await sleep(300)
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const prompt = await until(() => document.querySelector('.saveprompt'))
+      if (!prompt) return { ok: false, stage: 'did-not-ask' }
+      const never = button(prompt, 'remind me again')
+      if (!never) return { ok: false, stage: 'no-dont-remind' }
+      never.click()
+      const paneId = await startedPane(tab)
+      if (!paneId) return { ok: false, stage: 'dont-remind-did-not-start-the-shell' }
+      if (store.getState().settings.remindToSaveWorkspace !== false) return { ok: false, stage: 'reminder-still-on' }
+      const next = await newTerminal()
+      if (!next) return { ok: false, stage: 'no-second-terminal-tab' }
+      const nextPane = await startedPane(next)
+      if (document.querySelector('.saveprompt')) return { ok: false, stage: 'asked-after-being-told-not-to' }
+      return nextPane ? { ok: true, paneId } : { ok: false, stage: 'unasked-terminal-never-started' }
+    })()`)
+    if (!quiet.ok) return finish(false, quiet.stage ?? 'dont-remind')
+    const quietAt = await whereIs(quiet.paneId)
+    let quietDoc = readDoc()
+    for (let i = 0; i < 20 && quietDoc.settings?.remindToSaveWorkspace !== false; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      quietDoc = readDoc()
+    }
+    trail.push(`Don't remind me again started it in ${quietAt}; settings on disk: ${JSON.stringify(quietDoc.settings)}`)
+    if (quietAt !== realpathSync(repos[0]!)) return finish(false, 'dont-remind-started-somewhere-else', quietAt)
+    if (quietDoc.settings?.remindToSaveWorkspace !== false) return finish(false, 'dont-remind-not-saved')
+
+    // --- a workspace whose file has gone --------------------------------------------------------
+    const gone = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-gone', name: 'gone', filePath: '/nonexistent-rigee-smoke/gone/gone.code-workspace',
+        createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(repos[0])}, name: 'repo-a', isGitRepo: false, repoRoot: null }]
+      })
+      await sleep(300)
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const paneId = await startedPane(tab)
+      return paneId ? { ok: true, paneId } : { ok: false, stage: 'terminal-never-started' }
+    })()`)
+    if (!gone.ok) return finish(false, gone.stage ?? 'gone')
+    await new Promise((r) => setTimeout(r, 500))
+    const goneAt = await whereIs(gone.paneId)
+    trail.push(`with its file gone, a terminal started in ${goneAt}`)
+    if (goneAt !== realpathSync(homedir())) return finish(false, 'a-gone-folder-did-not-start-at-home', goneAt)
+
+    // --- right-click: Add Folder, on a saved workspace that is not the active one ---------------
+    // Hand-edited first, the way people keep these files: a note, and a setting.
+    writeFileSync(
+      target,
+      readFileSync(target, 'utf8')
+        .replace('{\n', '{\n  // kept by hand\n')
+        .replace('"settings": {}', '"settings": { "files.exclude": { "**/.git": true } }')
+    )
+    const repoC = join(root, 'repo-c')
+    mkdirSync(repoC, { recursive: true })
+    process.env.RIGEE_SMOKE_PICK_FOLDER = repoC
+    const added = await js<{ ok: boolean; stage?: string; labels?: string[] }>(`(async () => {
+      ${helpers}
+      const active = store.getState().activeWorkspaceId
+      let offered = null
+      menus.answer = (items) => { offered = items; return 'add-folder' }
+      const target = row('myworkspace')
+      if (!target) return { ok: false, stage: 'no-row-for-the-saved-workspace' }
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-files' && w.folders.length === 3))
+      menus.answer = null
+      if (!offered) return { ok: false, stage: 'right-click-opened-no-menu' }
+      const labels = offered.filter(i => i.kind === 'item').map(i => i.label + (i.enabled === false ? ' (greyed)' : ''))
+      if (!ws) return { ok: false, stage: 'folder-not-added', labels }
+      if (store.getState().activeWorkspaceId !== active) return { ok: false, stage: 'right-click-switched-workspace', labels }
+      return { ok: true, labels }
+    })()`)
+    if (!added.ok) return finish(false, added.stage ?? 'menu-add-folder', added.labels)
+    trail.push(`a saved workspace's menu offered ${added.labels?.join(', ')}`)
+    if (!added.labels?.includes('Add Folder to Workspace…') || !added.labels.includes('Save Workspace As…')) {
+      return finish(false, 'menu-lacks-add-folder-or-save-as', added.labels)
+    }
+    let grown = ''
+    for (let i = 0; i < 30 && !grown.includes('repo-c'); i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      grown = readFileSync(target, 'utf8')
+    }
+    const grownFolders = parseWorkspaceFile(grown, target).folders.map((f) => f.path)
+    trail.push(`its file now lists ${grownFolders.join(', ')}`)
+    if (grownFolders.join() !== [...repos, repoC].join()) return finish(false, 'folder-not-added-to-the-file', grown)
+    if (!grown.includes('// kept by hand') || !grown.includes('"files.exclude": { "**/.git": true }')) {
+      return finish(false, 'adding-a-folder-lost-what-was-in-the-file', grown)
+    }
+
+    // --- right-click: Save Workspace As…, and Scratch's menu ------------------------------------
+    const named = await js<{ ok: boolean; stage?: string; initial?: string; scratch?: string[] }>(`(async () => {
+      ${helpers}
+      menus.answer = () => 'save-as'
+      row('repo-a').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const input = await until(() => document.querySelector('.menu--inline.saveas input'))
+      menus.answer = null
+      if (!input) return { ok: false, stage: 'save-as-from-the-menu-showed-no-form' }
+      const initial = input.value
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      if (!(await until(() => !document.querySelector('.menu--inline.saveas')))) return { ok: false, stage: 'escape-left-the-form' }
+      let scratch = null
+      menus.answer = (items) => { scratch = items; return null }
+      row('Scratch').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      await until(() => scratch)
+      menus.answer = null
+      if (!scratch) return { ok: false, stage: 'scratch-opened-no-menu' }
+      return { ok: true, initial, scratch: scratch.filter(i => i.kind === 'item' && i.enabled === false).map(i => i.label) }
+    })()`)
+    if (!named.ok) return finish(false, named.stage ?? 'menu-save-as')
+    trail.push(`Save Workspace As… from the menu offered "${named.initial}"; on Scratch greyed: ${named.scratch?.join(', ')}`)
+    if (named.initial !== 'repo-a') return finish(false, 'menu-save-as-named-the-wrong-workspace', named.initial)
+    if (!named.scratch?.includes('Add Folder to Workspace…') || !named.scratch.includes('Remove Workspace')) {
+      return finish(false, 'scratch-offers-what-it-cannot-do', named.scratch)
+    }
+
+    // Last, because it turns the reminder back on to have something to photograph.
+    if (process.env.RIGEE_SHOT_DIR) {
+      await js(`(async () => {
+        ${helpers}
+        store.getState().setSettings({ ...store.getState().settings, remindToSaveWorkspace: undefined })
+        store.getState().setActiveWorkspace('ws-quiet')
+        await sleep(300)
+        await newTerminal()
+        await until(() => document.querySelector('.saveprompt'))
+        await sleep(300)
+      })()`)
+      await shoot('terminal-asks-to-save')
+    }
 
     finish(true, 'filed')
   } catch (err) {
@@ -4014,6 +4281,9 @@ function registerHandlers(): void {
 
   // --- workspaces --------------------------------------------------------
   handle('workspace:pickFolder', async (args) => {
+    // `smoke:workspacefiles` answers for the user: a folder picker cannot be driven from a script.
+    const scripted = process.env.RIGEE_SMOKE ? process.env.RIGEE_SMOKE_PICK_FOLDER : undefined
+    if (scripted) return scripted
     if (!window) return null
     const res = await dialog.showOpenDialog(window, {
       properties: ['openDirectory', 'createDirectory'],
@@ -4091,6 +4361,22 @@ function registerHandlers(): void {
     }
     writeFileSync(target, serializeWorkspaceFile(folders, target), 'utf8')
     return target
+  })
+
+  handle('workspace:addFoldersToFile', ({ file, folders }) => {
+    // This edits a file in place, so only one that is a workspace file by name and by content.
+    if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
+    let text: string
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch (err) {
+      // The likely way for this to fail: the file was moved or deleted since the workspace was saved.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(file)} is no longer in ${dirname(file)}`)
+      throw err
+    }
+    const next = addFoldersToWorkspaceFile(text, file, folders)
+    // In place rather than tmp-and-rename, as saving one is: a workspace file kept as a symlink stays one.
+    if (next !== text) writeFileSync(file, next, 'utf8')
   })
 
   // --- clipboard ---------------------------------------------------------

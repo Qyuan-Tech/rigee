@@ -3,7 +3,8 @@ import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
 import { leaves, neighbourOf, removeLeaf } from './paneTree'
-import { rowOf, useApp } from './store'
+import { newTerminalTab, rowOf, useApp } from './store'
+import { remindsToSave } from './workspaces'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
@@ -67,6 +68,17 @@ const pendingFontSize = new Map<string, number>()
  * new pane's shell is spawned.
  */
 const pendingCwdFrom = new Map<string, string>()
+
+/**
+ * Terminal tabs whose shell waits until the user has answered whether to save the workspace first.
+ *
+ * Only a tab somebody opened just now — the tab strip's button, the new_tab shortcut — in a
+ * workspace with no workspace file. Kept here rather than on the tab, which is persisted: a prompt
+ * that came back after a restart would hold a restored terminal hostage, and nobody asked for that
+ * one. The pane decides whether the question still stands each time it renders, so saving the
+ * workspace some other way, or turning the reminder off, answers it too.
+ */
+const askingToSave = new Set<string>()
 
 /** Which pane last had the keyboard, for new tabs to inherit from. */
 let lastFocusedKey: string | null = null
@@ -440,6 +452,29 @@ export function takeCwdSource(key: string): string | undefined {
   return paneId
 }
 
+/**
+ * Open a terminal tab the way a person does: the tab strip's button and the new_tab shortcut. Into
+ * `groupId`, or the active group; at the text size of `fontFrom`, the pane the key was pressed in.
+ *
+ * In a workspace that has never been saved, the tab asks to save it before its shell starts, so
+ * that the shell can start in the folder the workspace file goes to. See `askingToSave`.
+ */
+export function openTerminalTab(workspaceId: string, opts: { groupId?: string; fontFrom?: string | null } = {}): void {
+  const s = useApp.getState()
+  const tab = newTerminalTab()
+  inheritFontSize(paneKey(tab.id, tab.activeLeafId), opts.fontFrom ?? null)
+  const ws = s.workspaces.find((w) => w.id === workspaceId)
+  if (ws && remindsToSave(ws, s.settings)) askingToSave.add(tab.id)
+  s.openTab(workspaceId, tab, opts.groupId)
+}
+
+/** Whether this tab was opened to ask about saving its workspace, and has not been answered. */
+export const isAskingToSave = (tabId: string): boolean => askingToSave.has(tabId)
+
+export function stopAskingToSave(tabId: string): void {
+  askingToSave.delete(tabId)
+}
+
 export const focusedTerminalKey = (): string | null => lastFocusedKey
 
 // --- screen ------------------------------------------------------------------
@@ -596,5 +631,7 @@ useApp.subscribe(
       if (handle.paneId) void rpc['terminal:kill']({ paneId: handle.paneId })
       disposeTerminal(key)
     }
+    // A tab closed while it was still asking has no pane to take the question away with it.
+    for (const tabId of askingToSave) if (!live.has(tabId)) askingToSave.delete(tabId)
   }
 )

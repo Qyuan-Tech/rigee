@@ -98,7 +98,10 @@ export class PtyManager {
     const pty = await this.load()
     const { file, args } = defaultShell()
     // A split starts where the pane it came from is now, not back at the workspace's first folder.
-    const cwd = (opts.cwdFrom ? await this.cwdOf(opts.cwdFrom) : null) ?? (opts.cwd || homedir())
+    const wanted = (opts.cwdFrom ? await this.cwdOf(opts.cwdFrom) : null) ?? (opts.cwd || homedir())
+    // A directory that has gone — a workspace file moved, a repo deleted — does not fail the spawn:
+    // the shell starts, cannot chdir and exits with nothing said, and the new tab flashes and is gone.
+    const cwd = isDirectory(wanted) ? wanted : homedir()
 
     const child = pty.spawn(file, args, {
       name: 'xterm-256color',

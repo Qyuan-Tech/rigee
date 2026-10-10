@@ -42,3 +42,17 @@ export function namedWorkspaceFile(dir: string, name: string, sep: string): stri
   const base = dir.trim().replace(/[\\/]+$/, '')
   return [base, name, `${name}${WORKSPACE_FILE_EXTENSION}`].join(sep)
 }
+
+/**
+ * The folder a workspace file is in, which is where that workspace's terminals start.
+ *
+ * Here rather than beside the file parsing in main because it is the renderer that decides where a
+ * terminal starts. Either separator, since the path is whatever the machine it lives on uses. A file
+ * at the root keeps the root's separator: `C:` on its own means wherever C: was last, not its root.
+ */
+export function workspaceFileDir(file: string): string {
+  const cut = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'))
+  if (cut < 0) return '.'
+  const dir = file.slice(0, cut)
+  return dir === '' || /^[A-Za-z]:$/.test(dir) ? file.slice(0, cut + 1) : dir
+}

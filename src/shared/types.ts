@@ -275,6 +275,12 @@ export interface AppSettings {
    * with a save dialog every time, which is all it did before this existed.
    */
   workspaceFilesDir?: string
+  /**
+   * Whether a terminal opened in a workspace with no workspace file offers to save one before its
+   * shell starts — saved, the terminal starts in the folder the file is in. Unset means yes; it is
+   * only ever stored as false, by the prompt's "Don't remind me again" or the General page.
+   */
+  remindToSaveWorkspace?: boolean
 }
 
 // ---------------------------------------------------------------------------

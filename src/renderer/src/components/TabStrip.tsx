@@ -13,8 +13,9 @@ import {
 } from '../plugins/registry'
 import { popupMenu } from '../contextMenu'
 import { closeTabsSafely } from '../editing'
-import { newTerminalTab, nextTabId, rowOf, useActiveWorkspace, useApp, useRow } from '../store'
+import { nextTabId, rowOf, useActiveWorkspace, useApp, useRow } from '../store'
 import { isCloseCommand, isFileTab, tabsToClose } from '../tabs'
+import { openTerminalTab } from '../terminals'
 import type { GroupId, Tab, TabId, WorkspaceId } from '@shared/types'
 
 /**
@@ -72,9 +73,8 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
   const dragFrom = useRef<number | null>(null)
 
   const addTerminal = useCallback(() => {
-    if (!workspace) return
-    openTab(workspace.id, newTerminalTab(), groupId)
-  }, [groupId, openTab, workspace])
+    if (workspace) openTerminalTab(workspace.id, { groupId })
+  }, [groupId, workspace])
 
   const split = useCallback(() => {
     if (workspace) splitTab(workspace.id, groupId)

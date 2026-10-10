@@ -172,6 +172,12 @@ export interface IpcRequests {
     /** The file this workspace came from, if any: replaced without asking, and where `pick` starts. */
     current?: string | null
   }) => string | null
+  /**
+   * Add folders to an existing `.code-workspace` file, the folder having just been added to the
+   * workspace it is. Everything else in the file stays as it was, comments included; folders it
+   * already names are skipped. Rejects with a message fit to show when the file cannot be updated.
+   */
+  'workspace:addFoldersToFile': (args: { file: string; folders: { path: string; name: string }[] }) => void
 
   // --- clipboard -------------------------------------------------------
   /**
@@ -294,6 +300,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'workspace:pickWorkspaceFile',
   'workspace:readWorkspaceFile',
   'workspace:saveWorkspaceFile',
+  'workspace:addFoldersToFile',
   'clipboard:write',
   'clipboard:read',
   'fs:list',

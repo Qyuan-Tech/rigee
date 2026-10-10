@@ -1,18 +1,10 @@
-import { SCRATCH_WORKSPACE_ID } from '@shared/types'
 import { requestReveal } from '../editing'
 import type { PluginId, ViewType } from '@rigee/plugin-api/manifest'
-import type {
-  CustomTab,
-  EditorTab,
-  TabId,
-  Workspace,
-  WorkspaceFolder,
-  WorkspaceId
-} from '@shared/types'
+import type { CustomTab, EditorTab, TabId, WorkspaceId } from '@shared/types'
 import type { OpenFileRequest, PluginTabRequest } from '@rigee/plugin-api'
 import { allTabs, groupById, groupOfTab } from '../groups'
-import { rpc } from '../ipc'
-import { nextTabId, nextWorkspaceId, rowOf, takeDuplicateOrigin, useApp } from '../store'
+import { nextTabId, rowOf, takeDuplicateOrigin, useApp } from '../store'
+import { addFolders, openAsWorkspace } from '../workspaces'
 import { ownerOf, resolveViewType } from './registry'
 
 /**
@@ -38,57 +30,14 @@ export function activeWorkspaceId(): WorkspaceId | null {
 /**
  * Add folders to the workspace, the way dropping them on the explorer does.
  *
- * The rules are the shell's, because the workspace model is: each path is probed for a git work
- * tree, duplicates are ignored, and dropping onto Scratch — which has no folders by definition and
- * is never persisted — makes a NEW workspace out of the first folder rather than adding to it. A
- * folder added to Scratch used to appear in the tree, never appear as a workspace, and be silently
- * gone on the next launch, taking the only record of it with it.
+ * The rules are the shell's, because the workspace model is — see `addFolders`: each path is
+ * probed for a git work tree, duplicates are ignored, a saved workspace's file gains the folder
+ * too, and dropping onto Scratch makes a NEW workspace out of the first folder rather than adding
+ * to a workspace that is never persisted.
  */
 export async function addWorkspaceFolders(paths: string[]): Promise<void> {
-  const before = useApp.getState()
-  const target = before.workspaces.find((w) => w.id === before.activeWorkspaceId)
-  const ontoScratch = !target || target.id === SCRATCH_WORKSPACE_ID
-
-  const probed = await Promise.all(
-    paths.map(async (path) => {
-      const probe = await rpc['workspace:probeFolder'](path)
-      return {
-        path,
-        name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
-        isGitRepo: probe.isGitRepo,
-        repoRoot: probe.repoRoot
-      } satisfies WorkspaceFolder
-    })
-  )
-
-  const store = useApp.getState()
-  if (ontoScratch) {
-    const [first, ...rest] = probed
-    if (!first) return
-    store.addWorkspace({
-      id: nextWorkspaceId(),
-      name: first.name,
-      folders: [first, ...rest],
-      createdAt: Date.now(),
-      lastOpenedAt: Date.now()
-    } satisfies Workspace)
-  } else {
-    const known = new Set(target.folders.map((f) => f.path))
-    const added = probed.filter((f) => !known.has(f.path))
-    if (added.length === 0) return
-    store.setWorkspaces(
-      store.workspaces.map((w) =>
-        w.id === target.id ? { ...w, folders: [...w.folders, ...added] } : w
-      )
-    )
-  }
-
-  const after = useApp.getState()
-  void rpc['state:saveWorkspaces']({
-    // Scratch is rebuilt at boot; persisting it would let a stale copy outlive the code.
-    workspaces: after.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID),
-    activeWorkspaceId: after.activeWorkspaceId
-  })
+  const target = useApp.getState().activeWorkspaceId
+  await (target ? addFolders(target, paths) : openAsWorkspace(paths))
 }
 
 /**

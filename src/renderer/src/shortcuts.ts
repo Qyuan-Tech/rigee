@@ -13,10 +13,10 @@ import {
   type KeymapError,
   type UnshiftedLookup
 } from '@shared/keymap'
-import { newTerminalTab, rowOf, useApp } from './store'
+import { rowOf, useApp } from './store'
 import { closeTabsSafely, revealView } from './editing'
 import { tabsToClose } from './tabs'
-import { closeTerminalPane, getTerminal, inheritFontSize, paneKey } from './terminals'
+import { closeTerminalPane, getTerminal, openTerminalTab, paneKey } from './terminals'
 
 /**
  * The shortcuts at runtime: which keymap is live, what a keypress means, and the actions that do
@@ -204,12 +204,9 @@ export function runAppAction(action: string, fromTerminal: string | null = null)
   }
 
   switch (name) {
-    case 'new_tab': {
-      const tab = newTerminalTab()
-      if (tab.kind === 'terminal') inheritFontSize(paneKey(tab.id, tab.activeLeafId), fromTerminal)
-      s.openTab(ws, tab)
+    case 'new_tab':
+      openTerminalTab(ws, { fontFrom: fromTerminal })
       return true
-    }
     // Inside a terminal, TerminalPane answers close_surface before it gets here. Out here — the
     // keyboard on the explorer, on <body>, in a browser page — a terminal tab still closes one
     // pane, the one it would type into, and not every split and every process in it at once.

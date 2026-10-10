@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { groupOfTab } from '../groups'
 import { isMac, onEvent, platform, rpc } from '../ipc'
 import { formatChord, resolvePrefixKey } from '../keys'
@@ -44,6 +44,7 @@ import {
   getTerminal,
   inheritCwd,
   inheritFontSize,
+  isAskingToSave,
   newlineBytes,
   paneFontSize,
   paneKey,
@@ -58,9 +59,12 @@ import {
   selectAllInPane,
   sendToPane,
   setPaneFontSize,
+  stopAskingToSave,
   takeCwdSource
 } from '../terminals'
 import { rowOf, useApp } from '../store'
+import { remindsToSave, terminalCwd } from '../workspaces'
+import { SaveReminder } from './LazySaveWorkspace'
 import type { PaneNode, TerminalTab } from '@shared/types'
 import '@xterm/xterm/css/xterm.css'
 
@@ -111,8 +115,17 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   const container = useRef<HTMLDivElement>(null)
   // Synchronous mirror: the key handler runs before React can re-render.
   const armed = useRef(false)
+  const settings = useApp((s) => s.settings)
+  /** Not Now was pressed. The set in terminals.ts is not something React can watch. */
+  const [skipped, setSkipped] = useState(false)
+  /**
+   * Whether this tab is still asking to save its workspace before its shell starts. Worked out
+   * afresh every render, because the question can go away without being answered here: the
+   * workspace saved from the side bar, or the reminder switched off from another tab's prompt.
+   */
+  const askingToSave = !skipped && isAskingToSave(tab.id) && !!workspace && remindsToSave(workspace, settings)
 
-  const cwd = workspace?.folders[0]?.path ?? workspace?.defaultCwd ?? '.'
+  const cwd = workspace ? terminalCwd(workspace) : '.'
   const activeKey = paneKey(tab.id, tab.activeLeafId)
   const zoomedLeaf = zoomed ? (leaves(tab.root).find((l) => l.id === zoomed) ?? null) : null
 
@@ -418,6 +431,12 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     reapPanes(tab.id, new Set(leaves(tab.root).map((l) => l.id)))
   }, [tab.root, tab.id])
 
+  // Once the question has gone, however it went, it stays gone: a shell has started by then, and
+  // turning the reminder back on must not put a prompt over a terminal that is already running.
+  useEffect(() => {
+    if (!askingToSave) stopAskingToSave(tab.id)
+  }, [askingToSave, tab.id])
+
   // The find bar follows the active pane: its matches, its count, and its highlights, which come
   // off a pane the moment it stops being the one searched.
   const searchOpen = search !== null
@@ -457,6 +476,22 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   }, [searchOpen, searchReady, query, activeKey])
 
   if (!workspaceId || !workspace) return <div className="empty">No workspace.</div>
+
+  if (askingToSave) {
+    return (
+      <div className="term term--asking">
+        <Suspense fallback={null}>
+          <SaveReminder
+            workspace={workspace}
+            onSkip={() => {
+              stopAskingToSave(tab.id)
+              setSkipped(true)
+            }}
+          />
+        </Suspense>
+      </div>
+    )
+  }
 
   return (
     <div className="term" ref={container}>

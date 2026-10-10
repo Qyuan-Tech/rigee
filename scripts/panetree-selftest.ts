@@ -66,9 +66,15 @@ import {
   singleGroupRow,
   splitGroup
 } from '../src/renderer/src/groups.ts'
-import { parseWorkspaceFile, resolveWorkspaceFilesDir, serializeWorkspaceFile } from '../src/main/workspaceFile.ts'
+import {
+  addFoldersToWorkspaceFile,
+  parseWorkspaceFile,
+  resolveWorkspaceFilesDir,
+  serializeWorkspaceFile
+} from '../src/main/workspaceFile.ts'
 import {
   namedWorkspaceFile,
+  workspaceFileDir,
   workspaceFilesDirProblem,
   workspaceNameProblem
 } from '../src/shared/workspaceFiles.ts'
@@ -334,6 +340,79 @@ console.log('\n.code-workspace files')
   eq('what is written parses back to the same paths',
     parseWorkspaceFile(written, file).folders.map((f) => f.path).join(','),
     '/projects/group/api,/elsewhere/web')
+}
+
+console.log('\nadding folders to a .code-workspace file')
+{
+  const file = '/projects/group/g.code-workspace'
+  const paths = (text: string): string => parseWorkspaceFile(text, file).folders.map((f) => f.path).join(',')
+
+  // What Save Workspace As… writes.
+  const ours = serializeWorkspaceFile([{ path: '/projects/group/api' }], file)
+  const grown = addFoldersToWorkspaceFile(ours, file, [{ path: '/projects/group/web' }])
+  eq('a folder joins the list', paths(grown), '/projects/group/api,/projects/group/web')
+  eq('laid out like the entry before it, relative because it is nearby', grown,
+    '{\n  "folders": [\n    {\n      "path": "api"\n    },\n    {\n      "path": "web"\n    }\n  ],\n  "settings": {}\n}\n')
+
+  // VS Code writes tabs, and people add comments and settings.
+  const vscode = [
+    '{',
+    '\t// the api, checked out from gerrit',
+    '\t"folders": [',
+    '\t\t{',
+    '\t\t\t"path": "api"',
+    '\t\t} // keep first',
+    '\t],',
+    '\t"settings": { "editor.tabSize": 2 }',
+    '}'
+  ].join('\n')
+  const added = addFoldersToWorkspaceFile(vscode, file, [{ path: '/elsewhere/web', name: 'Web' }])
+  eq('beside a hand-edited file it still joins', paths(added), '/projects/group/api,/elsewhere/web')
+  check('the comments are kept, the one on the last entry still beside it',
+    added.includes('// the api, checked out from gerrit') && added.includes('\t\t}, // keep first\n'), added)
+  check('the settings are kept', added.includes('"settings": { "editor.tabSize": 2 }'), added)
+  check('in the file\'s own tabs, with the name it was given',
+    added.includes('\n\t\t{\n\t\t\t"path": "/elsewhere/web",\n\t\t\t"name": "Web"\n\t\t}\n\t],'), added)
+
+  eq('a folder the file already names, however it spells it, changes nothing',
+    addFoldersToWorkspaceFile('{"folders":[{"path":"./api"}]}', file, [{ path: '/projects/group/api' }]),
+    '{"folders":[{"path":"./api"}]}')
+  eq('a name that is only the folder\'s name is not written',
+    addFoldersToWorkspaceFile('{"folders":[]}', file, [{ path: '/x/web', name: 'web' }]).includes('"name"'), false)
+
+  eq('an empty list gets one entry per line',
+    addFoldersToWorkspaceFile('{\n  "folders": [],\n  "settings": {}\n}\n', file, [{ path: '/x/a' }, { path: '/x/b' }]),
+    '{\n  "folders": [\n    {\n      "path": "/x/a"\n    },\n    {\n      "path": "/x/b"\n    }\n  ],\n  "settings": {}\n}\n')
+  eq('a list on one line stays on one line',
+    addFoldersToWorkspaceFile('{"folders":[{"path":"api"}],"settings":{}}', file, [{ path: '/x/b' }]),
+    '{"folders":[{"path":"api"}, {"path":"/x/b"}],"settings":{}}')
+  eq('a trailing comma is kept where it was, and written after the new entry too',
+    addFoldersToWorkspaceFile('{\n  "folders": [\n    { "path": "api" },\n  ],\n}\n', file, [{ path: '/x/b' }]),
+    '{\n  "folders": [\n    { "path": "api" },\n    { "path": "/x/b" },\n  ],\n}\n')
+
+  const crlf = addFoldersToWorkspaceFile('{\r\n  "folders": [\r\n    {\r\n      "path": "api"\r\n    }\r\n  ]\r\n}\r\n', file, [{ path: '/x/b' }])
+  check('a CRLF file gets no bare line feeds', !/[^\r]\n/.test(crlf), JSON.stringify(crlf))
+  eq('and still lists both', paths(crlf), '/projects/group/api,/x/b')
+
+  const nested = addFoldersToWorkspaceFile(
+    '{"settings":{"folders":["not these"]},"folders":[{"path":"api"}]}', file, [{ path: '/x/b' }])
+  check('only the top-level list is touched', nested.includes('{"folders":["not these"]}'), nested)
+  eq('which gets the folder', paths(nested), '/projects/group/api,/x/b')
+
+  const twice = addFoldersToWorkspaceFile('{"folders":[{"path":"old"}],"folders":[{"path":"api"}]}', file, [{ path: '/x/b' }])
+  eq('of a key written twice, the one JSON.parse reads', paths(twice), '/projects/group/api,/x/b')
+
+  const slashes = addFoldersToWorkspaceFile('{"folders":[{"path":"/srv//x","name":"a // b"}]}', file, [{ path: '/x/b' }])
+  eq('a // inside a string is not mistaken for a comment', paths(slashes), '/srv/x,/x/b')
+
+  let threw = ''
+  try { addFoldersToWorkspaceFile('{"settings":{}}', file, [{ path: '/x/b' }]) } catch (e) { threw = (e as Error).message }
+  check('a file that is not a workspace file is refused, not repaired', threw.includes('folders'), threw)
+
+  eq('a workspace file\'s folder', workspaceFileDir('/w/my/my.code-workspace'), '/w/my')
+  eq('at the root, the root', workspaceFileDir('/my.code-workspace'), '/')
+  eq('on Windows', workspaceFileDir('C:\\ws\\my\\my.code-workspace'), 'C:\\ws\\my')
+  eq('at a drive\'s root, the root and not just the drive', workspaceFileDir('C:\\my.code-workspace'), 'C:\\')
 }
 
 console.log('\nnamed workspace files')

@@ -28,6 +28,7 @@ import {
   type Tab,
   type TabGroup,
   type TabId,
+  type TerminalTab,
   type KeyBindings,
   type PaneNode,
   type Workspace,
@@ -87,6 +88,12 @@ interface AppState {
    * editor; the shell only reads it, and asks before closing over it (editing.ts).
    */
   dirtyFiles: Record<string, true>
+  /**
+   * What last went wrong with a workspace — a workspace file that would not open, would not save, or
+   * would not take a folder just added — shown under the workspace list until dismissed. Here rather
+   * than in the list's own state because a folder dropped on the explorer is added the same way.
+   */
+  workspaceError: string | null
 
   // --- actions ---
   setReady: (ready: boolean) => void
@@ -129,6 +136,7 @@ interface AppState {
   setKeybindings: (keybindings: KeyBindings) => void
   setSettings: (settings: AppSettings) => void
   setSettingsOpen: (open: boolean) => void
+  setWorkspaceError: (message: string | null) => void
 }
 
 export const useApp = create<AppState>()(
@@ -143,6 +151,7 @@ export const useApp = create<AppState>()(
     settings: {},
     settingsOpen: false,
     dirtyFiles: {},
+    workspaceError: null,
 
     setReady: (ready) => set({ ready }),
     setWorkspaces: (workspaces) => set({ workspaces }),
@@ -315,7 +324,8 @@ export const useApp = create<AppState>()(
 
     setKeybindings: (keybindings) => set({ keybindings }),
     setSettings: (settings) => set({ settings }),
-    setSettingsOpen: (settingsOpen) => set({ settingsOpen })
+    setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+    setWorkspaceError: (workspaceError) => set({ workspaceError })
   }))
 )
 
@@ -549,7 +559,7 @@ function leafIds(node: PaneNode): string[] {
 }
 
 /** A fresh terminal tab: one pane, not yet bound to a pty. */
-export function newTerminalTab(): Tab {
+export function newTerminalTab(): TerminalTab {
   const leaf = newLeaf()
   return {
     id: nextTabId(),

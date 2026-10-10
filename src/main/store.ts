@@ -291,6 +291,9 @@ function cleanSettings(raw: unknown): AppSettings {
   const dir = typeof doc.workspaceFilesDir === 'string' ? doc.workspaceFilesDir.trim() : ''
   if (dir) out.workspaceFilesDir = dir
   else delete out.workspaceFilesDir
+  // Only "off" is worth storing; absent is the default, which is on.
+  if (doc.remindToSaveWorkspace === false) out.remindToSaveWorkspace = false
+  else delete out.remindToSaveWorkspace
   return out
 }
 

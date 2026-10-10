@@ -58,6 +58,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
   const setSettings = useApp((s) => s.setSettings)
   const [page, setPage] = useState<Page>(lastPage)
   const [filesDir, setFilesDir] = useState(storedSettings.workspaceFilesDir ?? '')
+  const [remindToSave, setRemindToSave] = useState(storedSettings.remindToSaveWorkspace !== false)
   const dirProblem = workspaceFilesDirProblem(filesDir)
   const mac = isMac()
   const defaultLines = defaultBinds(platform())
@@ -281,7 +282,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
     const next = { ...stored, ...prefix, binds }
     setKeybindings(next)
     void rpc['state:saveKeybindings']({ keybindings: next })
-    const settings = withFilesDir(storedSettings, filesDir)
+    const settings = withGeneral(storedSettings, filesDir, remindToSave)
     setSettings(settings)
     void rpc['state:saveSettings']({ settings })
     onClose()
@@ -318,7 +319,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
         </div>
 
         {page === 'general' ? (
-          <GeneralPage dir={filesDir} problem={dirProblem} inputRef={dirInput} onChange={setFilesDir} />
+          <GeneralPage
+            dir={filesDir}
+            problem={dirProblem}
+            inputRef={dirInput}
+            onChange={setFilesDir}
+            remindToSave={remindToSave}
+            onRemindToSaveChange={setRemindToSave}
+          />
         ) : (
           <>
             <div className="shortcuts__intro">
@@ -458,7 +466,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
 }
 
 /**
- * The General page: where saved workspaces go.
+ * The General page: where saved workspaces go, and whether a terminal in an unsaved one offers to
+ * save it first.
  *
  * A text box as well as a picker. Picking is how most people will set it, but a path typed or
  * pasted — `~/Workspaces` — is quicker for anyone who already knows where they want it, and the
@@ -468,12 +477,16 @@ function GeneralPage({
   dir,
   problem,
   inputRef,
-  onChange
+  onChange,
+  remindToSave,
+  onRemindToSaveChange
 }: {
   dir: string
   problem: string | null
   inputRef: React.RefObject<HTMLInputElement | null>
   onChange: (dir: string) => void
+  remindToSave: boolean
+  onRemindToSaveChange: (remind: boolean) => void
 }): React.ReactElement {
   const choose = async (): Promise<void> => {
     const picked = await rpc['workspace:pickFolder']({
@@ -516,15 +529,34 @@ function GeneralPage({
       ) : (
         <div className="settings__note">Save Workspace As… asks where to save, every time.</div>
       )}
+
+      <div className="shortcuts__group settings__group">Terminals</div>
+      <label className="settings__check">
+        <input
+          type="checkbox"
+          checked={remindToSave}
+          onChange={(e) => onRemindToSaveChange(e.target.checked)}
+        />
+        Offer to save a workspace when a terminal is opened in one that is not saved
+      </label>
+      <div className="settings__note">
+        A saved workspace&rsquo;s terminals start in the folder its <code>.code-workspace</code> file is
+        in; until it is saved they start in its first folder.
+      </div>
     </div>
   )
 }
 
-/** The stored settings with this folder in them — or without one, when the box was emptied. */
-function withFilesDir(settings: AppSettings, dir: string): AppSettings {
+/**
+ * The stored settings with the General page's answers in them: the folder, or none when the box
+ * was emptied, and the reminder stored only when it is off — absent is the default, which is on.
+ */
+function withGeneral(settings: AppSettings, dir: string, remindToSave: boolean): AppSettings {
   const next = { ...settings }
   if (dir.trim()) next.workspaceFilesDir = dir.trim()
   else delete next.workspaceFilesDir
+  if (remindToSave) delete next.remindToSaveWorkspace
+  else next.remindToSaveWorkspace = false
   return next
 }
 

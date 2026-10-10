@@ -127,14 +127,239 @@ export function serializeWorkspaceFile(
   filePath: string
 ): string {
   const base = dirname(resolve(filePath))
-  const entries = folders.map((f) => {
-    const abs = resolve(f.path)
-    const rel = relative(base, abs)
-    const usable = rel !== '' && !isAbsolute(rel) && !rel.startsWith('..')
-    const out: WorkspaceFileFolder = { path: usable ? rel : abs }
-    if (f.name && f.name !== basename(abs)) out.name = f.name
-    return out
-  })
+  const entries = folders.map((f) => fileEntry(f, base))
   // Two-space indent and a trailing newline: this file is meant to be committed and diffed.
   return `${JSON.stringify({ folders: entries, settings: {} }, null, 2)}\n`
+}
+
+/** One folder as a file in `base` records it: relative below it, and named only when that says something. */
+function fileEntry(f: WorkspaceFileFolder, base: string): WorkspaceFileFolder {
+  const abs = resolve(f.path)
+  const rel = relative(base, abs)
+  const usable = rel !== '' && !isAbsolute(rel) && !rel.startsWith('..')
+  const out: WorkspaceFileFolder = { path: usable ? rel : abs }
+  if (f.name && f.name !== basename(abs)) out.name = f.name
+  return out
+}
+
+/**
+ * Add folders to the text of a workspace file, leaving everything else in it as it was.
+ *
+ * Not parse-and-rewrite. That would be a few lines, and it would throw away every comment in the
+ * file, its indentation and the order of its keys — in a file people hand-edit and commit, in
+ * answer to a gesture that never mentioned editing it. So the new entries are spliced into the text
+ * of the `folders` array after its last entry, laid out the way that entry is. Folders the file
+ * already names, however it spells them, are skipped; with nothing left to add the text comes back
+ * as it went in, which is how the caller knows there is nothing to write.
+ *
+ * Throws what `parseWorkspaceFile` throws for a file that is not a workspace file. What it returns
+ * always parses to the folders it should: the splice is checked, and a layout that defeats it gets
+ * the file rewritten whole instead — every key and value kept, the comments not — rather than
+ * written back broken.
+ */
+export function addFoldersToWorkspaceFile(
+  text: string,
+  filePath: string,
+  folders: readonly WorkspaceFileFolder[]
+): string {
+  const listed = new Set(parseWorkspaceFile(text, filePath).folders.map((f) => f.path))
+  const base = dirname(resolve(filePath))
+  const entries: WorkspaceFileFolder[] = []
+  for (const f of folders) {
+    const abs = resolve(f.path)
+    if (listed.has(abs)) continue
+    listed.add(abs)
+    entries.push(fileEntry(f, base))
+  }
+  if (entries.length === 0) return text
+
+  const listsThemAll = (out: string): boolean => {
+    try {
+      const got = parseWorkspaceFile(out, filePath).folders
+      return got.length === listed.size && got.every((f) => listed.has(f.path))
+    } catch {
+      return false
+    }
+  }
+  const spliced = spliceFolders(text, entries)
+  if (spliced !== null && listsThemAll(spliced)) return spliced
+
+  const doc = JSON.parse(stripJsonComments(text)) as { folders: unknown[] }
+  doc.folders = [...doc.folders, ...entries]
+  return `${JSON.stringify(doc, null, /^\t/m.test(text) ? '\t' : 2)}\n`
+}
+
+/** The new entries written into the text of the `folders` array, or null when it cannot be found. */
+function spliceFolders(text: string, entries: readonly WorkspaceFileFolder[]): string | null {
+  const array = findFoldersArray(text)
+  if (!array) return null
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const last = array.items[array.items.length - 1]
+
+  if (!last) {
+    // Empty: one entry per line, a level in from the line the key is on, in the file's own unit.
+    const outer = lineIndent(text, array.open)
+    const inner = outer + (outer || (/^\t/m.test(text) ? '\t' : '  '))
+    const body = entries.map((e) => renderEntry(e, { lines: inner.slice(outer.length), spaced: true }, inner, eol))
+    const sep = eol + inner
+    const blank = text.slice(array.open + 1, array.close).trim() === ''
+    return blank
+      ? text.slice(0, array.open + 1) + sep + body.join(`,${sep}`) + eol + outer + text.slice(array.close)
+      : text.slice(0, array.open + 1) + sep + body.join(`,${sep}`) + text.slice(array.open + 1)
+  }
+
+  // Laid out like the entry before: on a line of its own, or after it on the same line; spread over
+  // several lines in its indent unit, or kept to one with or without spaces inside the braces.
+  const own = lineIndent(text, last.start)
+  const ownLine = /^[ \t]*$/.test(text.slice(lineStart(text, last.start), last.start))
+  const lastText = text.slice(last.start, last.end)
+  const continuation = /^[ \t]*/.exec(lastText.split('\n')[1] ?? '')![0]
+  const layout = lastText.includes('\n')
+    ? { lines: continuation.startsWith(own) && continuation.length > own.length ? continuation.slice(own.length) : '  ', spaced: true }
+    : { lines: null, spaced: /^\{\s/.test(lastText) }
+  const sep = ownLine ? eol + own : ' '
+  const body = entries.map((e) => renderEntry(e, layout, own, eol)).join(`,${sep}`)
+
+  // After any comment sharing the line, so a note about the last folder stays beside it.
+  if (array.trailingComma !== null) {
+    const at = ownLine ? lineEnd(text, array.trailingComma + 1) : array.trailingComma + 1
+    return text.slice(0, at) + sep + body + ',' + text.slice(at)
+  }
+  const at = ownLine ? lineEnd(text, last.end) : last.end
+  return text.slice(0, last.end) + ',' + text.slice(last.end, at) + sep + body + text.slice(at)
+}
+
+/**
+ * One entry's text. `lines` is the indent unit when entries are spread over several lines, null
+ * when each is on one; continuation lines are indented from `indent`, where the entry's brace is.
+ */
+function renderEntry(
+  entry: WorkspaceFileFolder,
+  layout: { lines: string | null; spaced: boolean },
+  indent: string,
+  eol: string
+): string {
+  if (layout.lines !== null) return JSON.stringify(entry, null, layout.lines).split('\n').join(eol + indent)
+  const pairs = Object.entries(entry).map(([k, v]) => `${JSON.stringify(k)}:${layout.spaced ? ' ' : ''}${JSON.stringify(v)}`)
+  return layout.spaced ? `{ ${pairs.join(', ')} }` : `{${pairs.join(',')}}`
+}
+
+function lineStart(text: string, at: number): number {
+  return text.lastIndexOf('\n', at - 1) + 1
+}
+
+function lineIndent(text: string, at: number): string {
+  return /^[ \t]*/.exec(text.slice(lineStart(text, at)))![0]
+}
+
+/** Past the spaces and the comments that share a line with `at`: where a new line would start. */
+function lineEnd(text: string, at: number): number {
+  let p = at
+  for (;;) {
+    while (text[p] === ' ' || text[p] === '\t') p++
+    if (text.startsWith('//', p)) {
+      const nl = text.indexOf('\n', p)
+      if (nl < 0) return text.length
+      return text[nl - 1] === '\r' ? nl - 1 : nl
+    }
+    if (text.startsWith('/*', p)) {
+      const end = text.indexOf('*/', p + 2)
+      const nl = text.indexOf('\n', p)
+      if (end >= 0 && (nl < 0 || end < nl)) {
+        p = end + 2
+        continue
+      }
+    }
+    return p
+  }
+}
+
+interface FoldersArray {
+  /** Offsets of the array's brackets. */
+  open: number
+  close: number
+  /** Where each entry's text starts and ends. */
+  items: Array<{ start: number; end: number }>
+  /** The comma after the last entry, in a file that writes one. */
+  trailingComma: number | null
+}
+
+/**
+ * The top-level `folders` array, found in the text. The last one if the key is there twice,
+ * because that is the one `JSON.parse` — and so `parseWorkspaceFile` — reads.
+ */
+function findFoldersArray(text: string): FoldersArray | null {
+  const tokens = jsoncTokens(text)
+  let found: FoldersArray | null = null
+  let depth = 0
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k]!
+    if (t.punct === '{' || t.punct === '[') { depth++; continue }
+    if (t.punct === '}' || t.punct === ']') { depth--; continue }
+    if (depth !== 1 || text[t.start] !== '"' || tokens[k + 1]?.punct !== ':' || tokens[k + 2]?.punct !== '[') continue
+    let key: unknown
+    try { key = JSON.parse(text.slice(t.start, t.end)) } catch { continue }
+    if (key !== 'folders') continue
+
+    const items: FoldersArray['items'] = []
+    let item: FoldersArray['items'][number] | null = null
+    let comma: number | null = null
+    let nested = 0
+    let m = k + 3
+    for (; m < tokens.length; m++) {
+      const u = tokens[m]!
+      if (nested === 0 && u.punct === ',') {
+        if (item) items.push(item)
+        comma = item ? u.start : null
+        item = null
+        continue
+      }
+      if (nested === 0 && u.punct === ']') break
+      if (u.punct === '{' || u.punct === '[') nested++
+      else if (u.punct === '}' || u.punct === ']') nested--
+      if (item) item.end = u.end
+      else { item = { start: u.start, end: u.end }; comma = null }
+    }
+    if (m >= tokens.length) return null
+    if (item) items.push(item)
+    found = { open: tokens[k + 2]!.start, close: tokens[m]!.start, items, trailingComma: item ? null : comma }
+    // The array's own brackets were consumed above, so the depth outside it is unchanged.
+    k = m
+  }
+  return found
+}
+
+/**
+ * The significant tokens of a JSONC text — strings, punctuation and bare words — with whitespace and
+ * comments dropped. As much of a tokenizer as finding one array needs, and no more.
+ */
+function jsoncTokens(text: string): Array<{ start: number; end: number; punct: string }> {
+  const out: Array<{ start: number; end: number; punct: string }> = []
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]!
+    if (c === '/' && text[i + 1] === '/') {
+      const nl = text.indexOf('\n', i)
+      i = nl < 0 ? text.length : nl
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2)
+      i = end < 0 ? text.length : end + 2
+    } else if (c === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
+      out.push({ start: i, end: Math.min(j + 1, text.length), punct: '' })
+      i = j + 1
+    } else if ('{}[]:,'.includes(c)) {
+      out.push({ start: i, end: i + 1, punct: c })
+      i++
+    } else if (/\s/.test(c)) {
+      i++
+    } else {
+      let j = i + 1
+      while (j < text.length && !/[\s{}[\]:,"/]/.test(text[j]!)) j++
+      out.push({ start: i, end: j, punct: '' })
+      i = j
+    }
+  }
+  return out
 }
