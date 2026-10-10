@@ -5,10 +5,12 @@
     <!--
       'unsafe-inline' in style-src is required: Monaco and xterm.js both inject <style> elements.
       connect-src ws://localhost:* is required by the vite HMR client in dev.
+      media-src rigee-media: is where a video plugin streams a file from (src/main/media.ts); without
+      it default-src refuses the scheme and the player shows nothing, with only a console line to say why.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ws://localhost:*"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' rigee-media:; connect-src 'self' ws://localhost:*"
     />
     <title>Rigee</title>
   </head>

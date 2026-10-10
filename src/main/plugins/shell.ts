@@ -1,6 +1,7 @@
 import { Service, type Context } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
 import type { PluginEventEnvelope } from '@rigee/plugin-api/manifest'
+import { serveMedia } from '../media'
 
 declare module 'cordis' {
   interface Context {
@@ -46,6 +47,9 @@ export class ShellService extends Service {
     super(ctx, 'shell')
   }
 
+  /** Every URL served, and how to stop serving it early. Across plugins: the URLs are unique. */
+  private readonly served = new Map<string, () => Promise<void>>()
+
   /** The app window, or null before it exists / after it is gone. */
   window(): BrowserWindow | null {
     return this.deps.window()
@@ -66,6 +70,27 @@ export class ShellService extends Service {
     const pluginId = this.ctx.pluginId
     if (!pluginId) throw new Error(`shell.emit(${event}): called from a Context with no pluginId`)
     this.deps.send({ pluginId, event, payload })
+  }
+
+  /**
+   * A URL the renderer can stream this file from — what a <video> or <audio> needs, and the image
+   * viewer's whole-file read cannot give: Range requests, so playback starts at once and seeking
+   * reads only what it plays. See src/main/media.ts.
+   *
+   * The URL names a token rather than the path, and works until `releaseFile` is called with it, or
+   * the calling plugin is disposed — so a viewer that forgets still does not leave files exposed.
+   */
+  serveFile(path: string, mime: string): string {
+    const { url, revoke } = serveMedia(path, mime)
+    this.served.set(url, this.ctx.effect(() => revoke, 'served file'))
+    return url
+  }
+
+  /** Stop serving a URL `serveFile` returned. Unknown or already released is not an error. */
+  releaseFile(url: string): void {
+    const release = this.served.get(url)
+    this.served.delete(url)
+    void release?.()
   }
 
   /**

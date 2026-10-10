@@ -67,6 +67,7 @@ const iconSet: ShellHost['icons'] = {
   CollapseRight: icons.CollapseRightIcon,
   Search: icons.SearchIcon,
   Image: icons.ImageIcon,
+  Video: icons.VideoIcon,
   Chevron: icons.ChevronIcon
 }
 

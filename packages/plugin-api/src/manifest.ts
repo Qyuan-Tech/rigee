@@ -60,6 +60,7 @@ export type IconName =
   | 'plugin'
   | 'search'
   | 'image'
+  | 'video'
 
 /**
  * A file matcher, in the only two forms worth supporting before someone asks for a third:

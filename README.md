@@ -94,6 +94,7 @@ an app launched from Finder inherits almost none of it.
 | Restoring tabs, splits and browser pages on next launch | works |
 | PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
 | Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan | works |
+| Video player — MP4, MOV, M4V, WebM, MKV, Ogg (H.264, HEVC, AV1, VP8, VP9); streamed from disk, so a long film starts at once and seeks anywhere | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
 | Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
 | A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
@@ -109,8 +110,8 @@ an app launched from Finder inherits almost none of it.
 
 Rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
-the text editor, the PDF reader, the image viewer, source control and the browser are each a folder
-under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+the text editor, the PDF reader, the image viewer, the video player, source control and the browser
+are each a folder under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
 
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
 open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.

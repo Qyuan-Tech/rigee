@@ -15,7 +15,7 @@
  * swap its files before the renderer fetched them. One snapshot, one hash, one decision.
  */
 
-import { protocol, net } from 'electron'
+import { protocol, net, type CustomScheme } from 'electron'
 import { extname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { contains, discoverDiskPlugins, type DiskPlugin, type RejectedPlugin } from './disk'
@@ -26,7 +26,8 @@ import type { PluginId, PluginManifest, PluginPermission } from '@rigee/plugin-a
 export const PLUGIN_SCHEME = 'rigee-plugin'
 
 /**
- * Must be called before `app.whenReady()`, from module scope.
+ * The scheme's declaration, for the one `registerSchemesAsPrivileged` call Electron allows — made
+ * in src/main/index.ts before `app.whenReady()`, together with the media scheme's.
  *
  * Every privilege here is load-bearing and was added because its absence broke something:
  *
@@ -42,13 +43,9 @@ export const PLUGIN_SCHEME = 'rigee-plugin'
  *                     chrome, chrome-extension, …, http, https". With it the scheme joins that
  *                     list and the handler's `Access-Control-Allow-Origin` is honoured.
  */
-export function registerPluginScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: PLUGIN_SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
-    }
-  ])
+export const pluginScheme: CustomScheme = {
+  scheme: PLUGIN_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
 }
 
 export interface InstalledPlugin {

@@ -231,6 +231,14 @@ export const ImageIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** A film frame with a play mark: video. Drawn on the image icon's frame, so the two read as kin. */
+export const VideoIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M6.75 5.9v4.2a.4.4 0 0 0 .6.35l3.4-2.1a.4.4 0 0 0 0-.7l-3.4-2.1a.4.4 0 0 0-.6.35Z" />
+  </Svg>
+)
+
 /** A puzzle piece: plugins. The one icon everyone already reads as "extensions". */
 export const PluginIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>
@@ -270,5 +278,6 @@ export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
   folder: FolderIcon,
   plugin: PluginIcon,
   search: SearchIcon,
-  image: ImageIcon
+  image: ImageIcon,
+  video: VideoIcon
 }

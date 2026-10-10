@@ -18,6 +18,7 @@ import type { PluginId } from '@rigee/plugin-api/manifest'
 export const RENDERER_HALVES: Readonly<Record<PluginId, () => Promise<{ default: Plugin }>>> = {
   pdf: () => import('./pdf/renderer'),
   image: () => import('./image/renderer'),
+  video: () => import('./video/renderer'),
   scm: () => import('./scm/renderer'),
   browser: () => import('./browser/renderer'),
   explorer: () => import('./explorer/renderer'),

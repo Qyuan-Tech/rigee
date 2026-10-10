@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, shell, type WebContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, net, protocol, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import {
   appendFileSync,
@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { deflateSync } from 'node:zlib'
 import { popupContextMenu } from './contextMenu'
+import { mediaScheme, registerMediaProtocol, servedCount } from './media'
 import { ensureShellPath } from './env'
 import { installMenu } from './menu'
 import { forwardShortcuts } from './shortcuts'
@@ -49,8 +50,8 @@ import {
   approvePlugin,
   diskLoaders,
   installedPlugins,
+  pluginScheme,
   registerPluginProtocol,
-  registerPluginScheme,
   rendererEntryUrl,
   revokePlugin,
   scanDiskPlugins
@@ -255,6 +256,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
+    else if (process.env.RIGEE_SMOKE === 'video') void runVideoSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -2781,6 +2783,230 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
 }
 
 /**
+ * The video player, end to end, against a film it makes itself.
+ *
+ * The fixture is recorded in the renderer — a canvas animated for a moment, through MediaRecorder —
+ * so the check needs no ffmpeg and no file in the repo, and the packaged app can run it. What it
+ * asserts: the containers that are claimed resolve to the player and AVI does not; the main half
+ * loads only when a video opens; the film plays from its rigee-media:// URL at the size it was
+ * recorded; that URL answers a Range request with 206 and exactly those bytes, a range past the end
+ * with 416, and nothing at all once the tab is closed, when main is serving nothing; and a missing
+ * file and a file that is not a video each say so in words.
+ *
+ * With RIGEE_SMOKE_VIDEO_DIR naming a folder of videos — ffmpeg makes a good one — it also opens
+ * every file there and reports which play, which is how the extension list was decided. That part
+ * reports and does not fail: what Chromium plays is Chromium's business. RIGEE_SHOT leaves a PNG of
+ * the player.
+ */
+async function runVideoSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = app.getPath('userData')
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:video]', JSON.stringify({ ok, stage, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store, plugins } = window.__rigee
+    const until = async (test, ms = 10000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }
+    const open = (id, path) => store.getState().openTab('__scratch__', {
+      id, kind: 'editor', title: path.split('/').pop(), pinned: false,
+      filePath: path, repoId: null, readOnly: true, viewType: plugins.resolveViewType(path)
+    })
+    const noticeText = () => [...document.querySelectorAll('div')].find(d => d.style.placeItems === 'center' && d.textContent)?.textContent || ''`
+  try {
+    // --- a film of its own ------------------------------------------------------------------
+    const recorded = await js<{ ok: boolean; stage?: string; base64?: string; mime?: string }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => store.getState().ready, 15000))) return { ok: false, stage: 'never-ready' }
+      const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t))
+      if (!mime) return { ok: false, stage: 'no-webm-recorder' }
+      const canvas = document.createElement('canvas')
+      canvas.width = 160
+      canvas.height = 90
+      const g = canvas.getContext('2d')
+      let frame = 0
+      const draw = () => {
+        g.fillStyle = 'hsl(' + (frame * 37 % 360) + ', 70%, 50%)'
+        g.fillRect(0, 0, 160, 90)
+        g.fillStyle = '#fff'
+        g.fillRect((frame * 7) % 160, 30, 24, 24)
+        frame++
+      }
+      draw()
+      const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType: mime })
+      const chunks = []
+      recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
+      const stopped = new Promise(r => { recorder.onstop = r })
+      recorder.start(200)
+      const tick = setInterval(draw, 40)
+      await sleep(2000)
+      clearInterval(tick)
+      recorder.stop()
+      await stopped
+      const bytes = new Uint8Array(await new Blob(chunks, { type: mime }).arrayBuffer())
+      let binary = ''
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+      return { ok: true, base64: btoa(binary), mime }
+    })()`)
+    if (!recorded.ok) return finish(false, recorded.stage ?? 'record')
+    const film = join(dir, 'smoke.webm')
+    writeFileSync(film, Buffer.from(recorded.base64!, 'base64'))
+    const filmSize = statSync(film).size
+    trail.push(`recorded ${filmSize} B of ${recorded.mime}`)
+    if (filmSize < 200) return finish(false, 'recording-is-empty', filmSize)
+
+    // --- which files are claimed --------------------------------------------------------------
+    const claims = await js<Record<string, string | null>>(`(() => {
+      ${helpers}
+      return Object.fromEntries(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', 'wmv']
+        .map(ext => [ext, plugins.resolveViewType('/films/a.' + ext)]))
+    })()`)
+    trail.push(`claims: ${Object.entries(claims).map(([ext, v]) => `${ext}→${v}`).join(' ')}`)
+    const claimed = ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv']
+    if (!claimed.every((ext) => claims[ext] === 'video.player')) return finish(false, 'a-container-is-not-claimed', claims)
+    if (claims.avi === 'video.player' || claims.wmv === 'video.player') return finish(false, 'claims-what-chromium-cannot-play', claims)
+
+    // --- it plays, from a streaming URL ----------------------------------------------------------
+    const activeBefore = pluginHost?.active().includes('video') ?? false
+    const played = await js<{ ok: boolean; stage?: string; url?: string; size?: string; info?: string; t?: number }>(`(async () => {
+      ${helpers}
+      open('video-smoke', ${JSON.stringify(film)})
+      const v = await until(() => { const el = document.querySelector('.video__element'); return el && el.readyState >= 1 ? el : null })
+      if (!v) return { ok: false, stage: 'never-loaded', notice: noticeText() }
+      const size = v.videoWidth + ' × ' + v.videoHeight
+      if (v.videoWidth !== 160 || v.videoHeight !== 90) return { ok: false, stage: 'wrong-size', size }
+      const info = await until(() => document.querySelector('.video__info')?.textContent)
+      v.muted = true
+      await v.play().catch(() => {})
+      const moved = await until(() => v.currentTime > 0.2, 8000)
+      v.pause()
+      return { ok: !!moved, stage: moved ? 'played' : 'never-played', url: v.src, size, info, t: v.currentTime }
+    })()`)
+    if (!played.ok) return finish(false, played.stage ?? 'play', played)
+    trail.push(`played ${played.size} from ${played.url?.split('/').slice(0, 3).join('/')}/…, to ${played.t?.toFixed(2)} s; the bar says "${played.info}"`)
+    if (!played.url?.startsWith('rigee-media://')) return finish(false, 'not-streamed-from-the-media-scheme', played.url)
+    if (activeBefore || !pluginHost?.active().includes('video')) return finish(false, 'main-half-not-loaded-on-demand', { activeBefore })
+    if (!played.info?.startsWith('160 × 90 · ') || !played.info.includes('WEBM')) return finish(false, 'info-wrong', played.info)
+    // As smoke:pdf does: a picture of the player it just asserted on, for looking at.
+    if (process.env.RIGEE_SHOT) writeFileSync(process.env.RIGEE_SHOT, (await wc.capturePage()).toPNG())
+
+    // --- the URL, as a server ---------------------------------------------------------------------
+    const ranged = await net.fetch(played.url, { headers: { Range: 'bytes=0-3' } })
+    const head = Buffer.from(await ranged.arrayBuffer())
+    trail.push(`bytes=0-3 → ${ranged.status} ${ranged.headers.get('content-range')} ${head.toString('hex')}`)
+    if (ranged.status !== 206 || ranged.headers.get('content-range') !== `bytes 0-3/${filmSize}` || head.toString('hex') !== '1a45dfa3') {
+      return finish(false, 'range-request-wrong')
+    }
+    const tail = await net.fetch(played.url, { headers: { Range: 'bytes=-10' } })
+    const tailBytes = Buffer.from(await tail.arrayBuffer())
+    const past = await net.fetch(played.url, { headers: { Range: `bytes=${filmSize}-` } })
+    const whole = await net.fetch(played.url)
+    const wholeBytes = Buffer.from(await whole.arrayBuffer())
+    trail.push(`bytes=-10 → ${tail.status} ${tailBytes.length} B; past the end → ${past.status}; no range → ${whole.status} ${wholeBytes.length} B`)
+    if (tail.status !== 206 || !tailBytes.equals(readFileSync(film).subarray(filmSize - 10))) return finish(false, 'suffix-range-wrong')
+    if (past.status !== 416) return finish(false, 'range-past-the-end-not-416', past.status)
+    if (whole.status !== 200 || wholeBytes.length !== filmSize) return finish(false, 'whole-file-wrong')
+
+    // --- picking up where it was -----------------------------------------------------------------------
+    // Switching to another tab unmounts the player, and coming back must not start the film again;
+    // a split copy starts where the tab it was split from had got to.
+    const resumed = await js<{ ok: boolean; stage?: string; left?: number; back?: number; copy?: number }>(`(async () => {
+      ${helpers}
+      const v = document.querySelector('.video__element')
+      const left = v.currentTime
+      open('video-elsewhere', ${JSON.stringify(join(dir, 'no-such-film.mp4'))})
+      if (!(await until(() => !document.querySelector('.video__element')))) return { ok: false, stage: 'player-never-unmounted' }
+      store.getState().setActiveTab('__scratch__', 'video-smoke')
+      store.getState().closeTab('__scratch__', 'video-elsewhere')
+      const again = await until(() => { const el = document.querySelector('.video__element'); return el && el.readyState >= 1 ? el : null })
+      if (!again) return { ok: false, stage: 'player-never-came-back', left }
+      await sleep(400)
+      const back = again.currentTime
+      if (Math.abs(back - left) > 0.15) return { ok: false, stage: 'came-back-at-the-wrong-place', left, back }
+      store.getState().splitTab('__scratch__')
+      const copy = await until(() => {
+        const all = [...document.querySelectorAll('.video__element')]
+        return all.length === 2 && all[1].readyState >= 1 ? all[1] : null
+      })
+      if (!copy) return { ok: false, stage: 'split-made-no-second-player', left, back }
+      await sleep(400)
+      const at = copy.currentTime
+      const row = store.getState().rowsByWorkspace['__scratch__']
+      const copyTab = row.groups[1]?.activeTabId
+      if (copyTab) store.getState().closeTab('__scratch__', copyTab)
+      return { ok: Math.abs(at - left) <= 0.15, stage: 'copy', left, back, copy: at }
+    })()`)
+    trail.push(`left at ${resumed.left?.toFixed(2)} s, back at ${resumed.back?.toFixed(2)} s, split copy at ${resumed.copy?.toFixed(2)} s`)
+    if (!resumed.ok) return finish(false, resumed.stage === 'copy' ? 'split-copy-started-elsewhere' : (resumed.stage ?? 'resume'), resumed)
+
+    // --- closing lets the file go -------------------------------------------------------------------
+    const servingOpen = servedCount()
+    await js(`(async () => { ${helpers}; store.getState().closeTab('__scratch__', 'video-smoke'); await sleep(600) })()`)
+    const afterClose = await net.fetch(played.url)
+    trail.push(`serving ${servingOpen} while open, ${servedCount()} after closing; the old URL → ${afterClose.status}`)
+    if (servingOpen < 1 || servedCount() !== 0 || afterClose.status !== 404) return finish(false, 'closing-did-not-release-the-file')
+
+    // --- failures, in words -----------------------------------------------------------------------------
+    const notVideo = join(dir, 'not-a-video.mp4')
+    writeFileSync(notVideo, 'this is plain text, not a film\n')
+    const failures = await js<{ missing: string; garbage: string }>(`(async () => {
+      ${helpers}
+      open('video-missing', ${JSON.stringify(join(dir, 'no-such-film.mp4'))})
+      const missing = await until(() => noticeText().includes('no-such-film') ? noticeText() : null)
+      store.getState().closeTab('__scratch__', 'video-missing')
+      open('video-garbage', ${JSON.stringify(notVideo)})
+      const garbage = await until(() => noticeText().includes('not-a-video') ? noticeText() : null)
+      store.getState().closeTab('__scratch__', 'video-garbage')
+      return { missing: missing || '', garbage: garbage || '' }
+    })()`)
+    trail.push(`missing: "${failures.missing}"; not a video: "${failures.garbage}"`)
+    if (failures.missing !== 'no-such-film.mp4 does not exist') return finish(false, 'missing-file-not-said', failures.missing)
+    if (!failures.garbage.includes('format Chromium cannot play')) return finish(false, 'unplayable-file-not-said', failures.garbage)
+
+    // --- a survey, when there is a folder of films ----------------------------------------------------
+    const surveyDir = process.env.RIGEE_SMOKE_VIDEO_DIR
+    if (surveyDir) {
+      const files = readdirSync(surveyDir).filter((f) => !f.startsWith('.')).sort()
+      const survey = await js<Record<string, string>>(`(async () => {
+        ${helpers}
+        const out = {}
+        for (const name of ${JSON.stringify(files)}) {
+          const path = ${JSON.stringify(surveyDir)} + '/' + name
+          // As the player whether or not it is claimed: the point is to see what would happen.
+          store.getState().openTab('__scratch__', {
+            id: 'survey-' + name, kind: 'editor', title: name, pinned: false,
+            filePath: path, repoId: null, readOnly: true, viewType: 'video.player'
+          })
+          const result = await until(() => {
+            const v = document.querySelector('.video__element')
+            if (v && v.readyState >= 1 && v.videoWidth > 0) return 'plays ' + v.videoWidth + '×' + v.videoHeight + ', ' + v.duration.toFixed(1) + ' s'
+            const n = noticeText()
+            return n ? 'refused: ' + n.slice(0, 60) : null
+          }, 8000)
+          out[name] = result || 'timed out'
+          store.getState().closeTab('__scratch__', 'survey-' + name)
+          await sleep(200)
+        }
+        return out
+      })()`)
+      for (const [name, result] of Object.entries(survey)) trail.push(`survey ${name}: ${result}`)
+    }
+
+    finish(true, 'played')
+  } catch (err) {
+    console.error('[smoke:video] threw:', err)
+    finish(false, 'threw')
+  }
+}
+
+/**
  * End-to-end check that what is on screen survives a restart: build a terminal with splits, a
  * browser tab and a SECOND editor group, let the debounce fire, then read the document main
  * actually wrote to disk.
@@ -4220,11 +4446,12 @@ function adoptLegacyUserData(): void {
 
 /**
  * Before `app.whenReady`, because Electron requires it: a privileged scheme cannot be declared
- * once the protocol registry is up.
+ * once the protocol registry is up. And in ONE call, because Electron allows exactly one — the
+ * plugin scheme and the media scheme are declared together or one of them is not declared at all.
  *
- * Costs nothing — it registers a name, it does not read anything from disk.
+ * Costs nothing — it registers names, it does not read anything from disk.
  */
-registerPluginScheme()
+protocol.registerSchemesAsPrivileged([pluginScheme, mediaScheme])
 
 app.whenReady().then(() => {
   mark('app ready')
@@ -4238,6 +4465,7 @@ app.whenReady().then(() => {
   const scan = scanDiskPlugins(join(app.getPath('userData'), 'plugins'))
   if (scan.found > 0) mark(`disk plugins scanned (${scan.found})`)
   registerPluginProtocol()
+  registerMediaProtocol()
   // Kick off PATH recovery immediately but do not block first paint on it; the handlers that
   // actually need a resolved PATH await the same promise.
   void ensureShellPath().then(() => mark('shell PATH resolved'))

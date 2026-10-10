@@ -17,9 +17,10 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 331 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, and adding a folder to one without disturbing the rest of it |
+| `pnpm panes:selftest` | 348 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, and the Range headers a video element sends |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
+| `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
 | `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split button: copy a file, move a terminal |
@@ -112,6 +113,8 @@ plugins/       the features, one folder each — OUTSIDE src/, see below
   text-editor/   Monaco, and the editor of last resort for every file
   explorer/      the file tree, and a watcher that keeps it current
   pdf/           the PDF reader
+  image/         the image viewer
+  video/         the video player, streaming through the shell's media scheme
   scm/           git: status, staging by line, commits, diffs
   search/        find in every file of the workspace
   browser/       Chromium tabs as native WebContentsViews
@@ -249,7 +252,19 @@ statically and composes the two lists itself.
 
 **The custom scheme needs four privileges**, and `corsEnabled` is the non-obvious one: the packaged
 renderer is a `file://` document, so every other scheme is cross-origin and Chromium rejects the
-import before the handler runs. See `registerPluginScheme` for what each one buys.
+import before the handler runs. See `pluginScheme` for what each one buys.
+
+**There is a second scheme, `rigee-media`, and Electron allows ONE `registerSchemesAsPrivileged`
+call.** A media element cannot be handed bytes the way the image viewer is — a film is too big to
+read whole, and seeking needs Range requests — so `src/main/media.ts` streams files by URL, and a
+plugin's main half asks for one with `ctx.shell.serveFile(path, mime)`. The scheme has to be
+declared before app ready, long before any plugin loads, which is why it is the shell's. Three
+things each fail silently when missed: both schemes go in the one call in `src/main/index.ts`, or
+the second is never privileged; the media scheme needs `stream: true`, or playback waits for the
+whole file and seeking does nothing; and index.html's CSP needs `media-src rigee-media:`, or
+`default-src` refuses it and the player is simply blank. A URL names a random token rather than a
+path and dies with `releaseFile` or the plugin that asked, so the scheme cannot be used to walk the
+disk; and its handler lives in the default session, which a browser tab's page is not in.
 
 #### Trust
 

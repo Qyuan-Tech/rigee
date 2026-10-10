@@ -78,6 +78,7 @@ import {
   workspaceFilesDirProblem,
   workspaceNameProblem
 } from '../src/shared/workspaceFiles.ts'
+import { parseByteRange } from '../src/main/byteRange.ts'
 import type { PaneNode, Tab } from '../src/shared/types.ts'
 
 let failures = 0
@@ -413,6 +414,28 @@ console.log('\nadding folders to a .code-workspace file')
   eq('at the root, the root', workspaceFileDir('/my.code-workspace'), '/')
   eq('on Windows', workspaceFileDir('C:\\ws\\my\\my.code-workspace'), 'C:\\ws\\my')
   eq('at a drive\'s root, the root and not just the drive', workspaceFileDir('C:\\my.code-workspace'), 'C:\\')
+}
+
+console.log('\nbyte ranges, as a video element asks for them')
+{
+  const r = (header: string | null, size = 1000): string => JSON.stringify(parseByteRange(header, size))
+  eq('no header is the whole file', r(null), 'null')
+  eq('the opening request, bytes=0-', r('bytes=0-'), '{"start":0,"end":999}')
+  eq('a closed range', r('bytes=100-199'), '{"start":100,"end":199}')
+  eq('an end past the file is clamped to it', r('bytes=900-5000'), '{"start":900,"end":999}')
+  eq('from the middle to the end, which is what a seek asks', r('bytes=500-'), '{"start":500,"end":999}')
+  eq('the last N bytes, where some containers keep their index', r('bytes=-100'), '{"start":900,"end":999}')
+  eq('more last bytes than there are is all of them', r('bytes=-5000'), '{"start":0,"end":999}')
+  eq('the last byte exactly', r('bytes=999-999'), '{"start":999,"end":999}')
+  eq('spaces and case are forgiven', r(' Bytes = 10 - 20 '), '{"start":10,"end":20}')
+  eq('a start past the end cannot be satisfied', r('bytes=1000-'), '"unsatisfiable"')
+  eq('nor an end before the start', r('bytes=50-10'), '"unsatisfiable"')
+  eq('nor a zero-length suffix', r('bytes=-0'), '"unsatisfiable"')
+  eq('nor any range of an empty file', r('bytes=0-', 0), '"unsatisfiable"')
+  eq('several ranges at once get the whole file, not a multipart body', r('bytes=0-1,5-6'), 'null')
+  eq('another unit gets the whole file', r('items=0-5'), 'null')
+  eq('so does nonsense', r('bytes=abc'), 'null')
+  eq('and a range with neither end', r('bytes=-'), 'null')
 }
 
 console.log('\nnamed workspace files')
