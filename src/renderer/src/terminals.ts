@@ -2,7 +2,7 @@ import { loadXterm } from './lazy'
 import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
-import { leaves, neighbourOf, removeLeaf } from './paneTree'
+import { leaves, neighbourOf, removeLeaf, splitLeaf } from './paneTree'
 import { newTerminalTab, rowOf, useApp } from './store'
 import { remindsToSave } from './workspaces'
 import type { Terminal } from '@xterm/xterm'
@@ -68,6 +68,13 @@ const pendingFontSize = new Map<string, number>()
  * new pane's shell is spawned.
  */
 const pendingCwdFrom = new Map<string, string>()
+
+/**
+ * A folder a pane about to be created should start in, keyed like `handles`: "Open in Terminal
+ * Split" on a folder in the explorer. Wins over both the tab's folder and `pendingCwdFrom`, since
+ * the user named it outright.
+ */
+const pendingStartDir = new Map<string, string>()
 
 /**
  * Terminal tabs whose shell waits until the user has answered whether to save the workspace first.
@@ -235,6 +242,7 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
 export function disposeTerminal(key: string): void {
   // A split closed before its shell ever started leaves nothing behind to ask about.
   pendingCwdFrom.delete(key)
+  pendingStartDir.delete(key)
   handles.get(key)?.dispose()
 }
 
@@ -445,6 +453,13 @@ export function inheritCwd(toKey: string, fromKey: string): void {
   if (paneId) pendingCwdFrom.set(toKey, paneId)
 }
 
+/** The folder this pane was opened on, if it was — once, for the spawn that asks. */
+export function takeStartDir(key: string): string | undefined {
+  const dir = pendingStartDir.get(key)
+  pendingStartDir.delete(key)
+  return dir
+}
+
 /** The pane whose directory this one should start in, if any — once, for the spawn that asks. */
 export function takeCwdSource(key: string): string | undefined {
   const paneId = pendingCwdFrom.get(key)
@@ -457,15 +472,39 @@ export function takeCwdSource(key: string): string | undefined {
  * `groupId`, or the active group; at the text size of `fontFrom`, the pane the key was pressed in.
  *
  * In a workspace that has never been saved, the tab asks to save it before its shell starts, so
- * that the shell can start in the folder the workspace file goes to. See `askingToSave`.
+ * that the shell can start in the folder the workspace file goes to. See `askingToSave`. Not when
+ * `cwd` names a folder: "Open in Terminal" on a repo has already said where the shell goes.
  */
-export function openTerminalTab(workspaceId: string, opts: { groupId?: string; fontFrom?: string | null } = {}): void {
+export function openTerminalTab(
+  workspaceId: string,
+  opts: { groupId?: string; fontFrom?: string | null; cwd?: string } = {}
+): string {
   const s = useApp.getState()
-  const tab = newTerminalTab()
+  const tab = opts.cwd ? { ...newTerminalTab(), cwd: opts.cwd } : newTerminalTab()
   inheritFontSize(paneKey(tab.id, tab.activeLeafId), opts.fontFrom ?? null)
   const ws = s.workspaces.find((w) => w.id === workspaceId)
-  if (ws && remindsToSave(ws, s.settings)) askingToSave.add(tab.id)
+  if (!opts.cwd && ws && remindsToSave(ws, s.settings)) askingToSave.add(tab.id)
   s.openTab(workspaceId, tab, opts.groupId)
+  return tab.id
+}
+
+/**
+ * Split the terminal on screen — the active group's tab, if it is a terminal — beside its active
+ * pane, the new pane starting in `cwd`. With no terminal showing there is nothing to split, and a
+ * tab in that folder is the nearest thing to what was asked. Returns the tab the pane went into.
+ */
+export function splitTerminalAt(workspaceId: string, cwd: string): string {
+  const s = useApp.getState()
+  const row = rowOf(s, workspaceId)
+  const group = row.groups.find((g) => g.id === row.activeGroupId)
+  const tab = group?.tabs.find((t) => t.id === group.activeTabId)
+  if (tab?.kind !== 'terminal' || askingToSave.has(tab.id)) return openTerminalTab(workspaceId, { cwd })
+  const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, 'row')
+  const key = paneKey(tab.id, newLeafId)
+  inheritFontSize(key, paneKey(tab.id, tab.activeLeafId))
+  pendingStartDir.set(key, cwd)
+  s.updateTab(workspaceId, tab.id, { root, activeLeafId: newLeafId })
+  return tab.id
 }
 
 /** Whether this tab was opened to ask about saving its workspace, and has not been answered. */

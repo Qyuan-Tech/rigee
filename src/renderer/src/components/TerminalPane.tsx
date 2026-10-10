@@ -60,7 +60,8 @@ import {
   sendToPane,
   setPaneFontSize,
   stopAskingToSave,
-  takeCwdSource
+  takeCwdSource,
+  takeStartDir
 } from '../terminals'
 import { rowOf, useApp } from '../store'
 import { remindsToSave, terminalCwd } from '../workspaces'
@@ -125,7 +126,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
    */
   const askingToSave = !skipped && isAskingToSave(tab.id) && !!workspace && remindsToSave(workspace, settings)
 
-  const cwd = workspace ? terminalCwd(workspace) : '.'
+  const cwd = tab.cwd ?? (workspace ? terminalCwd(workspace) : '.')
   const activeKey = paneKey(tab.id, tab.activeLeafId)
   const zoomedLeaf = zoomed ? (leaves(tab.root).find((l) => l.id === zoomed) ?? null) : null
 
@@ -872,11 +873,14 @@ function LeafView({
       } else if (!spawning.current) {
         spawning.current = true
         try {
+          // A folder picked for this pane beats everything; then the pane it was split from; the
+          // tab's or workspace's folder only when it was neither.
+          const startDir = takeStartDir(key)
+          const cwdFrom = takeCwdSource(key)
           const { paneId } = await rpc['terminal:spawn']({
             workspaceId,
-            // The workspace's folder is only where a pane starts when it was not split from one.
-            cwd,
-            cwdFrom: takeCwdSource(key),
+            cwd: startDir ?? cwd,
+            cwdFrom: startDir ? undefined : cwdFrom,
             cols: handle.term.cols,
             rows: handle.term.rows
           })

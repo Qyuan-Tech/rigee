@@ -2299,6 +2299,11 @@ async function runTabsSmoke(): Promise<void> {
  * active one adds it there — without switching to it — and to the file, whose hand-written
  * comment and setting survive; Save Workspace As… opens the name form for the workspace clicked;
  * Scratch has nothing to add or remove. The folder picker is answered by RIGEE_SMOKE_PICK_FOLDER.
+ * And a folder's own menu in the explorer: Open in Terminal Tab starts in that folder, not where the
+ * workspace's terminals would, and does not stop to ask about saving; Open in Terminal Split adds a
+ * pane to the terminal on screen that starts in the folder rather than where its neighbour is.
+ * The tree keeps up with the disk: a file written or deleted from outside appears or goes by
+ * itself, and the Refresh button reads folders again where the watcher does not look (.git).
  *
  * With RIGEE_SHOT_DIR set it also photographs the General page, the name form and the question a
  * new terminal asks, which are reviewed by looking at them.
@@ -2310,6 +2315,9 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
   const filed = join(root, 'Workspaces')
   const repos = [join(root, 'repo-a'), join(root, 'repo-b')]
   for (const dir of repos) mkdirSync(dir, { recursive: true })
+  // Made before the tree first reads repo-a: the explorer's watcher ignores .git, the folder itself
+  // included, and the refresh stage needs one already listed.
+  mkdirSync(join(repos[0]!, '.git'), { recursive: true })
   const target = join(filed, 'myworkspace', 'myworkspace.code-workspace')
   process.env.RIGEE_SMOKE_REPLACE_ANSWER = 'cancel'
   const trail: string[] = []
@@ -2547,6 +2555,84 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     }
     if (answeredAt !== realpathSync(dirname(secondFile))) return finish(false, 'saved-terminal-not-in-the-new-folder', answeredAt)
     if ((await whereIs(skipped.paneId)) !== realpathSync(repos[1]!)) return finish(false, 'saving-moved-a-running-terminal')
+
+    // --- Open in Terminal, from a folder in the explorer --------------------------------------
+    // A workspace whose terminals would start in repo-b, unsaved so a plain terminal would ask;
+    // the folder picked must win, and must not be asked about.
+    const opened = await js<{ ok: boolean; stage?: string; offered?: string[]; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-explore', name: 'explore', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: ${JSON.stringify(repos.slice().reverse())}.map(path => ({ path, name: path.split('/').pop(), isGitRepo: false, repoRoot: null }))
+      })
+      await sleep(400)
+      const folder = await until(() => [...document.querySelectorAll('.explorer__body .row')]
+        .find(r => r.querySelector('.row__label')?.textContent === 'repo-a'))
+      if (!folder) return { ok: false, stage: 'no-explorer-row-for-repo-a' }
+      const before = activeTab()?.id
+      let offered = null
+      menus.answer = (items) => { offered = items; return 'terminal-tab' }
+      folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const tab = await until(() => { const t = activeTab(); return t && t.kind === 'terminal' && t.id !== before ? t : null })
+      menus.answer = null
+      if (!offered) return { ok: false, stage: 'folder-right-click-opened-no-menu' }
+      const labels = offered.map(i => i.label)
+      if (!tab) return { ok: false, stage: 'open-in-terminal-opened-no-tab', offered: labels }
+      const paneId = await startedPane(tab)
+      if (document.querySelector('.saveprompt')) return { ok: false, stage: 'open-in-terminal-asked-to-save', offered: labels }
+      return paneId ? { ok: true, offered: labels, paneId } : { ok: false, stage: 'open-in-terminal-never-started' }
+    })()`)
+    if (!opened.ok) return finish(false, opened.stage ?? 'open-in-terminal', opened.offered)
+    const openedAt = await whereIs(opened.paneId)
+    trail.push(`a folder's menu offered ${opened.offered?.join(', ')}; it started in ${openedAt}`)
+    if (openedAt !== realpathSync(repos[0]!)) return finish(false, 'open-in-terminal-started-somewhere-else', openedAt)
+
+    // The same folder as a split of the terminal just opened: one more pane in that tab, starting in
+    // repo-b — not where the pane it was split from is, which is repo-a.
+    const split = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      const tab = activeTab()
+      const folder = [...document.querySelectorAll('.explorer__body .row')]
+        .find(r => r.querySelector('.row__label')?.textContent === 'repo-b')
+      if (!tab || !folder) return { ok: false, stage: 'nothing-to-split-or-no-repo-b-row' }
+      const count = (t) => JSON.stringify(t.root).split('"kind":"leaf"').length - 1
+      menus.answer = () => 'terminal-split'
+      folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const after = await until(() => { const t = activeTab(); return t && t.id === tab.id && count(t) === 2 ? t : null })
+      menus.answer = null
+      if (!after) return { ok: false, stage: 'split-from-the-explorer-did-not-split-the-terminal' }
+      const paneId = await startedPane(after)
+      return paneId ? { ok: true, paneId } : { ok: false, stage: 'split-pane-never-started' }
+    })()`)
+    if (!split.ok) return finish(false, split.stage ?? 'open-in-split')
+    const splitAt = await whereIs(split.paneId)
+    trail.push(`Open in Terminal Split put a second pane in that tab, started in ${splitAt}`)
+    if (splitAt !== realpathSync(repos[1]!)) return finish(false, 'open-in-split-started-somewhere-else', splitAt)
+
+    // --- the explorer keeps up with the disk -------------------------------------------------
+    // Still on ws-explore, whose roots the tree opened on first sight. A file written from outside
+    // must appear by itself, and go when it is deleted. Inside .git, which the watcher ignores on
+    // purpose, a new file stays out of the tree until Refresh is pressed — which is what proves the
+    // button reads again rather than the watcher having done it.
+    const exploreRow = `const explorerRow = (name) => [...document.querySelectorAll('.explorer__body .row')]
+      .find(r => r.querySelector('.row__label')?.textContent === name)`
+    const seen = async (name: string, present: boolean, ms = 4000): Promise<boolean> =>
+      js<boolean>(`(async () => { ${helpers}; ${exploreRow}
+        return !!(await until(() => ${present ? '' : '!'}explorerRow(${JSON.stringify(name)}), ${ms})) })()`)
+    if (!(await seen('repo-a', true))) return finish(false, 'explorer-shows-no-repo-a')
+    if (!(await seen('.git', true))) return finish(false, 'explorer-does-not-list-.git')
+    const fresh = join(repos[0]!, 'appeared-from-outside.txt')
+    writeFileSync(fresh, 'hello\n')
+    if (!(await seen('appeared-from-outside.txt', true))) return finish(false, 'a-new-file-never-appeared-in-the-explorer')
+    rmSync(fresh)
+    if (!(await seen('appeared-from-outside.txt', false))) return finish(false, 'a-deleted-file-stayed-in-the-explorer')
+    trail.push('a file written from outside appeared in the explorer by itself, and went when deleted')
+    await js(`(async () => { ${helpers}; ${exploreRow}; explorerRow('.git').click(); await sleep(400) })()`)
+    writeFileSync(join(repos[0]!, '.git', 'only-after-refresh'), '')
+    if (await seen('only-after-refresh', true, 1500)) return finish(false, 'an-ignored-folder-refreshed-without-the-button')
+    await js(`(async () => { document.querySelector('.section-header button[title="Refresh"]').click() })()`)
+    if (!(await seen('only-after-refresh', true))) return finish(false, 'refresh-did-not-read-the-folder-again')
+    trail.push('inside .git, ignored by the watcher, a new file showed only once Refresh was pressed')
 
     // --- Don't remind me again ------------------------------------------------------------------
     const quiet = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {

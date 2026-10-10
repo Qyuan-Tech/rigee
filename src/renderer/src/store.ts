@@ -425,7 +425,8 @@ export function sanitizeTabs(tabs: unknown): Tab[] {
         activeLeafId:
           typeof tab.activeLeafId === 'string' && ids.has(tab.activeLeafId)
             ? tab.activeLeafId
-            : ([...ids][0] ?? '')
+            : ([...ids][0] ?? ''),
+        ...(typeof tab.cwd === 'string' && tab.cwd ? { cwd: tab.cwd } : {})
       })
       continue
     }

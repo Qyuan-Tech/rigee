@@ -86,6 +86,14 @@ export interface FileHandlers {
 }
 
 /** What `pluginTabs` reports about one of a plugin's own tabs. */
+/**
+ * One row of a context menu a plugin asks the shell to show: a command, or a separator. Plain data;
+ * what a command does stays with the plugin, which gets back the `id` of the row picked.
+ */
+export type MenuItem =
+  | { kind: 'item'; id: string; label: string; enabled?: boolean }
+  | { kind: 'separator' }
+
 export interface PluginTabInfo {
   tabId: TabId
   state: Record<string, unknown>
@@ -111,6 +119,15 @@ export interface ShellHost {
   /** React hook. Re-renders when the workspace changes. */
   useActiveWorkspace: () => Workspace | null
   addWorkspaceFolders: (paths: string[]) => Promise<void>
+
+  // --- terminals ----------------------------------------------------------
+  /**
+   * Open a terminal in the active workspace whose shell starts in `cwd` — a folder the user picked,
+   * so it never stops to ask about saving the workspace. `tab` (the default) is a new terminal tab;
+   * `split` is a new pane beside the active one in the terminal on screen, or a new tab when no
+   * terminal is showing. Returns the tab it is in, or null with no workspace to put it in.
+   */
+  openTerminal: (request: { cwd: string; where?: 'tab' | 'split' }) => TabId | null
 
   // --- tabs ---------------------------------------------------------------
   openPluginTab: (pluginId: PluginId, request: PluginTabRequest) => TabId | null
@@ -159,6 +176,12 @@ export interface ShellHost {
   listDir: (path: string) => Promise<FileStat[]>
 
   // --- UI -----------------------------------------------------------------
+  /**
+   * A native context menu at the pointer: the id of the row picked, or null when dismissed. Native
+   * because a browser tab's page is drawn over the whole document, and a menu drawn in it can end
+   * up underneath.
+   */
+  popupMenu: (items: MenuItem[]) => Promise<string | null>
   icons: IconSet
   Notice: ComponentType<NoticeProps>
 }
@@ -216,6 +239,11 @@ export const activeWorkspaceId = (): WorkspaceId | null => shell().activeWorkspa
 export const useActiveWorkspace = (): Workspace | null => shell().useActiveWorkspace()
 export const addWorkspaceFolders = (paths: string[]): Promise<void> =>
   shell().addWorkspaceFolders(paths)
+
+export const openTerminal = (request: { cwd: string; where?: 'tab' | 'split' }): TabId | null =>
+  shell().openTerminal(request)
+
+export const popupMenu = (items: MenuItem[]): Promise<string | null> => shell().popupMenu(items)
 
 /**
  * Open (or re-activate) a tab this plugin owns, in the active workspace's active group.

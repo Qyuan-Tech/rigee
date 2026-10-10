@@ -30,7 +30,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:editing` | workspace search, opening a result, saving, the unsaved-changes prompts, a file changed on disk, in-file find |
 | `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
-| `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — and a workspace's right-click menu adding a folder to its file with the comments intact |
+| `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — a workspace's right-click menu adding a folder to its file with the comments intact, a folder's Open in Terminal Tab and Split, and the explorer showing files created and deleted from outside, with Refresh for what the watcher ignores |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -110,7 +110,7 @@ src/
     plugins/   the renderer-side host, the manifest registry and the component bindings
 plugins/       the features, one folder each — OUTSIDE src/, see below
   text-editor/   Monaco, and the editor of last resort for every file
-  explorer/      the file tree
+  explorer/      the file tree, and a watcher that keeps it current
   pdf/           the PDF reader
   scm/           git: status, staging by line, commits, diffs
   search/        find in every file of the workspace

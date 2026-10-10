@@ -121,6 +121,11 @@ export interface TerminalTab extends TabBase {
   root: PaneNode
   /** Which leaf takes keystrokes and is the target of a split. */
   activeLeafId: string
+  /**
+   * Where this tab's panes start when they are not splits of a running one — a folder picked with
+   * "Open in Terminal". Absent means where the workspace's terminals start.
+   */
+  cwd?: string
 }
 
 export type PaneNode =

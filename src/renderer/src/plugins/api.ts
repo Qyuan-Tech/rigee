@@ -4,6 +4,7 @@ import type { CustomTab, EditorTab, TabId, WorkspaceId } from '@shared/types'
 import type { OpenFileRequest, PluginTabRequest } from '@rigee/plugin-api'
 import { allTabs, groupById, groupOfTab } from '../groups'
 import { nextTabId, rowOf, takeDuplicateOrigin, useApp } from '../store'
+import { openTerminalTab, splitTerminalAt } from '../terminals'
 import { addFolders, openAsWorkspace } from '../workspaces'
 import { ownerOf, resolveViewType } from './registry'
 
@@ -38,6 +39,19 @@ export function activeWorkspaceId(): WorkspaceId | null {
 export async function addWorkspaceFolders(paths: string[]): Promise<void> {
   const target = useApp.getState().activeWorkspaceId
   await (target ? addFolders(target, paths) : openAsWorkspace(paths))
+}
+
+/**
+ * A terminal in the active workspace, starting in `cwd`: "Open in Terminal Tab" and "… Split" on
+ * a folder in the explorer. Never stops to ask about saving the workspace — the user has just said
+ * where the shell goes.
+ */
+export function openTerminal(request: { cwd: string; where?: 'tab' | 'split' }): TabId | null {
+  const workspaceId = useApp.getState().activeWorkspaceId
+  if (!workspaceId) return null
+  return request.where === 'split'
+    ? splitTerminalAt(workspaceId, request.cwd)
+    : openTerminalTab(workspaceId, { cwd: request.cwd })
 }
 
 /**

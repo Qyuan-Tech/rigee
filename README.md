@@ -75,7 +75,7 @@ an app launched from Finder inherits almost none of it.
 | Area | State |
 |---|---|
 | Workspaces — multiple folders, persisted across restarts | works |
-| File explorer — lazy-loaded tree | works |
+| File explorer — lazy-loaded tree, kept current as files are created and deleted, and a Refresh button | works |
 | Editor — Monaco, syntax highlighting, view state kept per tab | works |
 | Saving — Cmd/Ctrl+S, a dot on unsaved tabs, asked before closing or quitting over them | works |
 | Find and replace in a file — Cmd+F, Cmd+Option+F (Ctrl+F, Ctrl+H) | works |
@@ -99,6 +99,7 @@ an app launched from Finder inherits almost none of it.
 | A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
 | A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
+| Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split beside the terminal on screen | works |
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
@@ -154,6 +155,11 @@ meant to see all of them. So a terminal opened in a workspace that has never bee
 before its shell starts — save it there and then, by name if Settings has a workspace files folder,
 or *Not Now* to start in the first folder as before. It asks again with the next terminal;
 *Don't remind me again* stops it, and Settings → General turns it back on.
+
+Right-click any folder in the explorer — a repo at the top of the tree or anything inside it — for
+*Open in Terminal Tab*, a new tab whose shell starts there, or *Open in Terminal Split*, a new pane
+beside the active one in the terminal on screen (a new tab when no terminal is showing). Either way
+the folder you picked wins, and nothing asks about saving the workspace.
 
 Closing several tabs at once — Close Others, Close to the Right, Close All — asks first if it would
 stop a program still running in a terminal it sweeps up. A shell sitting at its prompt closes

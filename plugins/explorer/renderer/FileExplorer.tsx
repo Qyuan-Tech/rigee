@@ -4,12 +4,15 @@ import {
   icons,
   listDir,
   openFile,
+  openTerminal,
+  popupMenu,
   setPluginState,
   useActiveWorkspace,
   useFileDecoration,
   usePluginState
 } from '@rigee/plugin-api'
 import type { FileDecoration, FileStat } from '@rigee/plugin-api'
+import { invalidateAll, listings, useListingGeneration, watchFolders } from './listings'
 
 /** This plugin's id, which is also the key its per-workspace state is filed under. */
 const PLUGIN_ID = 'explorer'
@@ -30,14 +33,6 @@ function readExpanded(state: Record<string, unknown> | undefined): string[] | un
   return Array.isArray(dirs) ? (dirs as string[]) : undefined
 }
 
-/**
- * Directory listings, cached by absolute path outside React.
- *
- * Shared rather than per-node so that (a) switching workspaces and coming back does not re-read
- * every directory, and (b) "expand all" knows what the tree looks like without issuing a storm of
- * reads. Paths are absolute, so two workspaces containing the same folder share the entry.
- */
-const listings = new Map<string, FileStat[]>()
 
 export function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
@@ -64,6 +59,17 @@ export function FileExplorer(): React.ReactElement {
   }, [workspaceId, expanded, workspace, setExpandedDirs])
 
   const anyOpen = open.size > 0
+
+  /*
+   * Watch the folders on screen, and start from fresh listings whenever they change — including
+   * on mount: while the tree was not showing, or another workspace was, nothing was keeping the
+   * cache current for these folders.
+   */
+  const roots = workspace?.folders.map((f) => f.path).join('\n') ?? ''
+  useEffect(() => {
+    invalidateAll()
+    watchFolders(roots ? roots.split('\n') : [])
+  }, [roots])
 
   /**
    * Collapse everything, or put it back.
@@ -116,6 +122,14 @@ export function FileExplorer(): React.ReactElement {
         <span className="section-header__title">Explorer</span>
         <button
           className="icon-button"
+          title="Refresh"
+          disabled={!workspace || workspace.folders.length === 0}
+          onClick={invalidateAll}
+        >
+          <icons.Reload size={13} />
+        </button>
+        <button
+          className="icon-button"
           title={anyOpen ? 'Collapse all folders' : 'Expand folders'}
           disabled={!workspace || workspace.folders.length === 0}
           onClick={toggleAll}
@@ -158,18 +172,26 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
   const decoration = useFileDecoration(path)
+  const generation = useListingGeneration(path)
 
+  // Read when opened with nothing cached, and again whenever the cached listing is forgotten — a
+  // watcher saw it change, or Refresh was pressed. The old children stay up until the new arrive.
   useEffect(() => {
-    if (!isOpen || children !== null) return
+    if (!isOpen) return
+    const cached = listings.get(path)
+    if (cached) {
+      setChildren(cached)
+      return
+    }
     let cancelled = false
     void listDir(path)
       .then((list) => {
         listings.set(path, list)
-        if (!cancelled) setChildren(list)
+        if (!cancelled) { setChildren(list); setError(null) }
       })
       .catch((e: Error) => { if (!cancelled) setError(e.message) })
     return () => { cancelled = true }
-  }, [isOpen, children, path])
+  }, [isOpen, path, generation])
 
   return (
     <>
@@ -177,6 +199,10 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
         className="row row--clickable"
         style={{ paddingLeft: 8 + depth * 12 }}
         onClick={() => { if (workspaceId) toggleDir(workspaceId, open, path) }}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          void showDirMenu(path)
+        }}
       >
         <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
           <icons.Chevron size={12} open={isOpen} />
@@ -234,6 +260,20 @@ function Label({ name, decoration }: { name: string; decoration: FileDecoration 
       )}
     </>
   )
+}
+
+/**
+ * A folder's menu, on right-click — a repo at the top of the tree or anything inside it. Both items
+ * start a shell in that folder, whatever the workspace's terminals usually start in: picking the
+ * folder is the whole point. A tab of its own, or a pane beside the terminal on screen.
+ */
+async function showDirMenu(path: string): Promise<void> {
+  const choice = await popupMenu([
+    { kind: 'item', id: 'terminal-tab', label: 'Open in Terminal Tab' },
+    { kind: 'item', id: 'terminal-split', label: 'Open in Terminal Split' }
+  ])
+  if (choice === 'terminal-tab') openTerminal({ cwd: path, where: 'tab' })
+  else if (choice === 'terminal-split') openTerminal({ cwd: path, where: 'split' })
 }
 
 /**
