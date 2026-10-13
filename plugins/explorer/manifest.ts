@@ -12,8 +12,8 @@ export const manifest: PluginManifest = {
   id: 'explorer',
   version: '1.0.0',
   displayName: 'Explorer',
-  description: 'The file tree, kept current as files come and go, and dropping folders onto it to build a workspace.',
-  permissions: ['files:read'],
+  description: 'The file tree, kept current as files come and go: create, rename, move, copy and delete files.',
+  permissions: ['files:read', 'files:write'],
   contributes: {
     views: [{ id: 'explorer.files', title: 'Explorer', slot: 'left', icon: 'files', order: 0 }]
   }

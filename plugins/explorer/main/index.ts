@@ -3,10 +3,12 @@ import type { AsyncSubscription, Event } from '@parcel/watcher'
 import { realpath } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { explorerEmitter, registerExplorerCommands } from '../protocol'
+import { copyText, create, remove, renameEntry, reveal, transfer } from './files'
 
 /**
  * The explorer's main half: one filesystem watcher per folder of the active workspace, so the tree
- * shows a file the moment an agent writes it, and drops one the moment it is deleted.
+ * shows a file the moment an agent writes it, and drops one the moment it is deleted — and the
+ * tree's own file operations, which are in `files.ts`.
  *
  * @parcel/watcher for the reason source control uses it: one FSEvents stream per folder on macOS
  * rather than a descriptor per directory, which a GUI-launched app — soft limit 256 — would run out
@@ -41,6 +43,7 @@ const plugin: Plugin = {
     const register = commands.register.bind(commands)
     const shell = ctx.shell
     const emit = explorerEmitter(shell.emit.bind(shell))
+    const ask = shell.ask.bind(shell)
 
     const watched = new Map<string, Watched>()
     /** Unsubscribes still finishing. Quitting waits for these too: see `dispose`. */
@@ -119,7 +122,13 @@ const plugin: Plugin = {
     }, 'explorer watchers')
 
     registerExplorerCommands(register, {
-      'explorer:watch': ({ roots }) => watch(roots.filter(Boolean))
+      'explorer:watch': ({ roots }) => watch(roots.filter(Boolean)),
+      'explorer:create': ({ dir, name, folder }) => create(dir, name, folder),
+      'explorer:rename': ({ path, name }) => renameEntry(path, name),
+      'explorer:transfer': (args) => transfer(args, ask),
+      'explorer:delete': ({ paths, permanently, unsaved }) => remove(paths, permanently, unsaved, ask),
+      'explorer:reveal': ({ path }) => { reveal(path) },
+      'explorer:copyText': ({ text }) => copyText(text)
     })
   }
 }

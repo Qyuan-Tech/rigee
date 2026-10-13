@@ -33,6 +33,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
 | `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — a workspace's right-click menu adding a folder to its file with the comments intact, a folder's Open in Terminal Tab and Split, the explorer showing files created and deleted from outside, with Refresh for what the watcher ignores, and a saved workspace's tree headed by the folder its file is in — once, even when the file lists it, and saying so when it has gone |
 | `pnpm smoke:heat` | boots on workspaces from before heat and asserts none comes up cold; then the list ordered and coloured by heat, held still under the pointer and re-sorted once it leaves, a switch and a minute of typing each counted once, a terminal printing in a workspace nobody is looking at counted and a prompt not, the cold ones removed through their checklist, and what reached the disk. `RIGEE_SHOT_DIR` leaves PNGs of the list, its cold run and the checklist |
+| `pnpm smoke:fileops` | the explorer's file operations: the menus of a file, a folder and a workspace folder; a click opening a file and leaving the keyboard in the tree; Rename, New File and New Folder in a name box that refuses a taken name; Copy and Paste making `a copy.ts`; Cut and Paste and a drag moving, with tabs following; unsaved files refused a move; Delete asking first and closing the deleted file's tab; Copy Path; the arrows; and files from outside copied in, through the command a drop sends. Nothing reaches the real Trash unless `RIGEE_SMOKE_TRASH=1`. `RIGEE_SHOT_DIR` leaves PNGs of the name box, a cut row, a drop target and a selection |
 | `pnpm smoke:running` | an agent and a build at work in a workspace nobody is looking at, counted on its row; both counted as finished unseen once they stop, the agent alive and silent and the build gone; the count followed to its terminal, a tab's dot and a split pane's outline cleared by looking; and neither somebody typing nor a quick command counted. Real programs under a real shell with job control. `RIGEE_SHOT_DIR` leaves PNGs of the counts and of a finished pane |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
@@ -197,6 +198,12 @@ first needed — a tab of its view type renders, its panel mounts, its "new tab"
 main half loads when the renderer first calls one of its commands. Opening a `.ts` file loads the
 text editor and nothing else; `pnpm smoke:plugins` asserts exactly that, because it is the property
 the whole design exists to produce.
+
+**Questions go through `ctx.shell.ask`.** A main half that has to ask the user something — the
+explorer before it deletes, or replaces a file of the same name — asks through the shell, never
+Electron's `dialog` directly. The smoke modes answer it through `askProbe` in src/main/index.ts, as
+`menus` answers context menus in the renderer; a question put on screen any other way leaves a run
+waiting for a person to come and press a button.
 
 **Two IPC channels, forever.** `plugin:invoke` carries every renderer→main call and `plugin:event`
 carries every push. Source control and the browser used to own twenty-two entries in

@@ -81,6 +81,7 @@ export interface IconSet {
   Globe: ComponentType<IconProps>
   Folder: ComponentType<IconProps>
   AddFolder: ComponentType<IconProps>
+  NewFile: ComponentType<IconProps>
   Plugin: ComponentType<IconProps>
   Plus: ComponentType<IconProps>
   Close: ComponentType<IconProps>

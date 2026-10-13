@@ -262,7 +262,7 @@ export function runAppAction(action: string, fromTerminal: string | null = null)
  * anything else gets its first focusable element outside the tab strip — Monaco's input area, a
  * viewer — or, failing that, the old focus is simply dropped so keys at least reach the window.
  */
-function focusGroupContent(groupId: string, tab: { id: string; kind: string; activeLeafId?: string } | undefined): void {
+export function focusGroupContent(groupId: string, tab: { id: string; kind: string; activeLeafId?: string } | undefined): void {
   if (tab?.kind === 'terminal' && tab.activeLeafId) {
     getTerminal(paneKey(tab.id, tab.activeLeafId))?.term.focus()
     return

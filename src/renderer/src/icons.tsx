@@ -157,6 +157,15 @@ export const AddFolderIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** The file, with its corner left open for the plus — as AddFolder leaves the folder's. */
+export const NewFileIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M13 8.5V6L9 2H4.5A1.5 1.5 0 0 0 3 3.5v9A1.5 1.5 0 0 0 4.5 14H8" />
+    <path d="M9 2v3.5a.5.5 0 0 0 .5.5H13" />
+    <path d="M11.5 10v4M9.5 12h4" />
+  </Svg>
+)
+
 export const GearIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>
     <circle cx="8" cy="8" r="2.2" />

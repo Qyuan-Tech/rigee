@@ -64,6 +64,18 @@ export interface OpenFileRequest {
    * `onRevealInFile`, whether the tab is new or was already open.
    */
   selection?: TextSelection
+  /**
+   * Leave the keyboard where it is instead of handing it to the file's viewer. What a single click
+   * in a file tree does, so the tree's arrow keys and Delete go on acting on the tree. Without it
+   * the viewer takes the keyboard — as it mounts, or at once if the file is already on screen.
+   */
+  preserveFocus?: boolean
+}
+
+/** A file or folder a plugin renamed or moved: where it was, and where it is now. */
+export interface FileMove {
+  from: string
+  to: string
 }
 
 /** A place in a text file. 1-based, columns in UTF-16 code units, as Monaco counts them. */
@@ -91,7 +103,17 @@ export interface FileHandlers {
  * what a command does stays with the plugin, which gets back the `id` of the row picked.
  */
 export type MenuItem =
-  | { kind: 'item'; id: string; label: string; enabled?: boolean }
+  | {
+      kind: 'item'
+      id: string
+      label: string
+      enabled?: boolean
+      /**
+       * The shortcut drawn beside the label, in Electron's accelerator syntax: `CmdOrCtrl+C`. Shown,
+       * not listened for — the plugin answers the key itself, wherever it has the keyboard.
+       */
+      accelerator?: string
+    }
   | { kind: 'separator' }
 
 export interface PluginTabInfo {
@@ -171,6 +193,12 @@ export interface ShellHost {
   setFileDirty: (path: string, dirty: boolean, handlers?: FileHandlers) => void
   onRevealInFile: (tabId: TabId, cb: (selection: TextSelection) => void) => () => void
   onViewRevealed: (viewId: string, cb: () => void) => () => void
+  openedInBackground: (tabId: TabId) => boolean
+
+  // --- files a plugin moved or deleted -----------------------------------
+  filesMoved: (moves: FileMove[]) => void
+  filesDeleted: (paths: string[]) => void
+  unsavedFiles: (paths: string[]) => string[]
 
   // --- file decorations ---------------------------------------------------
   setFileDecorations: (source: string, decorations: Record<string, FileDecoration>) => void
@@ -414,6 +442,29 @@ export const onRevealInFile = (tabId: TabId, cb: (selection: TextSelection) => v
  */
 export const onViewRevealed = (viewId: string, cb: () => void): (() => void) =>
   shell().onViewRevealed(viewId, cb)
+
+/**
+ * Whether this tab was opened with `preserveFocus`, so its viewer should leave the keyboard where
+ * it is instead of taking it as it mounts. Answers true once, for the open that asked: call it at
+ * the moment the viewer would focus itself, not before.
+ */
+export const openedInBackground = (tabId: TabId): boolean => shell().openedInBackground(tabId)
+
+/**
+ * Files a plugin has just renamed or moved for the user — a file tree's Rename, its Cut and Paste,
+ * a drag — so the tabs showing them follow, under their new names. A folder covers everything in
+ * it. Files moved by other programs are not reported here, and their tabs stay where they were.
+ */
+export const filesMoved = (moves: FileMove[]): void => shell().filesMoved(moves)
+
+/**
+ * Files a plugin has just deleted for the user. Their tabs close, and unsaved changes in them are
+ * dropped — so ask about those first, with `unsavedFiles`. A folder covers everything in it.
+ */
+export const filesDeleted = (paths: string[]): void => shell().filesDeleted(paths)
+
+/** Which files at these paths, or inside them, have unsaved changes. */
+export const unsavedFiles = (paths: string[]): string[] => shell().unsavedFiles(paths)
 
 /**
  * Needs `files:read`. `notUtf8` means the bytes were not valid UTF-8 and `content` is a lossy

@@ -1,5 +1,5 @@
 import { Service, type Context } from 'cordis'
-import type { BrowserWindow, WebContents } from 'electron'
+import type { BrowserWindow, MessageBoxOptions, WebContents } from 'electron'
 import type { PluginEventEnvelope } from '@rigee/plugin-api/manifest'
 import { serveMedia } from '../media'
 
@@ -9,13 +9,18 @@ declare module 'cordis' {
   }
 }
 
+/** A question for `ShellService.ask`: Electron's message box, cut down to what a question needs. */
+export type AskOptions = Pick<MessageBoxOptions, 'type' | 'message' | 'detail' | 'buttons' | 'defaultId' | 'cancelId'>
+
 /**
- * What a main-side plugin is given of the shell: the window, and a way to push to the renderer.
+ * What a main-side plugin is given of the shell: the window, a way to push to the renderer, and a
+ * way to ask the user something.
  *
  * Nothing else. A plugin half in main is ordinary Node code in our own process — it can `import`
  * anything Electron exposes and does not need a facade for it. What it CANNOT get at without help
  * is the window this particular app created and the renderer's WebContents, because those are
- * created after `app.whenReady()` and owned by src/main/index.ts.
+ * created after `app.whenReady()` and owned by src/main/index.ts. The question is the one facade,
+ * and it exists for the smoke modes: see `ask`.
  *
  * EVERY METHOD HERE MUST BE A PROTOTYPE METHOD, never an arrow-function field. cordis makes
  * `this.ctx` mean "the calling plugin's context" by swapping `thisArg` when the method is called
@@ -41,6 +46,7 @@ export class ShellService extends Service {
       window: () => BrowserWindow | null
       webContents: () => WebContents | null
       send: (payload: PluginEventEnvelope) => void
+      ask: (options: AskOptions) => Promise<number>
       focusClaims: Set<() => boolean>
     }
   ) {
@@ -84,6 +90,17 @@ export class ShellService extends Service {
     const { url, revoke } = serveMedia(path, mime)
     this.served.set(url, this.ctx.effect(() => revoke, 'served file'))
     return url
+  }
+
+  /**
+   * Ask the user something in a native dialog over the window: the index of the button pressed.
+   *
+   * Through the shell rather than Electron's `dialog`, so that a smoke mode can answer it. A
+   * question put on screen straight through `dialog` is one no script can dismiss, and the run sits
+   * waiting for somebody to come and press a button.
+   */
+  ask(options: AskOptions): Promise<number> {
+    return this.deps.ask(options)
   }
 
   /** Stop serving a URL `serveFile` returned. Unknown or already released is not an error. */

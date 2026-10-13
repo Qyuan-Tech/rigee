@@ -32,6 +32,15 @@ export function invalidate(dirs: Iterable<string>): void {
 /** Every listing read so far: the refresh button. */
 export const invalidateAll = (): void => invalidate([...listings.keys()])
 
+/**
+ * These folders, and every folder inside them, have moved or gone. Their listings are forgotten
+ * rather than left to the watcher, which does not look inside .git or node_modules — and a folder
+ * renamed back later would otherwise come up showing what it held before.
+ */
+export function invalidateUnder(paths: readonly string[]): void {
+  invalidate([...listings.keys()].filter((dir) => paths.some((p) => dir === p || dir.startsWith(p + '/') || dir.startsWith(p + '\\'))))
+}
+
 /** Changes for the node showing `path`: when it does, the listing has been forgotten. */
 export function useListingGeneration(path: string): number {
   return useSyncExternalStore(
@@ -52,6 +61,10 @@ export function connect(invoke: (command: string, args: unknown) => Promise<unkn
   call = explorerClient(invoke)
   return () => { call = null }
 }
+
+/** A command to the main half. Not connected only while the plugin is being switched off. */
+export const request: ExplorerCall = (command, args) =>
+  call ? call(command, args) : Promise.reject(new Error('The explorer is switched off.'))
 
 /**
  * Watch these folders, and only these. Failing to is not fatal: the refresh button still works.

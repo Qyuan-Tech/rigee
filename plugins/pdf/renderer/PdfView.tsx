@@ -1,6 +1,6 @@
 import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { duplicatedFrom, Notice } from '@rigee/plugin-api'
+import { duplicatedFrom, Notice, openedInBackground } from '@rigee/plugin-api'
 import {
   acquireDocument,
   readViewState,
@@ -65,6 +65,8 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
    * exists.
    */
   const [splitFrom] = useState(() => duplicatedFrom(tabId))
+  /** Whether this pane has had its chance at the keyboard: only on opening, not on a rename. */
+  const focused = useRef(false)
 
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -187,8 +189,12 @@ export function PdfView({ filePath, tabId }: PluginEditorProps): React.ReactElem
           setPage(saved.page)
         }
         // Same as the Monaco pane: the viewer that just opened takes the keyboard, so PageDown,
-        // space and ⌘F all work without clicking into the page first.
-        viewport.current.focus()
+        // space and ⌘F all work without clicking into the page first — unless it was opened in the
+        // background, from a single click in the file tree, which keeps the keyboard.
+        if (!focused.current) {
+          focused.current = true
+          if (!openedInBackground(tabId)) viewport.current.focus()
+        }
 
         const outline = await opened.getOutline()
         if (!disposed) setHasOutline((outline?.length ?? 0) > 0)

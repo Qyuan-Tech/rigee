@@ -1,10 +1,10 @@
 import { allTabs } from './groups'
 import { onEvent, rpc } from './ipc'
 import { leaves } from './paneTree'
-import { viewsIn } from './plugins/registry'
+import { resolveViewType, viewsIn } from './plugins/registry'
 import { rowOf, useApp } from './store'
 import type { TabId, WorkspaceId } from '@shared/types'
-import type { FileHandlers, TextSelection } from '@rigee/plugin-api'
+import type { FileHandlers, FileMove, TextSelection } from '@rigee/plugin-api'
 
 /**
  * What the shell knows about files being edited: which have unsaved changes, how to save them, and
@@ -151,7 +151,80 @@ export function installUnsavedBridge(): () => void {
   return () => { unsubscribe(); off() }
 }
 
+// --- files a plugin moved or deleted ---------------------------------------------
+
+/** `file` is `path`, or inside it when `path` is a folder — on either kind of separator. */
+const covers = (path: string, file: string): boolean =>
+  file === path || file.startsWith(path + '/') || file.startsWith(path + '\\')
+
+const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
+
+/** Unsaved files at these paths or inside them: what deleting or moving them would lose. */
+export function unsavedFiles(paths: readonly string[]): string[] {
+  return dirtyPaths().filter((file) => paths.some((path) => covers(path, file)))
+}
+
+/**
+ * The file tree renamed or moved these, so every tab showing one follows it, in every workspace.
+ * Its title is the new name, and its viewer is picked again: a file renamed to `.pdf` is a PDF.
+ *
+ * Unsaved files are not moved: the tree refuses, because their changes live in the editor's
+ * document for the OLD path, and a tab that followed would show the file without them.
+ */
+export function filesMoved(moves: readonly FileMove[]): void {
+  const s = useApp.getState()
+  for (const [workspaceId, row] of Object.entries(s.rowsByWorkspace)) {
+    for (const tab of allTabs(row)) {
+      if (tab.kind !== 'editor') continue
+      const move = moves.find((m) => covers(m.from, tab.filePath))
+      if (!move) continue
+      const filePath = move.to + tab.filePath.slice(move.from.length)
+      s.updateTab(workspaceId, tab.id, {
+        filePath,
+        title: basename(filePath),
+        viewType: resolveViewType(filePath) ?? undefined
+      })
+    }
+  }
+}
+
+/**
+ * The file tree deleted these: their tabs close, in every workspace, without asking — the user
+ * just said yes to the deletion, which named any unsaved changes it would lose. Those are dropped
+ * first, or quitting would offer to save a file that is no longer there, and saving it would bring
+ * it back.
+ */
+export function filesDeleted(paths: readonly string[]): void {
+  void discardAll(unsavedFiles(paths)).then(() => {
+    const s = useApp.getState()
+    for (const [workspaceId, row] of Object.entries(s.rowsByWorkspace)) {
+      const gone = allTabs(row)
+        .filter((t) => t.kind === 'editor' && paths.some((path) => covers(path, t.filePath)))
+        .map((t) => t.id)
+      if (gone.length > 0) s.closeTabs(workspaceId, gone)
+    }
+  })
+}
+
 // --- where a file opens ----------------------------------------------------------
+
+/**
+ * The tab an `openFile({ preserveFocus })` is about to mount, until its viewer asks whether to take
+ * the keyboard. One tab rather than a set: only the latest click is about to mount anything, and a
+ * viewer that never asks — an image — leaves nothing behind to clear up.
+ */
+let backgroundTab: TabId | null = null
+
+export function openInBackground(tabId: TabId | null): void {
+  backgroundTab = tabId
+}
+
+/** True once, for the tab opened in the background: its viewer leaves the keyboard alone. */
+export function openedInBackground(tabId: TabId): boolean {
+  if (backgroundTab !== tabId) return false
+  backgroundTab = null
+  return true
+}
 
 /**
  * Selections waiting for their editor. A search result opens a file and asks for line 812 before

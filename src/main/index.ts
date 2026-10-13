@@ -46,6 +46,7 @@ import {
 } from './store'
 import { namedWorkspaceFile, WORKSPACE_FILE_EXTENSION, workspaceNameProblem } from '@shared/workspaceFiles'
 import type { PluginHost } from './plugins/host'
+import type { AskOptions } from './plugins/shell'
 import {
   approvePlugin,
   diskLoaders,
@@ -206,6 +207,19 @@ const shellWc = (): WebContents | null =>
 let pluginHost: PluginHost | null = null
 let pluginHostP: Promise<PluginHost> | null = null
 
+/**
+ * Answers the questions plugins ask through `ShellService.ask`, for the smoke modes — as `menus`
+ * answers menus in the renderer. It sees each question and says which button was pressed.
+ */
+const askProbe: { answer: ((options: AskOptions) => number) | null } = { answer: null }
+
+async function askUser(options: AskOptions): Promise<number> {
+  if (askProbe.answer) return askProbe.answer(options)
+  const box = { noLink: true, ...options }
+  const { response } = window ? await dialog.showMessageBox(window, box) : await dialog.showMessageBox(box)
+  return response
+}
+
 function plugins(): Promise<PluginHost> {
   pluginHostP ??= (async () => {
     const [{ PluginHost }, { MAIN_HALVES }] = await Promise.all([
@@ -221,7 +235,8 @@ function plugins(): Promise<PluginHost> {
       {
         window: () => window,
         webContents: shellWc,
-        send: (payload) => emit(shellWc(), 'plugin:event', payload)
+        send: (payload) => emit(shellWc(), 'plugin:event', payload),
+        ask: askUser
       },
       // Read from disk rather than waited for from the renderer: the first `plugin:invoke` can
       // arrive before the plugins view has ever been opened, and a disabled plugin must not start
@@ -297,6 +312,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'scratch') void runScratchSmoke()
     else if (process.env.RIGEE_SMOKE === 'scroll') void runScrollSmoke()
     else if (process.env.RIGEE_SMOKE === 'explorer') void runExplorerSmoke()
+    else if (process.env.RIGEE_SMOKE === 'fileops') void runFileOpsSmoke()
     else if (process.env.RIGEE_SMOKE === 'multirepo') void runMultiRepoSmoke()
     else if (process.env.RIGEE_SMOKE === 'shot') void captureShot()
     // These three must stay ABOVE the catch-all below, which matches any truthy value: a branch
@@ -774,6 +790,485 @@ async function runExplorerSmoke(): Promise<void> {
   } catch (err) {
     console.error('[smoke:explorer] threw:', err)
     app.exit(1)
+  }
+}
+
+/**
+ * The explorer's file operations, VS Code's. The right-click menus of a file, a folder and a
+ * workspace folder; a click opening a file and leaving the keyboard in the tree; Rename in place,
+ * refused while the name is taken, with the file's tab following it and a renamed folder staying
+ * open; New File and New Folder in a name box, a nested name making its folders; Copy and Paste
+ * making `a copy.ts` and `a copy 2.ts`; Cut and Paste moving, the tab following; a drag inside the
+ * tree moving, and refusing to drop a folder into itself; unsaved files refused a rename and a move;
+ * Delete from the keyboard asking first, landing on the next row and closing the deleted file's
+ * tab; several deleted at once; Copy Path and Copy Relative Path; the arrows and Shift; and files
+ * from outside copied in, with a name already taken asked about and a folder dropped on a
+ * workspace folder asked whether it should join the workspace instead.
+ *
+ * A drop from Finder cannot be made from a script — a synthetic drag carries no paths — so that
+ * part is driven through the command a drop sends, and the drag itself only as far as the folder
+ * lighting up under it. The questions are answered through `askProbe`, never on screen. Nothing
+ * reaches the real Trash unless RIGEE_SMOKE_TRASH=1: the trash question is answered Cancel, and
+ * what is deleted is deleted for good, inside the throwaway data directory.
+ *
+ * With RIGEE_SHOT_DIR set it photographs the name box refusing a name, a cut row, a folder lit up
+ * under a drag and a selection with the keyboard's row outlined, which are reviewed by looking.
+ */
+async function runFileOpsSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const root = join(app.getPath('userData'), 'fileops')
+  const repo = join(root, 'repo')
+  const outside = join(root, 'outside')
+  rmSync(root, { recursive: true, force: true })
+  for (const dir of [join(repo, 'src'), join(repo, 'docs'), join(outside, 'dropped-dir')]) mkdirSync(dir, { recursive: true })
+  writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 1\n')
+  writeFileSync(join(repo, 'src', 'b.ts'), 'export const b = 2\n')
+  writeFileSync(join(repo, 'docs', 'readme.md'), '# readme\n')
+  writeFileSync(join(repo, 'notes.txt'), 'hello\n')
+  writeFileSync(join(outside, 'dropped.txt'), 'from outside\n')
+  writeFileSync(join(outside, 'dropped-dir', 'inner.txt'), 'inner\n')
+
+  const trail: string[] = []
+  const asked: string[] = []
+  /** The button to press for each question, in order. A question nobody planned for is cancelled. */
+  const answers: string[] = []
+  askProbe.answer = (options) => {
+    asked.push(options.message)
+    const want = answers.shift()
+    const index = want === undefined ? -1 : (options.buttons ?? []).indexOf(want)
+    return index >= 0 ? index : (options.cancelId ?? 0)
+  }
+  // Copy Path writes the user's clipboard. Put it back.
+  const savedClipboard = await clipboard.readText()
+  const finish = async (ok: boolean, stage: string, extra?: unknown): Promise<void> => {
+    askProbe.answer = null
+    await clipboard.writeText(savedClipboard)
+    console.log('[smoke:fileops]', JSON.stringify({ ok, stage, trail, asked, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const at = (...parts: string[]): string => join(repo, ...parts)
+  /** The disk's word for it, rather than the tree's. */
+  const onDisk = async (path: string, present: boolean, ms = 4000): Promise<boolean> => {
+    for (let waited = 0; waited < ms && existsSync(path) !== present; waited += 100) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return existsSync(path) === present
+  }
+  /** With RIGEE_SHOT_DIR set, a PNG of the window now, for reviewing by eye what a check cannot judge. */
+  const shoot = async (name: string): Promise<void> => {
+    const dir = process.env.RIGEE_SHOT_DIR
+    if (!dir) return
+    // Past the rows' background transition, or a row just selected is photographed half lit.
+    await new Promise((r) => setTimeout(r, 300))
+    writeFileSync(join(dir, `${name}.png`), (await wc.capturePage()).toPNG())
+    trail.push(`photographed ${name}`)
+  }
+  const mac = process.platform === 'darwin'
+  type Outcome = { ok: boolean; stage?: string } & Record<string, unknown>
+  const stage = async (code: string): Promise<Outcome> =>
+    (await wc.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+      const { store, menus } = window.__rigee
+      const mac = ${mac}
+      const p = ${JSON.stringify({
+        repo,
+        notes: at('notes.txt'),
+        renamed: at('renamed.txt'),
+        src: at('src'),
+        docs: at('docs'),
+        a: at('src', 'a.ts'),
+        b: at('src', 'b.ts'),
+        c: at('src', 'c.ts'),
+        aCopy: at('src', 'a copy.ts'),
+        aCopy2: at('src', 'a copy 2.ts'),
+        lib: at('src', 'lib'),
+        library: at('src', 'library'),
+        deep: at('src', 'library', 'deep'),
+        libDeep: at('src', 'lib', 'deep'),
+        readme: at('docs', 'readme.md'),
+        movedReadme: at('src', 'readme.md'),
+        draggedB: at('docs', 'b.ts'),
+        dropped: join(outside, 'dropped.txt'),
+        droppedDir: join(outside, 'dropped-dir')
+      })}
+      const fail = (stage, extra) => Object.assign({ ok: false, stage }, extra || {})
+      // React renders what a key or a click changed in a microtask, not before dispatchEvent returns.
+      const settle = () => sleep(30)
+      const until = async (test, ms = 6000) => {
+        for (let waited = 0; waited < ms; waited += 50) { const v = test(); if (v) return v; await sleep(50) }
+        return null
+      }
+      const body = () => document.querySelector('.explorer__body')
+      const row = (path) => [...document.querySelectorAll('.explorer__body [data-path]')].find(el => el.dataset.path === path) || null
+      const rows = () => [...document.querySelectorAll('.explorer__body [data-path]')].map(el => el.dataset.path)
+      const key = (init, target) => {
+        const e = new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init))
+        ;(target || body()).dispatchEvent(e)
+        return e.defaultPrevented
+      }
+      // The platform's command key: Cmd on a Mac, Ctrl elsewhere.
+      const cmd = (k, extra) => key(Object.assign({ key: k, code: 'Key' + k.toUpperCase() }, mac ? { metaKey: true } : { ctrlKey: true }, extra || {}))
+      const enter = (target) => key({ key: 'Enter', code: 'Enter' }, target)
+      const rename = () => key(mac ? { key: 'Enter', code: 'Enter' } : { key: 'F2', code: 'F2' })
+      const trash = () => key(mac ? { key: 'Backspace', code: 'Backspace' } : { key: 'Delete', code: 'Delete' })
+      const destroy = () => key(mac ? { key: 'Backspace', code: 'Backspace', metaKey: true, altKey: true } : { key: 'Delete', code: 'Delete', shiftKey: true })
+      // A click gives the tree the keyboard first, as the mousedown before a real one does.
+      const click = (el, init) => { body().focus(); el.dispatchEvent(new MouseEvent('click', Object.assign({ bubbles: true, cancelable: true }, init || {}))) }
+      const menu = async (el, pick) => {
+        let offered = null
+        menus.answer = (items) => { offered = items; return pick }
+        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+        await until(() => offered)
+        menus.answer = null
+        return offered
+      }
+      const type = (el, value) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      const box = () => document.querySelector('.explorer__input')
+      const problem = () => document.querySelector('.explorer__problem')?.textContent ?? null
+      const selected = () => [...document.querySelectorAll('.explorer__row--selected')].map(el => el.dataset.path)
+      const focusedRow = () => document.querySelector('.explorer__row--focused')?.dataset.path ?? null
+      const tabs = () => Object.values(store.getState().rowsByWorkspace).flatMap(r => r.groups.flatMap(g => g.tabs)).filter(t => t.kind === 'editor')
+      const tabOf = (path) => tabs().find(t => t.filePath === path) || null
+      const drag = (from, over, init) => {
+        const dataTransfer = new DataTransfer()
+        const fire = (el, type) => {
+          const e = new DragEvent(type, Object.assign({ bubbles: true, cancelable: true, dataTransfer }, init || {}))
+          el.dispatchEvent(e)
+          return e.defaultPrevented
+        }
+        fire(from, 'dragstart')
+        const accepted = fire(over, 'dragover')
+        return { accepted, drop: () => fire(over, 'drop'), cancel: () => fire(body(), 'dragend') }
+      }
+      ${code}
+    })()`, true)) as Outcome
+
+  try {
+    // --- the workspace ------------------------------------------------------------------
+    const ready = await stage(`
+      if (!(await until(() => store.getState().ready, 15000))) return fail('never-ready')
+      store.getState().addWorkspace({
+        id: 'ws-fileops', name: 'fileops', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: p.repo, name: 'repo', isGitRepo: false, repoRoot: null }]
+      })
+      store.getState().setActiveWorkspace('ws-fileops')
+      return (await until(() => row(p.notes))) ? { ok: true } : fail('the-tree-never-showed-the-repo')`)
+    if (!ready.ok) return finish(false, ready.stage ?? 'workspace')
+
+    // --- the menus ----------------------------------------------------------------------
+    const offered = await stage(`
+      const labels = (items) => items.map(i => i.kind === 'separator' ? '—'
+        : i.label + (i.accelerator ? ' [' + i.accelerator + ']' : '') + (i.enabled === false ? ' (off)' : ''))
+      return { ok: true,
+        file: labels(await menu(row(p.notes), null)),
+        folder: labels(await menu(row(p.src), null)),
+        root: labels(await menu(row(p.repo), null)) }`)
+    const file = (offered.file ?? []) as string[]
+    const folder = (offered.folder ?? []) as string[]
+    const top = (offered.root ?? []) as string[]
+    trail.push(`a file's menu: ${file.join(' | ')}`)
+    trail.push(`a folder's menu starts: ${folder.slice(0, 3).join(' | ')}; a workspace folder's: ${top.join(' | ')}`)
+    const has = (menu: string[], label: string): boolean => menu.some((l) => l.startsWith(label))
+    for (const label of ['Reveal in', 'Open in Terminal Tab', 'Open in Terminal Split', 'Cut [CmdOrCtrl+X]', 'Copy [CmdOrCtrl+C]', 'Paste [CmdOrCtrl+V] (off)', 'Copy Path', 'Copy Relative Path', 'Rename…', 'Delete [']) {
+      if (!has(file, label)) return finish(false, 'file-menu-lacks', label)
+    }
+    if (has(file, 'New File')) return finish(false, 'file-menu-offers-new-file')
+    if (folder[0] !== 'New File…' || folder[1] !== 'New Folder…') return finish(false, 'folder-menu-does-not-start-with-new', folder)
+    if (!has(top, 'New File…') || !has(top, 'Paste') || !has(top, 'Copy Path')) return finish(false, 'workspace-folder-menu-lacks-its-items', top)
+    if (['Cut', 'Rename…', 'Delete', 'Copy Relative Path'].some((label) => has(top, label))) return finish(false, 'workspace-folder-can-be-cut-renamed-or-deleted', top)
+
+    // --- a click opens a file and leaves the keyboard here ---------------------------------
+    const clicked = await stage(`
+      click(row(p.notes))
+      if (!(await until(() => tabOf(p.notes)))) return fail('a-click-opened-no-tab')
+      if (!(await until(() => document.querySelector('.monaco-editor'), 15000))) return fail('the-editor-never-came-up')
+      await sleep(600)
+      if (document.activeElement !== body()) return fail('the-editor-took-the-keyboard-from-the-tree', { focused: document.activeElement?.className })
+      return selected().join() === p.notes ? { ok: true } : fail('the-clicked-row-is-not-selected', { selected: selected() })`)
+    if (!clicked.ok) return finish(false, clicked.stage ?? 'click', clicked)
+    trail.push('a click opened notes.txt in the editor and left the keyboard in the tree')
+
+    // --- Rename -----------------------------------------------------------------------------
+    const renaming = await stage(`
+      rename()
+      const input = await until(box)
+      if (!input) return fail('no-name-box')
+      if (document.activeElement !== input) return fail('the-name-box-does-not-have-the-keyboard')
+      const picked = [input.selectionStart, input.selectionEnd].join('-')
+      type(input, 'src')
+      await settle()
+      const refused = problem()
+      enter(input)
+      await sleep(300)
+      return box() ? { ok: true, picked, refused } : fail('enter-on-a-taken-name-closed-the-box')`)
+    if (!renaming.ok) return finish(false, renaming.stage ?? 'rename', renaming)
+    await shoot('fileops-name-refused')
+    const renamed = await stage(`
+      type(box(), 'renamed.txt')
+      enter(box())
+      if (!(await until(() => !box() && row(p.renamed)))) return fail('the-renamed-row-never-appeared', { problem: problem() })
+      const tab = tabOf(p.renamed)
+      if (!tab || tab.title !== 'renamed.txt' || tabOf(p.notes)) return fail('the-tab-did-not-follow-the-rename', { tabs: tabs().map(t => t.filePath) })
+      if (document.activeElement !== body()) return fail('the-keyboard-did-not-come-back-to-the-tree')
+      return { ok: true, picked: ${JSON.stringify(renaming.picked)}, refused: ${JSON.stringify(renaming.refused)} }`)
+    if (!renamed.ok) return finish(false, renamed.stage ?? 'rename', renamed)
+    if (renamed.picked !== '0-5') return finish(false, 'rename-did-not-select-the-name-without-its-extension', renamed.picked)
+    if (!String(renamed.refused).includes('already exists')) return finish(false, 'a-taken-name-was-not-refused', renamed.refused)
+    if (!(await onDisk(at('notes.txt'), false)) || !(await onDisk(at('renamed.txt'), true))) return finish(false, 'rename-did-not-reach-the-disk')
+    trail.push(`Rename picked the name up to its extension, refused "src" (${renamed.refused}), and the tab followed renamed.txt`)
+
+    // --- New File, New Folder ---------------------------------------------------------------
+    const made = await stage(`
+      await menu(row(p.src), 'new-file')
+      const input = await until(box)
+      if (!input) return fail('no-new-file-box')
+      // The folder has just opened; what is taken in it is known once its listing is in.
+      if (!(await until(() => row(p.a)))) return fail('src-never-listed')
+      type(input, 'a.ts')
+      await settle()
+      const refused = problem()
+      type(input, 'c.ts')
+      enter(input)
+      if (!(await until(() => row(p.c)))) return fail('the-new-file-never-appeared', { problem: problem() })
+      if (!(await until(() => tabOf(p.c)))) return fail('the-new-file-did-not-open')
+      if (selected().join() !== p.c) return fail('the-new-file-is-not-selected', { selected: selected() })
+      // The header's New Folder lands in the folder of the row the keyboard is on.
+      body().focus()
+      document.querySelector('.section-header button[title="New Folder…"]').click()
+      const folderBox = await until(box)
+      if (!folderBox) return fail('no-new-folder-box')
+      type(folderBox, 'lib/deep')
+      enter(folderBox)
+      if (!(await until(() => row(p.libDeep)))) return fail('the-nested-folder-is-not-in-sight', { rows: rows() })
+      // A folder renamed while open stays open under its new name.
+      await menu(row(p.lib), 'rename')
+      const libBox = await until(box)
+      if (!libBox) return fail('no-folder-rename-box')
+      type(libBox, 'library')
+      enter(libBox)
+      if (!(await until(() => row(p.deep)))) return fail('the-renamed-folder-did-not-stay-open', { rows: rows() })
+      return { ok: true, refused }`)
+    if (!made.ok) return finish(false, made.stage ?? 'new', made)
+    if (!String(made.refused).includes('already exists')) return finish(false, 'new-file-took-a-taken-name', made.refused)
+    if (!(await onDisk(at('src', 'c.ts'), true)) || !statSync(at('src', 'library', 'deep')).isDirectory()) return finish(false, 'new-entries-not-on-disk')
+    trail.push('New File refused a.ts and made c.ts, opened; New Folder made lib/deep from the header; lib renamed to library stayed open')
+
+    // --- Copy and Paste, Cut and Paste ------------------------------------------------------
+    const pasted = await stage(`
+      click(row(p.a))
+      cmd('c')
+      cmd('v')
+      if (!(await until(() => row(p.aCopy) && selected().join() === p.aCopy))) return fail('paste-made-no-copy', { rows: rows() })
+      cmd('v')
+      if (!(await until(() => row(p.aCopy2)))) return fail('a-second-paste-made-no-second-copy', { rows: rows() })
+      click(row(p.docs))
+      if (!(await until(() => row(p.readme)))) return fail('docs-did-not-open')
+      click(row(p.readme))
+      await until(() => tabOf(p.readme))
+      cmd('x')
+      await settle()
+      if (!row(p.readme).classList.contains('explorer__row--cut')) return fail('a-cut-row-is-not-faded')
+      return { ok: true }`)
+    if (!pasted.ok) return finish(false, pasted.stage ?? 'paste', pasted)
+    await shoot('fileops-cut')
+    const moved = await stage(`
+      click(row(p.b))
+      cmd('v')
+      if (!(await until(() => row(p.movedReadme) && !row(p.readme)))) return fail('cut-and-paste-moved-nothing', { rows: rows() })
+      if (document.querySelector('.explorer__row--cut')) return fail('the-cut-outlived-its-paste')
+      if (!tabOf(p.movedReadme) || tabOf(p.readme)) return fail('the-tab-did-not-follow-the-move', { tabs: tabs().map(t => t.filePath) })
+      return { ok: true }`)
+    if (!moved.ok) return finish(false, moved.stage ?? 'move', moved)
+    if (!(await onDisk(at('src', 'a copy.ts'), true)) || !(await onDisk(at('src', 'a copy 2.ts'), true))) return finish(false, 'copies-not-on-disk')
+    if (!(await onDisk(at('docs', 'readme.md'), false)) || !(await onDisk(at('src', 'readme.md'), true))) return finish(false, 'move-not-on-disk')
+    trail.push('Copy and Paste made "a copy.ts" then "a copy 2.ts"; Cut faded readme.md and Paste moved it into src, its tab following')
+
+    // --- dragging inside the tree ------------------------------------------------------------
+    const dragged = await stage(`
+      const intoItself = drag(row(p.src), row(p.library))
+      intoItself.cancel()
+      if (intoItself.accepted) return fail('a-folder-would-drop-into-itself')
+      const nowhere = drag(row(p.a), row(p.src))
+      nowhere.cancel()
+      if (nowhere.accepted) return fail('a-move-into-its-own-folder-was-offered')
+      const copyHere = drag(row(p.a), row(p.src), mac ? { altKey: true } : { ctrlKey: true })
+      copyHere.cancel()
+      if (!copyHere.accepted) return fail('a-copy-into-its-own-folder-was-refused')
+      const move = drag(row(p.b), row(p.docs))
+      await settle()
+      if (!move.accepted || !row(p.docs).classList.contains('explorer__row--drop')) return fail('a-drag-onto-a-folder-was-not-offered-or-not-lit', move)
+      window.__fileopsDrag = move
+      return { ok: true }`)
+    if (!dragged.ok) return finish(false, dragged.stage ?? 'drag', dragged)
+    await shoot('fileops-drop')
+    const dropped = await stage(`
+      window.__fileopsDrag.drop()
+      if (!(await until(() => row(p.draggedB) && !row(p.b)))) return fail('the-drop-moved-nothing', { rows: rows() })
+      if (document.querySelector('.explorer__row--drop')) return fail('the-drop-left-the-folder-lit')
+      return { ok: true }`)
+    if (!dropped.ok) return finish(false, dropped.stage ?? 'drop', dropped)
+    if (!(await onDisk(at('docs', 'b.ts'), true)) || !(await onDisk(at('src', 'b.ts'), false))) return finish(false, 'drag-not-on-disk')
+    trail.push('a drag moved b.ts into docs; a folder into itself and a move into its own folder were refused, a copy there offered')
+
+    // --- unsaved changes ----------------------------------------------------------------------
+    answers.push('OK')
+    const unsaved = await stage(`
+      store.setState({ dirtyFiles: { [p.a]: true } })
+      click(row(p.a))
+      rename()
+      const input = await until(box)
+      if (!input) return fail('no-name-box')
+      type(input, 'z.ts')
+      enter(input)
+      const refused = await until(() => problem())
+      key({ key: 'Escape', code: 'Escape' }, box())
+      cmd('x')
+      click(row(p.draggedB))
+      cmd('v')
+      await sleep(600)
+      const stayed = !!row(p.a)
+      key({ key: 'Escape', code: 'Escape' })
+      store.setState({ dirtyFiles: {} })
+      await settle()
+      return { ok: true, refused, stayed, faded: !!document.querySelector('.explorer__row--cut') }`)
+    if (!String(unsaved.refused).includes('unsaved changes')) return finish(false, 'an-unsaved-file-was-renamed', unsaved)
+    if (!unsaved.stayed || !asked.some((q) => q.includes('has unsaved changes'))) return finish(false, 'an-unsaved-file-was-moved', unsaved)
+    if (unsaved.faded) return finish(false, 'escape-did-not-drop-the-cut')
+    if (!existsSync(at('src', 'a.ts'))) return finish(false, 'the-unsaved-file-left-its-folder')
+    trail.push(`an unsaved a.ts was refused a rename (${unsaved.refused}) and a move; Escape let go of the cut`)
+
+    // --- Delete -----------------------------------------------------------------------------------
+    answers.push('Cancel')
+    const kept = await stage(`
+      click(row(p.aCopy2))
+      if (!trash()) return fail('delete-was-not-the-trees')
+      await sleep(400)
+      return row(p.aCopy2) ? { ok: true } : fail('cancel-deleted-it-anyway')`)
+    if (!kept.ok) return finish(false, kept.stage ?? 'cancel', kept)
+    if (!asked.some((q) => q === 'Are you sure you want to delete “a copy 2.ts”?')) return finish(false, 'delete-did-not-ask', asked)
+    if (!existsSync(at('src', 'a copy 2.ts'))) return finish(false, 'cancel-deleted-it-anyway')
+
+    answers.push('Delete')
+    const gone = await stage(`
+      const order = rows()
+      const next = order[order.indexOf(p.aCopy2) + 1]
+      destroy()
+      if (!(await until(() => !row(p.aCopy2)))) return fail('permanent-delete-left-the-row')
+      return (await until(() => focusedRow() === next)) ? { ok: true, next } : fail('the-keyboard-did-not-land-on-the-next-row', { focused: focusedRow(), next })`)
+    if (!gone.ok) return finish(false, gone.stage ?? 'delete', gone)
+    if (!asked.some((q) => q.startsWith('Are you sure you want to permanently delete “a copy 2.ts”'))) return finish(false, 'permanent-delete-did-not-ask', asked)
+    if (!(await onDisk(at('src', 'a copy 2.ts'), false))) return finish(false, 'permanent-delete-not-on-disk')
+
+    answers.push('Delete', 'Delete')
+    const closed = await stage(`
+      row(p.draggedB).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      if (!(await until(() => tabOf(p.draggedB)))) return fail('a-double-click-opened-nothing')
+      click(row(p.draggedB))
+      destroy()
+      if (!(await until(() => !row(p.draggedB) && !tabOf(p.draggedB)))) return fail('the-deleted-files-tab-stayed', { tabs: tabs().map(t => t.filePath) })
+      click(row(p.aCopy))
+      click(row(p.c), mac ? { metaKey: true } : { ctrlKey: true })
+      await settle()
+      if (selected().length !== 2) return fail('cmd-click-did-not-add-to-the-selection', { selected: selected() })
+      destroy()
+      if (!(await until(() => !row(p.aCopy) && !row(p.c)))) return fail('deleting-two-left-one', { rows: rows() })
+      return tabOf(p.c) ? fail('the-tab-of-one-of-the-two-stayed') : { ok: true }`)
+    if (!closed.ok) return finish(false, closed.stage ?? 'delete-open', closed)
+    if (!asked.some((q) => q.includes('these 2 items'))) return finish(false, 'deleting-two-did-not-say-so', asked)
+    if (!(await onDisk(at('docs', 'b.ts'), false)) || !(await onDisk(at('src', 'c.ts'), false))) return finish(false, 'deletions-not-on-disk')
+    trail.push('Delete asked, kept the file on Cancel, deleted it for good on Delete and moved to the next row; a deleted open file lost its tab; two went at once')
+
+    if (process.env.RIGEE_SMOKE_TRASH === '1') {
+      writeFileSync(at('src', 'rigee-smoke-trash.txt'), 'to the Trash\n')
+      answers.push(process.platform === 'win32' ? 'Move to Recycle Bin' : 'Move to Trash')
+      const trashed = await stage(`
+        const path = ${JSON.stringify(at('src', 'rigee-smoke-trash.txt'))}
+        if (!(await until(() => row(path)))) return fail('the-file-for-the-trash-never-appeared')
+        click(row(path))
+        trash()
+        return (await until(() => !row(path))) ? { ok: true } : fail('the-trashed-row-stayed')`)
+      if (!trashed.ok || !(await onDisk(at('src', 'rigee-smoke-trash.txt'), false))) return finish(false, trashed.stage ?? 'trash')
+      trail.push('a file went to the real Trash')
+    }
+
+    // --- Copy Path, Copy Relative Path ------------------------------------------------------------
+    await stage(`await menu(row(p.a), 'copy-path'); await sleep(300); return { ok: true }`)
+    const copiedPath = await clipboard.readText()
+    await stage(`await menu(row(p.a), 'copy-relative-path'); await sleep(300); return { ok: true }`)
+    const copiedRelative = await clipboard.readText()
+    if (copiedPath !== at('src', 'a.ts') || copiedRelative !== join('src', 'a.ts')) {
+      return finish(false, 'copy-path-copied-the-wrong-thing', { copiedPath, copiedRelative })
+    }
+    trail.push(`Copy Path gave ${copiedPath}, Copy Relative Path ${copiedRelative}`)
+
+    // --- the arrows -------------------------------------------------------------------------------
+    const walked = await stage(`
+      click(row(p.a))
+      const order = rows()
+      const i = order.indexOf(p.a)
+      key({ key: 'ArrowDown', code: 'ArrowDown' })
+      await settle()
+      if (focusedRow() !== order[i + 1]) return fail('arrow-down-did-not-move', { focused: focusedRow() })
+      key({ key: 'ArrowUp', code: 'ArrowUp', shiftKey: true })
+      key({ key: 'ArrowUp', code: 'ArrowUp', shiftKey: true })
+      await settle()
+      if (selected().length !== 3 || focusedRow() !== order[i - 1]) return fail('shift-arrows-did-not-extend', { selected: selected(), focused: focusedRow() })
+      return { ok: true, count: order.length }`)
+    if (!walked.ok) return finish(false, walked.stage ?? 'arrows', walked)
+    await shoot('fileops-selection')
+    const everything = await stage(`
+      const order = rows()
+      cmd('a')
+      await settle()
+      if (selected().length !== order.length) return fail('select-all-missed-rows')
+      key({ key: 'Escape', code: 'Escape' })
+      await settle()
+      return selected().length === 1 ? { ok: true } : fail('escape-did-not-narrow-the-selection')`)
+    if (!everything.ok) return finish(false, everything.stage ?? 'select-all', everything)
+    trail.push('the arrows walked the rows, Shift extended the selection, Cmd+A took everything and Escape let go of it')
+
+    // --- from outside -------------------------------------------------------------------------------
+    // The drag, as far as a script can take it: a file from outside lights up the folder under it.
+    const lit = await stage(`
+      const dataTransfer = new DataTransfer()
+      dataTransfer.items.add(new File(['x'], 'from-finder.txt'))
+      const e = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer })
+      row(p.a).dispatchEvent(e)
+      await settle()
+      const lit = row(p.src).classList.contains('explorer__row--drop') && row(p.a).classList.contains('explorer__row--drop')
+      return { ok: e.defaultPrevented && lit, accepted: e.defaultPrevented, lit }`)
+    if (!lit.ok) return finish(false, 'a-file-from-outside-was-not-offered-a-folder', lit)
+    await shoot('fileops-drop-from-outside')
+    await stage(`
+      body().dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }))
+      await settle()
+      return document.querySelector('.explorer__row--drop') ? fail('leaving-left-the-folder-lit') : { ok: true }`)
+    const invoke = async (payload: unknown): Promise<Outcome> =>
+      stage(`return { ok: true, result: await window.rigee.invoke('plugin:invoke', { command: 'explorer:transfer', payload: ${JSON.stringify(payload)} }) }`)
+    await invoke({ sources: [join(outside, 'dropped.txt')], target: at('src'), mode: 'copy', external: true })
+    if (!(await onDisk(at('src', 'dropped.txt'), true))) return finish(false, 'a-file-from-outside-was-not-copied')
+    answers.push('Cancel')
+    const clash = await invoke({ sources: [join(outside, 'dropped.txt')], target: at('src'), mode: 'copy', external: true })
+    if (!asked.some((q) => q === '“dropped.txt” already exists in “src”. Replace it?')) return finish(false, 'a-taken-name-from-outside-was-not-asked-about', asked)
+    if ((clash.result as { done: unknown[] }).done.length !== 0) return finish(false, 'cancel-copied-it-anyway')
+    answers.push('Copy Folder')
+    await invoke({ sources: [join(outside, 'dropped-dir')], target: repo, mode: 'copy', external: true, intoRoot: true })
+    if (!(await onDisk(at('dropped-dir', 'inner.txt'), true))) return finish(false, 'copy-folder-did-not-copy-it')
+    answers.push('Add Folder to Workspace')
+    const joined = await invoke({ sources: [join(outside, 'dropped-dir')], target: repo, mode: 'copy', external: true, intoRoot: true })
+    const add = (joined.result as { addToWorkspace?: string[] }).addToWorkspace
+    if (add?.[0] !== join(outside, 'dropped-dir')) return finish(false, 'add-to-workspace-was-not-the-answer', joined)
+    if (!asked.some((q) => q === 'Add “dropped-dir” to the workspace, or copy it into “repo”?')) return finish(false, 'a-folder-on-a-workspace-folder-was-not-asked-about', asked)
+    trail.push('from outside: a drag lit the folder under it; a file was copied in, a taken name asked about, and a folder on a workspace folder offered Add or Copy')
+
+    return finish(true, 'done')
+  } catch (err) {
+    console.error('[smoke:fileops] threw:', err)
+    return finish(false, 'threw', String(err))
   }
 }
 

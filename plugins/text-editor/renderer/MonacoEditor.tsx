@@ -5,6 +5,7 @@ import {
   monoFamily,
   Notice,
   onRevealInFile,
+  openedInBackground,
   readFile,
   setFileDirty,
   writeFile
@@ -247,6 +248,12 @@ export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): 
    * below is double-invoked by StrictMode, so asking there would hand the second pass nothing.
    */
   const [splitFrom] = useState(() => duplicatedFrom(tabId))
+  /*
+   * Whether this pane has had its chance at the keyboard. Only the pane that has just opened takes
+   * it: the effect below runs again when the file tree renames the file under it, and the keyboard
+   * belongs where the user typed the new name.
+   */
+  const focused = useRef(false)
 
   useEffect(() => {
     let disposed = false
@@ -360,7 +367,12 @@ export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): 
         window.addEventListener('focus', onBack)
         cleanups.push(() => { focusSub.dispose(); window.removeEventListener('focus', onBack) })
 
-        editor.focus()
+        // Unless it was opened in the background: a single click in the file tree keeps the
+        // keyboard there, so the tree's arrows and Delete go on acting on the tree.
+        if (!focused.current) {
+          focused.current = true
+          if (!openedInBackground(tabId)) editor.focus()
+        }
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e))
       }

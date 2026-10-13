@@ -1760,6 +1760,88 @@ textarea:focus {
   background: var(--border);
 }
 
+/* The tree takes the keyboard like a list in VS Code: the panel itself is never outlined, the row
+   the keyboard is on is. Selected rows are quiet while the keyboard is elsewhere and in the accent
+   while it is here, so it is plain which panel Delete would act on. */
+.explorer__body:focus {
+  outline: none;
+}
+
+.explorer__body .explorer__row--selected,
+.explorer__body .explorer__row--selected:hover {
+  background: var(--bg-active);
+  color: var(--fg-bright);
+}
+
+.explorer__body:focus-within .explorer__row--selected,
+.explorer__body:focus-within .explorer__row--selected:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.explorer__body:focus .explorer__row--focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Cut, waiting for a Paste. */
+.explorer__row--cut .row__label,
+.explorer__row--cut .explorer__badge {
+  opacity: 0.5;
+}
+
+/* Inside the folder a drag would drop into: its own row and everything shown inside it. In the
+   gradient's cyan rather than the accent, so it is never taken for the selection it may cover. */
+.explorer__body .explorer__row--drop,
+.explorer__body:focus-within .explorer__row--drop {
+  background: color-mix(in srgb, var(--accent-cyan) 17%, transparent);
+}
+
+/* The name box, standing in a row's place: a file being renamed, or a new one being named. */
+.explorer__editing {
+  padding-right: 6px;
+}
+
+.explorer__input {
+  flex: 1;
+  min-width: 0;
+  height: 21px;
+  padding: 0 5px;
+  font-size: 12.5px;
+  border-radius: 3px;
+}
+
+.explorer__input:focus {
+  box-shadow: none;
+}
+
+.explorer__input--error,
+.explorer__input--error:focus {
+  border-color: var(--git-deleted);
+}
+
+.explorer__input--warning,
+.explorer__input--warning:focus {
+  border-color: var(--git-modified);
+}
+
+/* What is wrong with the name, under the box. */
+.explorer__problem {
+  margin: 0 6px 3px 0;
+  padding: 4px 7px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  border: 1px solid var(--git-deleted);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--git-deleted) 14%, var(--bg-panel));
+  overflow-wrap: anywhere;
+}
+
+.explorer__problem--warning {
+  border-color: var(--git-modified);
+  background: color-mix(in srgb, var(--git-modified) 14%, var(--bg-panel));
+}
+
 /* The workspace menu hangs off the section header rather than the pointer, so it is positioned
    in flow instead of fixed like the pane menu. */
 .menu--inline {

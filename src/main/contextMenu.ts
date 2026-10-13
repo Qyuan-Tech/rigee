@@ -34,7 +34,14 @@ export function popupContextMenu(window: BrowserWindow, items: readonly ContextM
         (item): MenuItemConstructorOptions =>
           item.kind === 'separator'
             ? { type: 'separator' }
-            : { label: item.label, enabled: item.enabled !== false, click: () => settle(item.id) }
+            : {
+                label: item.label,
+                enabled: item.enabled !== false,
+                // Drawn, never registered: whoever asked for the menu answers the key itself, and a
+                // registered accelerator would act on it a second time.
+                ...(item.accelerator ? { accelerator: item.accelerator, registerAccelerator: false } : {}),
+                click: () => settle(item.id)
+              }
       )
     )
     showing.add(menu)

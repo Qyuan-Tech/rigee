@@ -1,8 +1,9 @@
-import { requestReveal } from '../editing'
+import { openInBackground, requestReveal } from '../editing'
 import type { PluginId, ViewType } from '@rigee/plugin-api/manifest'
 import type { CustomTab, EditorTab, TabId, WorkspaceId } from '@shared/types'
 import type { OpenFileRequest, PluginTabRequest } from '@rigee/plugin-api'
 import { allTabs, groupById, groupOfTab } from '../groups'
+import { focusGroupContent } from '../shortcuts'
 import { nextTabId, rowOf, takeDuplicateOrigin, useApp } from '../store'
 import { openTerminalTab, splitTerminalAt } from '../terminals'
 import { addFolders, openAsWorkspace } from '../workspaces'
@@ -242,6 +243,7 @@ export function openFile(request: OpenFileRequest): TabId | null {
   const before = rowOf(store, workspaceId)
   const near = request.nearTabId ? groupOfTab(before, request.nearTabId) : undefined
   const groupId = near?.id ?? before.activeGroupId
+  const showing = groupById(before, groupId)?.activeTabId ?? null
 
   const tab: EditorTab = {
     id: nextTabId(),
@@ -262,6 +264,18 @@ export function openFile(request: OpenFileRequest): TabId | null {
   const after = rowOf(useApp.getState(), workspaceId)
   const opened = groupById(after, groupId)?.activeTabId ?? tab.id
   if (request.selection) requestReveal(opened, request.selection)
+  // The keyboard. A viewer takes it as it mounts, so a background open only has to say so when
+  // something is about to mount; a file already on screen mounts nothing, and is handed it here —
+  // unless a selection is on its way to it, whose reveal gives the editor the keyboard itself.
+  if (request.preserveFocus) {
+    if (opened !== showing) openInBackground(opened)
+  } else {
+    openInBackground(null)
+    if (opened === showing && !request.selection) {
+      const shown = groupById(after, groupId)?.tabs.find((t) => t.id === opened)
+      requestAnimationFrame(() => focusGroupContent(groupId, shown))
+    }
+  }
   return opened
 }
 

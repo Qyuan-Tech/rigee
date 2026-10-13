@@ -35,7 +35,9 @@ running your own shell.
   only for a name, filing it as `<folder>/<name>/<name>.code-workspace`. Right-click a workspace to
   add a folder to it or save it; a folder added to a saved workspace is written into its file too.
   A saved workspace's file tree starts with the folder its file is in — tinted and tagged
-  *Workspace*, above the repos — because that folder is the workspace's own.
+  *Workspace*, above the repos — because that folder is the workspace's own. The tree does to
+  files what VS Code's does: new, rename, cut, copy, paste, delete, drag in from Finder or around
+  the tree — see [the explorer](#the-explorer).
   The list is ordered by [heat](#workspace-heat): the workspaces you have been busiest in come
   first, orange when hot and amber when warm, and the ones you have not touched in a while fade
   out below a *Cold* divider, with a checklist for removing them. Each row also counts the
@@ -113,6 +115,10 @@ an app launched from Finder inherits almost none of it.
 | Finished unseen — a green count on the workspace, a dot on the tab and an outline on the split pane until you click into it; the count takes you there | works |
 | A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
 | Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split beside the terminal on screen | works |
+| Explorer file operations — New File, New Folder, Rename, Cut, Copy, Paste, Delete to the Trash, Copy Path, Copy Relative Path, Reveal in Finder, from the right-click menu or VS Code's keys | works |
+| Explorer selection — click, Cmd/Ctrl-click and Shift-click, the arrows with Shift, Cmd/Ctrl+A | works |
+| Drag files in from Finder or Explorer to copy them; drag inside the tree to move, holding Option (Ctrl elsewhere) to copy | works |
+| Tabs follow a file renamed or moved in the explorer, and close when it is deleted there | works |
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
@@ -240,6 +246,41 @@ one key. It is set, or turned off, in the same place.
 
 Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
 collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.
+
+## The explorer
+
+The tree works on files the way VS Code's does. Right-click a file or a folder for *New File…*,
+*New Folder…*, *Reveal in Finder*, *Cut*, *Copy*, *Paste*, *Copy Path*, *Copy Relative Path*,
+*Rename…* and *Delete* — the menu shows each one's key — or use the keys with the tree focused:
+
+| | macOS | Windows / Linux |
+|---|---|---|
+| Cut / copy / paste | `Cmd`+`X` / `Cmd`+`C` / `Cmd`+`V` | `Ctrl`+`X` / `Ctrl`+`C` / `Ctrl`+`V` |
+| Delete, to the Trash | `Cmd`+`Backspace`, or `Backspace` alone | `Delete` |
+| Delete for good | `Option`+`Cmd`+`Backspace` | `Shift`+`Delete` |
+| Rename | `Enter` or `F2` | `F2` |
+| Open, keeping the keyboard in the tree | `Space`, or a click | `Space`, or a click |
+| Open and start typing | `Cmd`+`Down`, or a double-click | `Enter`, or a double-click |
+| Copy Path / Copy Relative Path | `Option`+`Cmd`+`C` / `Shift`+`Option`+`Cmd`+`C` | `Shift`+`Alt`+`C` / `Ctrl`+`Shift`+`Alt`+`C` |
+| Reveal in Finder / File Explorer | `Option`+`Cmd`+`R` | `Shift`+`Alt`+`R` |
+| Select several | `Cmd`-click, `Shift`-click, `Shift`+arrows, `Cmd`+`A` | `Ctrl`-click, `Shift`-click, `Shift`+arrows, `Ctrl`+`A` |
+
+Every delete asks first. Rename and New File put a box in the tree, which says as you type when a
+name is taken; a name like `src/lib/new.ts` makes the folders on the way. Pasting into the folder a
+file came from duplicates it — `a.ts` becomes `a copy.ts`, then `a copy 2.ts`. With several rows
+selected, the menu and the keys act on all of them. The workspace's own folders cannot be cut,
+renamed or deleted from the tree: that is a change to the workspace, not to a file.
+
+Drag files in from Finder or Explorer to copy them into the folder under the pointer, which lights
+up with everything shown inside it; a name already there is asked about. Drag rows around the tree
+to move them, holding `Option` (`Ctrl` elsewhere) to copy instead. A folder dropped on one of the
+workspace's own folders asks whether it should join the workspace or be copied in, and one dropped
+in the empty space below the tree joins the workspace, as before.
+
+A single click opens a file and leaves the keyboard in the tree, so the arrows and Delete keep
+acting on the tree; double-click to start typing in the file. A file renamed or moved in the tree
+takes its tabs with it, and one deleted there closes them. A file with unsaved changes is not
+renamed or moved until they are saved or undone, and deleting one says that they will be lost.
 
 ## Workspace heat
 

@@ -25,7 +25,15 @@ import { Notice } from '../components/Notice'
 import { editorFontSize, monoFamily } from '../fonts'
 import * as icons from '../icons'
 import { isMac, rpc } from '../ipc'
-import { onRevealInFile, onViewRevealed, setFileDirty } from '../editing'
+import {
+  filesDeleted,
+  filesMoved,
+  onRevealInFile,
+  onViewRevealed,
+  openedInBackground,
+  setFileDirty,
+  unsavedFiles
+} from '../editing'
 import { popupMenu } from '../contextMenu'
 import { setFileDecorations, useFileDecoration } from '../decorations'
 import { useActiveWorkspace } from '../store'
@@ -48,6 +56,7 @@ const iconSet: ShellHost['icons'] = {
   Globe: icons.GlobeIcon,
   Folder: icons.FolderIcon,
   AddFolder: icons.AddFolderIcon,
+  NewFile: icons.NewFileIcon,
   Plugin: icons.PluginIcon,
   Plus: icons.PlusIcon,
   Close: icons.CloseIcon,
@@ -105,6 +114,11 @@ const host: ShellHost = {
   setFileDirty,
   onRevealInFile,
   onViewRevealed,
+  openedInBackground,
+
+  filesMoved,
+  filesDeleted,
+  unsavedFiles,
 
   setFileDecorations,
   useFileDecoration,

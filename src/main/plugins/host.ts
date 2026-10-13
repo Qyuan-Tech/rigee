@@ -2,7 +2,7 @@ import { Context, type Fiber, type FiberState, type Plugin } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
 import type { PluginEventEnvelope, PluginId } from '@rigee/plugin-api/manifest'
 import { CommandService } from './commands'
-import { ShellService } from './shell'
+import { ShellService, type AskOptions } from './shell'
 
 /**
  * The main-process plugin host.
@@ -39,6 +39,7 @@ export interface PluginHostDeps {
   window: () => BrowserWindow | null
   webContents: () => WebContents | null
   send: (payload: PluginEventEnvelope) => void
+  ask: (options: AskOptions) => Promise<number>
 }
 
 /** Plugins that will take keyboard focus if the shell offers it. See ShellService.claimFocus. */

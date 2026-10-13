@@ -67,7 +67,7 @@ export interface InstalledPluginInfo {
  * menu, which gets back the `id` of the row picked.
  */
 export type ContextMenuItem =
-  | { kind: 'item'; id: string; label: string; enabled?: boolean }
+  | { kind: 'item'; id: string; label: string; enabled?: boolean; accelerator?: string }
   | { kind: 'separator' }
 
 /** renderer -> main -> renderer. Every one of these is awaited. */

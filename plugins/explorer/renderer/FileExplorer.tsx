@@ -1,11 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   addWorkspaceFolders,
   icons,
+  isMac,
   listDir,
-  openFile,
-  openTerminal,
-  popupMenu,
   setPluginState,
   useActiveWorkspace,
   useFileDecoration,
@@ -14,33 +12,51 @@ import {
 } from '@rigee/plugin-api'
 import type { FileDecoration, FileStat, Workspace } from '@rigee/plugin-api'
 import { invalidateAll, listings, useListingGeneration, watchFolders } from './listings'
+import {
+  canDrop,
+  clickRow,
+  create,
+  doubleClickRow,
+  dropEntries,
+  dropFromOutside,
+  folderOf,
+  nameIssue,
+  nameOf,
+  parentOf,
+  PLUGIN_ID,
+  problemIn,
+  readExpanded,
+  rename,
+  run,
+  showMenu,
+  startNew,
+  treeKey,
+  type NameIssue,
+  type Root,
+  type Row,
+  type Tree
+} from './operations'
+import {
+  CUT,
+  DROP,
+  dragged,
+  enterWorkspace,
+  FOCUSED,
+  NEW_FILE,
+  NEW_FOLDER,
+  RENAMING,
+  select,
+  selection,
+  SELECTED,
+  setDragging,
+  setDropTarget,
+  setEditing,
+  takeReveal,
+  useRowFlags
+} from './treeState'
 
-/** This plugin's id, which is also the key its per-workspace state is filed under. */
-const PLUGIN_ID = 'explorer'
-
-/**
- * Which directories are open, for one workspace.
- *
- * Kept in the shell's per-plugin state rather than in component state because it has to outlive
- * the components: switching workspaces unmounts the whole tree, so local state went with it and
- * coming back re-expanded everything from defaults instead of showing it as you left it.
- *
- * UNDEFINED IS A REAL ANSWER and the code below depends on it: it means this workspace has never
- * been opened with the explorer, which is what triggers the one-time seeding of the root folders.
- * An empty array means the user collapsed everything and must be left alone.
- */
-function readExpanded(state: Record<string, unknown> | undefined): string[] | undefined {
-  const dirs = state?.expandedDirs
-  return Array.isArray(dirs) ? (dirs as string[]) : undefined
-}
-
-/** A folder at the top level of the tree. */
-interface Root {
-  path: string
-  name: string
-  /** The workspace's own folder, which heads the tree and is drawn so it cannot be missed. */
-  own: boolean
-}
+/** What the tree puts on a drag of its own rows, so a drop can tell them from files from outside. */
+const DRAG_TYPE = 'application/x-rigee-explorer'
 
 /**
  * The tree's top-level folders: the workspace's own folder first, once it has been saved to a
@@ -56,12 +72,21 @@ function rootsOf(workspace: Workspace | null): Root[] {
   const dir = workspaceDir(workspace)
   const listed = workspace.folders.map((f) => ({ path: f.path, name: f.name, own: f.path === dir }))
   if (!dir) return listed
-  const own = listed.find((r) => r.own) ?? { path: dir, name: basename(dir), own: true }
+  const own = listed.find((r) => r.own) ?? { path: dir, name: nameOf(dir), own: true }
   return [own, ...listed.filter((r) => !r.own)]
 }
 
-/** Empty segments dropped, so a folder at the root is called by its path rather than nothing. */
-const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
+/** The row an event happened on, read back from the attributes every row carries. */
+function rowAt(target: EventTarget | null): Row | null {
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-path]') : null
+  return el ? { path: el.dataset.path!, dir: 'dir' in el.dataset, root: 'root' in el.dataset } : null
+}
+
+/** The copy modifier for a drag inside the tree: Option on a Mac, Ctrl elsewhere — VS Code's. */
+const copying = (e: React.DragEvent): boolean => (isMac() ? e.altKey : e.ctrlKey)
+
+/** Indentation, the same for a row and for the name box standing in for one. */
+const indent = (depth: number): number => 8 + depth * 12
 
 export function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
@@ -69,12 +94,30 @@ export function FileExplorer(): React.ReactElement {
   const workspaceId = workspace?.id ?? null
   const expanded = readExpanded(usePluginState(PLUGIN_ID, workspaceId))
   const roots = useMemo(() => rootsOf(workspace), [workspace])
+  const body = useRef<HTMLDivElement>(null)
 
   const setExpandedDirs = useCallback((id: string, paths: string[]) => {
     setPluginState(PLUGIN_ID, id, { expandedDirs: [...new Set(paths)] })
   }, [])
 
   const open = useMemo(() => new Set(expanded ?? []), [expanded])
+
+  /*
+   * What every operation is handed: the tree as it is when the key or the click happens. A ref the
+   * rows share rather than a prop that changes, so that opening a folder re-renders the folders,
+   * as it always has, and not every file row besides.
+   */
+  const tree = useRef<Tree>({
+    workspaceId,
+    roots,
+    rows: () => [...(body.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])].map((el) => rowAt(el)!),
+    refocus: () => body.current?.focus()
+  })
+  useLayoutEffect(() => {
+    tree.current = { ...tree.current, workspaceId, roots }
+  }, [workspaceId, roots])
+
+  useEffect(() => { enterWorkspace(workspaceId) }, [workspaceId])
 
   /*
    * A workspace with no record yet starts with its root folders open, which is what you want on
@@ -121,34 +164,111 @@ export function FileExplorer(): React.ReactElement {
     setExpandedDirs(workspaceId, out)
   }, [anyOpen, roots, workspaceId, setExpandedDirs])
 
-  /**
-   * Dropping folders here collects them, which is the input side of "Save Workspace As".
-   *
-   * Dropped onto Scratch — which has no folders by definition and is never persisted — the first
-   * folder becomes a workspace instead, and the rest join it.
-   */
-  const onDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault()
-    setDropping(false)
+  /** The header's New File and New Folder: in the folder of the row the keyboard is on, else the first. */
+  const newEntry = (folder: boolean): void => {
+    const { focused } = selection()
+    const row = focused ? tree.current.rows().find((r) => r.path === focused) : undefined
+    const dir = row ? folderOf(row) : roots[0]?.path
+    if (dir) startNew(tree.current, dir, folder)
+  }
 
-    const paths = [...e.dataTransfer.files]
-      .map((f) => window.rigee.pathForFile(f))
-      .filter(Boolean)
-    // The rules for what a dropped folder DOES — join this workspace, or become one because you
-    // are on Scratch — belong to the workspace model, which is the shell's. The tree only knows
-    // that something was dropped on it.
-    if (paths.length > 0) await addWorkspaceFolders(paths)
-  }, [])
+  /*
+   * Dragging. Over a row, a drag drops into that row's folder — the folder itself, or the one a file
+   * is in — and lights up everything shown inside it, as VS Code does. Rows from this tree move, or
+   * copy with Option (Ctrl elsewhere) held; files from another application are copied in.
+   *
+   * Over the empty space below the rows, folders from outside join the workspace, which is how a
+   * multi-root workspace has always been put together here. Dropped onto Scratch — which has no
+   * folders by definition and is never persisted — the first folder becomes a workspace instead, and
+   * the rest join it. The rules for what a dropped folder DOES belong to the workspace model, which
+   * is the shell's; the tree only knows that something was dropped on it.
+   */
+  const onDragStart = (e: React.DragEvent): void => {
+    const row = rowAt(e.target)
+    if (!row || row.root) return
+    // The whole selection when the row is part of it; otherwise just the row, now selected alone.
+    const { selected } = selection()
+    const paths = selected.has(row.path) ? [...selected].filter((p) => !roots.some((r) => r.path === p)) : [row.path]
+    if (!selected.has(row.path)) select([row.path], row.path)
+    setDragging(paths)
+    e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(paths))
+    e.dataTransfer.effectAllowed = 'copyMove'
+  }
+
+  const endDrag = (): void => {
+    setDragging(null)
+    setDropTarget(null)
+    setDropping(false)
+  }
+
+  const onDragOver = (e: React.DragEvent): void => {
+    const ours = e.dataTransfer.types.includes(DRAG_TYPE)
+    if (!ours && !e.dataTransfer.types.includes('Files')) return
+    const row = rowAt(e.target)
+    if (!row) {
+      setDropTarget(null)
+      // Rows from the tree have nowhere to go in the empty space: no drop.
+      if (ours) return
+      e.preventDefault()
+      setDropping(true)
+      return
+    }
+    setDropping(false)
+    const into = folderOf(row)
+    if (ours) {
+      const copy = copying(e)
+      if (!canDrop(dragged() ?? [], into, copy)) {
+        setDropTarget(null)
+        return
+      }
+      e.dataTransfer.dropEffect = copy ? 'copy' : 'move'
+    } else {
+      e.dataTransfer.dropEffect = 'copy'
+    }
+    e.preventDefault()
+    setDropTarget(into)
+  }
+
+  const onDragLeave = (e: React.DragEvent): void => {
+    // Leaving one row for the next is a leave too; only leaving the panel ends the highlight.
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setDropTarget(null)
+      setDropping(false)
+    }
+  }
+
+  const onDrop = async (e: React.DragEvent): Promise<void> => {
+    e.preventDefault()
+    const ours = e.dataTransfer.getData(DRAG_TYPE)
+    const copy = copying(e)
+    const row = rowAt(e.target)
+    endDrag()
+    if (ours) {
+      if (row) await dropEntries(tree.current, folderOf(row), JSON.parse(ours) as string[], copy)
+      return
+    }
+    const paths = [...e.dataTransfer.files].map((f) => window.rigee.pathForFile(f)).filter(Boolean)
+    if (row) await dropFromOutside(tree.current, folderOf(row), paths)
+    else if (paths.length > 0) await addWorkspaceFolders(paths)
+  }
 
   return (
     <div
       style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}
-      onDragOver={(e) => { e.preventDefault(); setDropping(true) }}
-      onDragLeave={() => setDropping(false)}
-      onDrop={(e) => void onDrop(e)}
+      onDragStart={onDragStart}
+      onDragEnd={endDrag}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={(e) => run(onDrop(e))}
     >
       <div className="section-header">
         <span className="section-header__title">Explorer</span>
+        <button className="icon-button" title="New File…" disabled={roots.length === 0} onClick={() => newEntry(false)}>
+          <icons.NewFile size={14} />
+        </button>
+        <button className="icon-button" title="New Folder…" disabled={roots.length === 0} onClick={() => newEntry(true)}>
+          <icons.AddFolder size={14} />
+        </button>
         <button
           className="icon-button"
           title="Refresh"
@@ -166,7 +286,20 @@ export function FileExplorer(): React.ReactElement {
           {anyOpen ? <icons.CollapseAll size={14} /> : <icons.ExpandAll size={14} />}
         </button>
       </div>
-      <div className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}>
+      <div
+        ref={body}
+        className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}
+        // The tree takes the keyboard when a row is clicked, so its keys work as they do in VS Code.
+        tabIndex={0}
+        onKeyDown={(e) => {
+          // Only keys pressed on the tree itself: a name box answers its own.
+          if (e.target !== e.currentTarget || !treeKey(tree.current, e)) return
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+        // A click in the empty space below the rows lets go of the selection, as in VS Code.
+        onMouseDown={(e) => { if (!rowAt(e.target) && e.target === e.currentTarget) select([], null) }}
+      >
         {!workspace && <div className="muted">Open a workspace to browse files.</div>}
         {workspace && roots.length === 0 && (
           <div className="muted">
@@ -175,7 +308,7 @@ export function FileExplorer(): React.ReactElement {
         )}
         {roots.map((r) => (
           <Fragment key={r.path}>
-            <DirNode path={r.path} name={r.name} depth={0} open={open} workspaceId={workspaceId} own={r.own} />
+            <DirNode path={r.path} name={r.name} depth={0} open={open} tree={tree} root own={r.own} />
             {/* Below everything the own folder shows, so where the repos start is plain even with it open. */}
             {r.own && roots.length > 1 && <div className="explorer__divider" />}
           </Fragment>
@@ -191,9 +324,29 @@ interface DirNodeProps {
   depth: number
   /** Expanded paths for the active workspace. Held in the store so it survives a switch. */
   open: ReadonlySet<string>
-  workspaceId: string | null
+  tree: { readonly current: Tree }
+  /** One of the workspace's folders, at the top of the tree. */
+  root?: boolean
   /** The workspace's own folder, at the head of the tree. */
   own?: boolean
+}
+
+/** A row's classes: the shared row, and what the tree has picked out on it. */
+function rowClass(flags: number, extra = ''): string {
+  return (
+    `row row--clickable explorer__row${extra}` +
+    (flags & SELECTED ? ' explorer__row--selected' : '') +
+    (flags & FOCUSED ? ' explorer__row--focused' : '') +
+    (flags & CUT ? ' explorer__row--cut' : '') +
+    (flags & DROP ? ' explorer__row--drop' : '')
+  )
+}
+
+/** Scroll the row into view when it was asked to be — once it exists, which may be only now. */
+function useReveal(row: React.RefObject<HTMLDivElement | null>, path: string, flags: number): void {
+  useLayoutEffect(() => {
+    if (flags & FOCUSED && takeReveal(path)) row.current?.scrollIntoView({ block: 'nearest' })
+  }, [flags, path, row])
 }
 
 /**
@@ -201,12 +354,15 @@ interface DirNodeProps {
  * collapsing and re-expanding a large directory costs nothing and neither does leaving the
  * workspace and coming back.
  */
-function DirNode({ path, name, depth, open, workspaceId, own }: DirNodeProps): React.ReactElement {
+function DirNode({ path, name, depth, open, tree, root = false, own = false }: DirNodeProps): React.ReactElement {
   const isOpen = open.has(path)
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
   const decoration = useFileDecoration(path)
   const generation = useListingGeneration(path)
+  const flags = useRowFlags(path)
+  const ref = useRef<HTMLDivElement>(null)
+  useReveal(ref, path, flags)
 
   // Read when opened with nothing cached, and again whenever the cached listing is forgotten — a
   // watcher saw it change, or Refresh was pressed. The old children stay up until the new arrive.
@@ -227,42 +383,68 @@ function DirNode({ path, name, depth, open, workspaceId, own }: DirNodeProps): R
     return () => { cancelled = true }
   }, [isOpen, path, generation])
 
+  const row: Row = { path, dir: true, root }
   return (
     <>
-      <div
-        className={`row row--clickable${own ? ' explorer__own' : ''}`}
-        style={{ paddingLeft: 8 + depth * 12 }}
-        title={own ? `${path}\nThe folder this workspace's .code-workspace file is in, where new terminals start.` : undefined}
-        onClick={() => { if (workspaceId) toggleDir(workspaceId, open, path) }}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          void showDirMenu(path)
-        }}
-      >
-        <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
-          <icons.Chevron size={12} open={isOpen} />
-        </span>
-        {/* The icon the workspace list draws for a workspace, since this folder is the workspace's own. */}
-        {own && (
-          <span className="explorer__own-icon">
-            <icons.Folder size={13} />
+      {flags & RENAMING ? (
+        <NameBox
+          depth={depth}
+          folder
+          initial={name}
+          issue={(value) => nameIssue(value, parentOf(path), path, false)}
+          commit={(value) => rename(tree.current, path, value)}
+          tree={tree}
+        />
+      ) : (
+        <div
+          ref={ref}
+          className={rowClass(flags, own ? ' explorer__own' : '')}
+          style={{ paddingLeft: indent(depth) }}
+          title={own ? `${path}\nThe folder this workspace's .code-workspace file is in, where new terminals start.` : undefined}
+          data-path={path}
+          data-dir=""
+          data-root={root ? '' : undefined}
+          draggable={!root}
+          onClick={(e) => clickRow(tree.current, row, e)}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            run(showMenu(tree.current, row))
+          }}
+        >
+          <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
+            <icons.Chevron size={12} open={isOpen} />
           </span>
-        )}
-        <Label name={name} decoration={decoration} tag={own ? 'Workspace' : undefined} />
-      </div>
+          {/* The icon the workspace list draws for a workspace, since this folder is the workspace's own. */}
+          {own && (
+            <span className="explorer__own-icon">
+              <icons.Folder size={13} />
+            </span>
+          )}
+          <Label name={name} decoration={decoration} tag={own ? 'Workspace' : undefined} />
+        </div>
+      )}
       {/* One line, like every row: wrapped, a long reason ran over the rows around it. */}
       {isOpen && error && (
-        <div className="row" style={{ paddingLeft: 8 + (depth + 1) * 12 }} title={error}>
+        <div className="row" style={{ paddingLeft: indent(depth + 1) }} title={error}>
           <span className="row__label" style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{error}</span>
         </div>
       )}
+      {isOpen && flags & (NEW_FILE | NEW_FOLDER) ? (
+        <NameBox
+          depth={depth + 1}
+          folder={!!(flags & NEW_FOLDER)}
+          initial=""
+          issue={(value) => nameIssue(value, path, null, true)}
+          commit={(value) => create(tree.current, path, value, !!(flags & NEW_FOLDER))}
+          tree={tree}
+        />
+      ) : null}
       {isOpen &&
         children?.map((c) =>
           c.isDir ? (
-            <DirNode key={c.path} path={c.path} name={c.name} depth={depth + 1}
-              open={open} workspaceId={workspaceId} />
+            <DirNode key={c.path} path={c.path} name={c.name} depth={depth + 1} open={open} tree={tree} />
           ) : (
-            <FileNode key={c.path} stat={c} depth={depth + 1} />
+            <FileNode key={c.path} stat={c} depth={depth + 1} tree={tree} />
           )
         )}
     </>
@@ -279,24 +461,148 @@ function listingProblem(e: Error): string {
   return reason.startsWith('ENOENT') ? 'This folder is no longer there.' : reason
 }
 
-function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.ReactElement {
+function FileNode({ stat, depth, tree }: { stat: FileStat; depth: number; tree: { readonly current: Tree } }): React.ReactElement {
   const decoration = useFileDecoration(stat.path)
+  const flags = useRowFlags(stat.path)
+  const ref = useRef<HTMLDivElement>(null)
+  useReveal(ref, stat.path, flags)
+  const row: Row = { path: stat.path, dir: false, root: false }
+
+  if (flags & RENAMING) {
+    return (
+      <NameBox
+        depth={depth}
+        folder={false}
+        initial={stat.name}
+        issue={(value) => nameIssue(value, parentOf(stat.path), stat.path, false)}
+        commit={(value) => rename(tree.current, stat.path, value)}
+        tree={tree}
+      />
+    )
+  }
   return (
     <div
-      className="row row--clickable"
-      style={{ paddingLeft: 8 + depth * 12 }}
+      ref={ref}
+      className={rowClass(flags)}
+      style={{ paddingLeft: indent(depth) }}
       title={stat.path}
+      data-path={stat.path}
+      draggable
       // The shell picks the viewer, from the manifests alone — an array scan over a handful of
       // declarations, with no plugin loaded. A file tree has no business knowing that editors
       // have priorities, and this one used to: it read the registry, minted a tab id and called
       // the store, which is three shell internals in a click handler.
-      onClick={() => { openFile({ path: stat.path, title: stat.name }) }}
+      onClick={(e) => clickRow(tree.current, row, e)}
+      onDoubleClick={() => doubleClickRow(row)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        run(showMenu(tree.current, row))
+      }}
     >
       <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
         <icons.File size={12} />
       </span>
       <Label name={stat.name} decoration={decoration} />
     </div>
+  )
+}
+
+/**
+ * The name box: a row's name being edited in place, or a new entry's being typed at the top of its
+ * folder — VS Code's inline input.
+ *
+ * Enter makes it so and Escape leaves everything as it was. Clicking away makes it so too, when the
+ * name is good, and drops it when not; switching to another application does neither, and the box
+ * is still there on the way back. What is wrong with the name is said under the box as it is
+ * typed, and a refusal from the disk is said in the same place, with the box left open to fix it.
+ */
+function NameBox({ depth, folder, initial, issue, commit, tree }: {
+  depth: number
+  folder: boolean
+  initial: string
+  issue: (value: string) => NameIssue | null
+  commit: (value: string) => Promise<void>
+  tree: { readonly current: Tree }
+}): React.ReactElement {
+  const input = useRef<HTMLInputElement>(null)
+  const [value, setValue] = useState(initial)
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const busy = useRef(false)
+  // Nothing to say until something has been typed: an empty box that has just opened is not a mistake.
+  const problem = value === initial ? null : issue(value)
+
+  useLayoutEffect(() => {
+    const el = input.current
+    if (!el) return
+    el.focus()
+    // A file's name is selected up to its extension, as in Finder and VS Code: a rename usually keeps the type.
+    const dot = folder ? -1 : initial.lastIndexOf('.')
+    el.setSelectionRange(0, dot > 0 ? dot : initial.length)
+  }, [folder, initial])
+
+  const close = (): void => {
+    setEditing(null)
+    tree.current.refocus()
+  }
+
+  const finish = async (): Promise<void> => {
+    if (busy.current || problem?.blocking) return
+    if (value === initial) { close(); return }
+    busy.current = true
+    try {
+      await commit(value)
+      tree.current.refocus()
+    } catch (e) {
+      busy.current = false
+      setRefusal(problemIn(e))
+      input.current?.focus()
+    }
+  }
+
+  const message = refusal ?? problem?.message
+  return (
+    <>
+      <div className="row explorer__editing" style={{ paddingLeft: indent(depth) }}>
+        <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
+          {folder ? <icons.Folder size={12} /> : <icons.File size={12} />}
+        </span>
+        <input
+          ref={input}
+          className={`explorer__input${message ? (refusal || problem?.blocking ? ' explorer__input--error' : ' explorer__input--warning') : ''}`}
+          value={value}
+          spellCheck={false}
+          aria-label={initial ? `Rename ${initial}` : folder ? 'New folder name' : 'New file name'}
+          onChange={(e) => {
+            setValue(e.target.value)
+            setRefusal(null)
+          }}
+          onKeyDown={(e) => {
+            // A Chinese or Japanese name is still being composed: Enter there commits the characters.
+            if (e.nativeEvent.isComposing) return
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              run(finish())
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              close()
+            }
+          }}
+          onBlur={() => {
+            if (busy.current || !document.hasFocus()) return
+            if (value.trim() === '' || problem?.blocking) setEditing(null)
+            else run(finish())
+          }}
+        />
+      </div>
+      {message && (
+        <div
+          className={`explorer__problem${refusal || problem?.blocking ? '' : ' explorer__problem--warning'}`}
+          style={{ marginLeft: indent(depth) + 19 }}
+        >
+          {message}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -320,31 +626,4 @@ function Label({ name, decoration, tag }: {
       )}
     </>
   )
-}
-
-/**
- * A folder's menu, on right-click — a repo at the top of the tree or anything inside it. Both items
- * start a shell in that folder, whatever the workspace's terminals usually start in: picking the
- * folder is the whole point. A tab of its own, or a pane beside the terminal on screen.
- */
-async function showDirMenu(path: string): Promise<void> {
-  const choice = await popupMenu([
-    { kind: 'item', id: 'terminal-tab', label: 'Open in Terminal Tab' },
-    { kind: 'item', id: 'terminal-split', label: 'Open in Terminal Split' }
-  ])
-  if (choice === 'terminal-tab') openTerminal({ cwd: path, where: 'tab' })
-  else if (choice === 'terminal-split') openTerminal({ cwd: path, where: 'split' })
-}
-
-/**
- * Flip one directory open or shut.
- *
- * Takes the current set rather than reading it back, because the caller already has it from its
- * own render and a second read could see a different one — the store is shared, and a workspace
- * switch between the two would move the toggle to the wrong project.
- */
-function toggleDir(workspaceId: string, open: ReadonlySet<string>, path: string): void {
-  const next = new Set(open)
-  if (!next.delete(path)) next.add(path)
-  setPluginState(PLUGIN_ID, workspaceId, { expandedDirs: [...next] })
 }
