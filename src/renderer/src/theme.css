@@ -64,6 +64,16 @@
   --kind-file: #6cb6ff;
   --kind-web: #f0a45d;
 
+  /*
+   * --- workspace heat: one hue stepped in lightness, so the order reads without a legend ---
+   *
+   * Warm and hot only; a cool workspace keeps the faint grey every icon had, so the colour picks
+   * out the ones in use rather than tinting the whole list. Both clear 3:1 on the panel and 2:1 on
+   * the selected row, measured.
+   */
+  --heat-warm: #c98a52;
+  --heat-hot: #f5a55c;
+
   /* --- metrics --- */
   --titlebar-h: 40px;
   --tabstrip-h: 38px;
@@ -653,6 +663,100 @@ textarea:focus {
 
 .row:hover .row__meta--hide-on-hover {
   display: none;
+}
+
+/* A workspace's heat, on its icon (see heat.ts). */
+.heat__icon {
+  display: grid;
+  place-items: center;
+  color: var(--fg-faint);
+}
+
+.heat--warm .heat__icon {
+  color: var(--heat-warm);
+}
+
+.heat--hot .heat__icon {
+  color: var(--heat-hot);
+}
+
+/* Hot is also a filled folder and a brighter name: at 13px the two steps of one hue are a close
+   call, and a shape and a weight of ink are not. Folders only — a terminal glyph has no inside. */
+.heat--hot .heat__icon--folder svg {
+  fill: color-mix(in srgb, var(--heat-hot) 38%, transparent);
+}
+
+.heat--hot .row__label {
+  color: var(--fg-bright);
+}
+
+/* Cold rows fade, which with the divider above them means cold is never told by colour alone.
+   Faded rather than hidden: still there to switch to, plainly not where the work is. */
+.heat--cold .heat__icon {
+  opacity: 0.55;
+}
+
+.heat--cold:not(.row--selected) .row__label {
+  color: var(--fg-faint);
+}
+
+.heat--cold:not(.row--selected):hover .row__label {
+  color: var(--fg);
+}
+
+/* "2 cold" in the header: the cold run is at the bottom of a list that scrolls, and this is not. */
+.heat-hint {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-faint);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.heat-hint:hover {
+  background: var(--bg-hover);
+  color: var(--fg-bright);
+}
+
+/* "Cold · 3", between the workspaces in use and the ones that have not been. */
+.heat-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  margin-top: 2px;
+  padding: 0 6px 0 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.heat-divider__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.heat-divider__review {
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-muted);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.heat-divider__review:hover {
+  background: var(--bg-hover);
+  color: var(--fg-bright);
 }
 
 .muted {
@@ -1610,6 +1714,48 @@ textarea:focus {
   background: var(--accent-dim);
 }
 
+/* The workspace's own folder — the one its .code-workspace file is in, where new terminals start —
+   heads the tree. Tinted, bold and tagged, so it is told from the repos below it at a glance. */
+.explorer__own {
+  margin-top: 2px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg-bright);
+}
+
+.explorer__own.row--clickable:hover {
+  background: color-mix(in srgb, var(--accent) 19%, transparent);
+}
+
+.explorer__own .row__label {
+  font-weight: 600;
+}
+
+.explorer__own-icon {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.explorer__tag {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.explorer__divider {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--border);
+}
+
 /* The workspace menu hangs off the section header rather than the pointer, so it is positioned
    in flow instead of fixed like the pane menu. */
 .menu--inline {
@@ -1718,3 +1864,77 @@ textarea:focus {
   border-top: 1px solid var(--border);
 }
 
+/* The checklist of cold workspaces, where the + menu opens. */
+.heat-review {
+  padding: 10px;
+}
+
+.heat-review__title {
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.heat-review__note {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.heat-review__list {
+  max-height: 168px;
+  margin: 0 -4px;
+  overflow-y: auto;
+}
+
+.heat-review__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.heat-review__item:hover {
+  background: var(--bg-hover);
+}
+
+/* The base input rule is for text boxes; a checkbox keeps its native shape, in the accent. */
+.heat-review__item input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.heat-review__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heat-review__when {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.heat-review__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}

@@ -29,6 +29,7 @@ import { onRevealInFile, onViewRevealed, setFileDirty } from '../editing'
 import { popupMenu } from '../contextMenu'
 import { setFileDecorations, useFileDecoration } from '../decorations'
 import { useActiveWorkspace } from '../store'
+import { workspaceDir } from '../workspaces'
 import * as api from './api'
 
 /**
@@ -78,6 +79,7 @@ const host: ShellHost = {
 
   activeWorkspaceId: api.activeWorkspaceId,
   useActiveWorkspace,
+  workspaceDir,
   addWorkspaceFolders: api.addWorkspaceFolders,
   openTerminal: api.openTerminal,
 

@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { rpc } from '../ipc'
 import { CloseIcon, CollapseLeftIcon, FolderIcon, PlusIcon, TerminalIcon } from '../icons'
 import { popupMenu } from '../contextMenu'
@@ -12,8 +12,37 @@ import {
   reason,
   saveWorkspaceFile
 } from '../workspaces'
+import {
+  COLD_AFTER,
+  activityClock,
+  compareWarmth,
+  heatOf,
+  holdRanking,
+  lastActiveAt,
+  localDay,
+  longAgo,
+  shortAgo,
+  temperatureOf,
+  type Ranking,
+  type Temperature,
+  type Warmth
+} from '../heat'
 import { SaveAsForm } from './LazySaveWorkspace'
-import { SCRATCH_WORKSPACE_ID, type Workspace, type WorkspaceId } from '@shared/types'
+import {
+  SCRATCH_WORKSPACE_ID,
+  type Workspace,
+  type WorkspaceActivity,
+  type WorkspaceId
+} from '@shared/types'
+
+/**
+ * The checklist of cold workspaces, fetched the first time it opens — and once startup is over, so
+ * that it opens at once. Nothing of it is on screen at startup, and `pnpm perf:check` holds the
+ * entry chunk to a budget that everything that is has to fit in.
+ */
+const loadColdReview = (): Promise<typeof import('./ColdReview')> => import('./ColdReview')
+const ColdReview = lazy(() => loadColdReview().then((m) => ({ default: m.ColdReview })))
+setTimeout(() => { void loadColdReview() }, 3000)
 
 /**
  * The workspace list, and nothing else.
@@ -23,6 +52,10 @@ import { SCRATCH_WORKSPACE_ID, type Workspace, type WorkspaceId } from '@shared/
  * them, saving one out — which is the shell's, because the workspace model is the shell's. It
  * stays pinned above the activity bar's panel rather than becoming one of the switchable views:
  * which project you are in is context for every view, not a view of its own.
+ *
+ * Ordered and coloured by heat (heat.ts): Scratch first, where it always was, then the workspaces
+ * most in use lately, their icons amber when warm and orange when hot; then, faded and below a
+ * divider, the cold ones — nothing in them for ten days of use — with a way to clear them out.
  */
 export function Sidebar({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
   return <WorkspaceList onCollapse={onCollapse} />
@@ -39,6 +72,8 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const workspaceFilesDir = useApp((s) => s.settings.workspaceFilesDir)
   const error = useApp((s) => s.workspaceError)
   const setError = useApp((s) => s.setWorkspaceError)
+  const activity = useApp((s) => s.activityByWorkspace)
+  const now = useNow(30_000)
   const [menuOpen, setMenuOpen] = useState(false)
   /**
    * Which workspace the name form "Save Workspace As…" shows is for, when there is a workspace
@@ -46,6 +81,13 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
    * itself without being switched to.
    */
   const [naming, setNaming] = useState<WorkspaceId | null>(null)
+  /**
+   * The order the list had when the pointer came over it, kept until the pointer leaves, so that
+   * nothing moves under it. See `holdRanking`.
+   */
+  const [held, setHeld] = useState<Ranking | null>(null)
+  /** Whether the checklist of cold workspaces is showing. */
+  const [reviewing, setReviewing] = useState(false)
 
   useEffect(() => {
     if (!menuOpen) return
@@ -66,6 +108,19 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     window.addEventListener('mousedown', dismiss)
     return () => window.removeEventListener('mousedown', dismiss)
   }, [naming])
+
+  // The checklist goes the same way, and with Escape: nothing in it is typed into.
+  useEffect(() => {
+    if (!reviewing) return
+    const dismiss = (): void => setReviewing(false)
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') dismiss() }
+    window.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [reviewing])
 
   const openFolder = useCallback(async () => {
     const path = await rpc['workspace:pickFolder']()
@@ -146,17 +201,31 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     if (path) await addFolders(workspaceId, [path])
   }, [])
 
-  /** Its tabs go with it, so its unsaved files are asked about first, as closing those tabs would ask. */
+  /**
+   * Its tabs go with it, so its unsaved files are asked about first, as closing those tabs would
+   * ask. True once it has gone.
+   */
   const removeWorkspace = useCallback(
-    (workspaceId: WorkspaceId) => {
+    async (workspaceId: WorkspaceId): Promise<boolean> => {
       const ids = allTabs(rowOf(useApp.getState(), workspaceId)).map((t) => t.id)
-      void closeTabsSafely(workspaceId, ids).then((closed) => {
-        if (!closed) return
-        remove(workspaceId)
-        persistWorkspaces()
-      })
+      if (!(await closeTabsSafely(workspaceId, ids))) return false
+      remove(workspaceId)
+      persistWorkspaces()
+      return true
     },
     [remove]
+  )
+
+  /**
+   * The cold workspaces the checklist was left with, one at a time — each may stop to ask about
+   * its unsaved files, and declining that keeps the one workspace without stopping the rest.
+   */
+  const removeCold = useCallback(
+    async (ids: readonly WorkspaceId[]) => {
+      for (const id of ids) await removeWorkspace(id)
+      setReviewing(false)
+    },
+    [removeWorkspace]
   )
 
   /**
@@ -178,7 +247,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
       ])
       if (choice === 'add-folder') void addFolder(w.id)
       else if (choice === 'save-as') saveWorkspaceAs(w.id)
-      else if (choice === 'remove') removeWorkspace(w.id)
+      else if (choice === 'remove') void removeWorkspace(w.id)
     },
     [addFolder, saveWorkspaceAs, removeWorkspace]
   )
@@ -186,10 +255,49 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const activeWorkspace = workspaces.find((w) => w.id === activeId)
   const namingWorkspace = workspaces.find((w) => w.id === naming)
 
+  const warmth = useMemo(() => {
+    const clock = activityClock(Object.values(activity), localDay(now))
+    return new Map(workspaces.map((w) => [w.id, warmthOf(activity[w.id], clock)]))
+  }, [workspaces, activity, now])
+  const live = useMemo(() => rank(workspaces, warmth), [workspaces, warmth])
+  const ranking = held ? holdRanking(held, live) : live
+  const byId = new Map(workspaces.map((w) => [w.id, w]))
+  const scratch = byId.get(SCRATCH_WORKSPACE_ID)
+  // Counted from the rows themselves: one clicked while the order is held warms up where it is.
+  const stillCold = ranking.cold.filter((id) => warmth.get(id)?.temperature === 'cold').length
+
+  const renderRow = (w: Workspace | undefined): React.ReactNode =>
+    w && (
+      <WorkspaceRow
+        key={w.id}
+        workspace={w}
+        warmth={warmth.get(w.id)!}
+        activity={activity[w.id]}
+        now={now}
+        selected={w.id === activeId}
+        onSelect={() => { setActive(w.id); persistWorkspaces() }}
+        onMenu={() => void showWorkspaceMenu(w)}
+        onRemove={() => void removeWorkspace(w.id)}
+      />
+    )
+
   return (
-    <div style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)', position: 'relative' }}>
+    <div
+      className="workspace-list"
+      style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)', position: 'relative' }}
+    >
       <div className="section-header">
         <span className="section-header__title">Workspaces</span>
+        {live.cold.length > 0 && (
+          <button
+            className="heat-hint"
+            title={`Nothing has happened in ${live.cold.length === 1 ? 'one workspace' : `${live.cold.length} workspaces`} in your last ${COLD_AFTER} days with Rigee. Choose which to remove.`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setReviewing((r) => !r)}
+          >
+            {live.cold.length} cold
+          </button>
+        )}
         <button
           className="icon-button"
           title="Open…"
@@ -230,51 +338,49 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         </Suspense>
       )}
 
+      {reviewing && live.cold.length > 0 && (
+        <Suspense fallback={null}>
+          <ColdReview
+            workspaces={live.cold.map((id) => byId.get(id)!)}
+            activity={activity}
+            now={now}
+            onRemove={removeCold}
+            onCancel={() => setReviewing(false)}
+          />
+        </Suspense>
+      )}
+
       {error && (
         <div className="error-banner" onClick={() => setError(null)} title="Dismiss">
           {error}
         </div>
       )}
 
-      <div style={{ maxHeight: 220, overflowY: 'auto', paddingBottom: 4 }}>
-        {workspaces.map((w) => {
-          const scratch = w.id === SCRATCH_WORKSPACE_ID
-          return (
-            <div
-              key={w.id}
-              className={`row row--clickable${w.id === activeId ? ' row--selected' : ''}`}
-              onClick={() => { setActive(w.id); persistWorkspaces() }}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                void showWorkspaceMenu(w)
-              }}
+      <div
+        style={{ maxHeight: 220, overflowY: 'auto', paddingBottom: 4 }}
+        onMouseEnter={() => setHeld(live)}
+        onMouseLeave={() => setHeld(null)}
+      >
+        {renderRow(scratch)}
+        {ranking.recent.map((id) => renderRow(byId.get(id)))}
+        {stillCold > 0 && (
+          <div
+            className="heat-divider"
+            title={`Nothing has happened in these in your last ${COLD_AFTER} days with Rigee`}
+          >
+            <span>Cold · {stillCold}</span>
+            <span className="heat-divider__rule" />
+            <button
+              className="heat-divider__review"
+              title="Choose which to remove"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setReviewing((r) => !r)}
             >
-              <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center' }}>
-                {scratch ? <TerminalIcon size={13} /> : <FolderIcon size={13} />}
-              </span>
-              <span className="row__label">{w.name}</span>
-              {scratch ? (
-                <span className="row__meta" title="Always available; no folders">—</span>
-              ) : (
-                <>
-                  <span className="row__meta row__meta--hide-on-hover">{w.folders.length}</span>
-                  <span className="row__actions">
-                    <button
-                      className="icon-button"
-                      title="Remove workspace"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeWorkspace(w.id)
-                      }}
-                    >
-                      <CloseIcon size={11} />
-                    </button>
-                  </span>
-                </>
-              )}
-            </div>
-          )
-        })}
+              Review…
+            </button>
+          </div>
+        )}
+        {ranking.cold.map((id) => renderRow(byId.get(id)))}
         {workspaces.length <= 1 && (
           <div className="muted" style={{ paddingTop: 4 }}>
             Scratch is always here for terminals. Press + to add a folder as a workspace.
@@ -328,6 +434,124 @@ function OpenMenu({
       </button>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Heat
+
+/**
+ * One workspace in the list. Its icon carries its heat; on the right, how long since anything
+ * happened in it — the reason for the colour, in a form that needs no legend — which gives way to
+ * the remove button on hover.
+ */
+function WorkspaceRow({
+  workspace: w,
+  warmth,
+  activity,
+  now,
+  selected,
+  onSelect,
+  onMenu,
+  onRemove
+}: {
+  workspace: Workspace
+  warmth: Warmth
+  activity: WorkspaceActivity | undefined
+  now: number
+  selected: boolean
+  onSelect: () => void
+  onMenu: () => void
+  onRemove: () => void
+}): React.ReactElement {
+  const scratch = w.id === SCRATCH_WORKSPACE_ID
+  // Scratch cannot be removed, so it is never offered as cold; quiet is the most it gets.
+  const temperature = scratch && warmth.temperature === 'cold' ? 'cool' : warmth.temperature
+  return (
+    <div
+      className={`row row--clickable heat--${temperature}${selected ? ' row--selected' : ''}`}
+      title={describe(w, temperature, activity, now)}
+      onClick={onSelect}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onMenu()
+      }}
+    >
+      <span className={scratch ? 'heat__icon' : 'heat__icon heat__icon--folder'}>
+        {scratch ? <TerminalIcon size={13} /> : <FolderIcon size={13} />}
+      </span>
+      <span className="row__label">{w.name}</span>
+      <span className={scratch ? 'row__meta' : 'row__meta row__meta--hide-on-hover'}>
+        {warmth.lastActive ? shortAgo(warmth.lastActive, now) : ''}
+      </span>
+      {!scratch && (
+        <span className="row__actions">
+          <button
+            className="icon-button"
+            title="Remove workspace"
+            onClick={(e) => {
+              e.stopPropagation()
+              onRemove()
+            }}
+          >
+            <CloseIcon size={11} />
+          </button>
+        </span>
+      )}
+    </div>
+  )
+}
+
+function warmthOf(activity: WorkspaceActivity | undefined, clock: readonly string[]): Warmth {
+  return {
+    temperature: temperatureOf(activity, clock),
+    heat: heatOf(activity, clock),
+    lastActive: lastActiveAt(activity) ?? 0
+  }
+}
+
+/** Every workspace but Scratch — which stays first, where it always was — hottest first, then the cold. */
+function rank(workspaces: readonly Workspace[], warmth: ReadonlyMap<WorkspaceId, Warmth>): Ranking {
+  const listed = workspaces
+    .filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
+    .map((w) => ({ id: w.id, ...warmth.get(w.id)! }))
+    .sort(compareWarmth)
+  return {
+    recent: listed.filter((w) => w.temperature !== 'cold').map((w) => w.id),
+    cold: listed.filter((w) => w.temperature === 'cold').map((w) => w.id)
+  }
+}
+
+const TEMPERATURE: Record<Temperature, string> = {
+  hot: 'Hot — busy lately',
+  warm: 'Warm — in use lately',
+  cool: 'Cool — quiet lately',
+  cold: `Cold — nothing in your last ${COLD_AFTER} days with Rigee`
+}
+
+/** A row's tooltip: what its colour means for it, and the times behind that. */
+function describe(
+  w: Workspace,
+  temperature: Temperature,
+  activity: WorkspaceActivity | undefined,
+  now: number
+): string {
+  const lines = [w.name, TEMPERATURE[temperature]]
+  if (activity?.usedAt) lines.push(`Last used ${longAgo(activity.usedAt, now)}`)
+  if (activity?.outputAt) lines.push(`Terminal output ${longAgo(activity.outputAt, now)}`)
+  if (!activity?.usedAt && !activity?.outputAt) lines.push('Nothing recorded yet')
+  if (w.id === SCRATCH_WORKSPACE_ID) lines.push('Always available; no folders')
+  else lines.push(w.folders.length === 1 ? '1 folder' : `${w.folders.length} folders`)
+  return lines.join('\n')
+}
+
+/** The time, again every `ms`: so that "3m" becomes "4m", and a new day of use is noticed. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(timer)
+  }, [ms])
+  return now
 }
 
 // ---------------------------------------------------------------------------

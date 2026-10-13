@@ -118,6 +118,12 @@ export interface ShellHost {
   activeWorkspaceId: () => WorkspaceId | null
   /** React hook. Re-renders when the workspace changes. */
   useActiveWorkspace: () => Workspace | null
+  /**
+   * The workspace's own folder — the one its `.code-workspace` file is in, where its terminals
+   * start — or null for a workspace with no file: never saved, a plain folder, Scratch. Not
+   * necessarily one of `folders`, and usually not: those are the repos it groups.
+   */
+  workspaceDir: (workspace: Workspace) => string | null
   addWorkspaceFolders: (paths: string[]) => Promise<void>
 
   // --- terminals ----------------------------------------------------------
@@ -237,6 +243,7 @@ export const editorFontSize = (): number => shell().editorFontSize()
 
 export const activeWorkspaceId = (): WorkspaceId | null => shell().activeWorkspaceId()
 export const useActiveWorkspace = (): Workspace | null => shell().useActiveWorkspace()
+export const workspaceDir = (workspace: Workspace): string | null => shell().workspaceDir(workspace)
 export const addWorkspaceFolders = (paths: string[]): Promise<void> =>
   shell().addWorkspaceFolders(paths)
 

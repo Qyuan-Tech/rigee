@@ -8,6 +8,8 @@ import { Splitter } from './components/Splitter'
 import { isMac, rpc } from './ipc'
 import { useShortcuts } from './shortcuts'
 import { installUnsavedBridge } from './editing'
+import { installActivityTracking } from './activity'
+import { freshActivity, sanitizeActivity } from './heat'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
 import { allTabs } from './groups'
 import { setDisabledPlugins, setDiskPlugins } from './plugins/registry'
@@ -91,6 +93,15 @@ export function App(): React.ReactElement {
             : s.pluginStateByWorkspace
         }))
       }
+      // Every workspace gets a record, starting today if it has none — the workspaces there were
+      // before heat existed, included. Without one a workspace would have nothing to show it has
+      // been around, and the first ten days of use would find every one of them cold.
+      const now = Date.now()
+      useApp.setState((s) => ({
+        activityByWorkspace: Object.fromEntries(
+          s.workspaces.map((w) => [w.id, sanitizeActivity(state.ui[w.id]?.activity) ?? freshActivity(now)])
+        )
+      }))
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
       if (activeUi) store.setLayout(activeUi.layout)
       if (state.keybindings) store.setKeybindings(state.keybindings)
@@ -102,6 +113,7 @@ export function App(): React.ReactElement {
 
   useShortcuts()
   useEffect(installUnsavedBridge, [])
+  useEffect(installActivityTracking, [])
   usePersistence()
   useScratchTerminal()
 
@@ -307,7 +319,8 @@ function usePersistence(): void {
          * second on the very first save — so every workspace migrated from an older document
          * would open fully collapsed, for ever. `pnpm smoke:migrate` caught exactly this.
          */
-        ...(s.pluginStateByWorkspace[ws.id] ? { pluginState: s.pluginStateByWorkspace[ws.id] } : {})
+        ...(s.pluginStateByWorkspace[ws.id] ? { pluginState: s.pluginStateByWorkspace[ws.id] } : {}),
+        ...(s.activityByWorkspace[ws.id] ? { activity: s.activityByWorkspace[ws.id] } : {})
       }
     }
     rpc['state:saveAllUi']({ ui }).catch((e: unknown) => console.error('[persist] saveAllUi failed', e))
@@ -330,7 +343,8 @@ function usePersistence(): void {
           s.layout,
           s.activeWorkspaceId,
           s.workspaces,
-          s.pluginStateByWorkspace
+          s.pluginStateByWorkspace,
+          s.activityByWorkspace
         ] as const,
       schedule
     )

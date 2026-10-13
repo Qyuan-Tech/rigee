@@ -1,6 +1,6 @@
 /**
  * Unit tests for the pure logic on both sides of the process boundary: the terminal split tree,
- * key chords, the tab strip and .code-workspace parsing.
+ * key chords, the tab strip, .code-workspace parsing and workspace heat.
  *
  *   pnpm panes:selftest
  *
@@ -9,7 +9,8 @@
  * one-child split behind, both still render — they just accumulate wrapper nodes and make the
  * size arithmetic drift. A bulk tab close that sweeps up the wrong tabs is worse than invisible:
  * it takes a running process or a page with it. And a workspace name that climbs out of its folder
- * writes a file somewhere nobody asked for.
+ * writes a file somewhere nobody asked for. Heat that ages on the calendar comes back from a holiday
+ * offering to remove every workspace the user has.
  */
 
 import {
@@ -79,7 +80,28 @@ import {
   workspaceNameProblem
 } from '../src/shared/workspaceFiles.ts'
 import { parseByteRange } from '../src/main/byteRange.ts'
-import type { PaneNode, Tab } from '../src/shared/types.ts'
+import {
+  COLD_AFTER,
+  HOT,
+  KEEP_DAYS,
+  OUTPUT_CEILING,
+  WARM,
+  activityClock,
+  ageOf,
+  compareWarmth,
+  freshActivity,
+  heatOf,
+  holdRanking,
+  lastActiveAt,
+  localDay,
+  longAgo,
+  recordMinute,
+  sanitizeActivity,
+  shortAgo,
+  temperatureOf,
+  type Warmth
+} from '../src/renderer/src/heat.ts'
+import type { PaneNode, Tab, WorkspaceActivity } from '../src/shared/types.ts'
 
 let failures = 0
 let checks = 0
@@ -909,6 +931,140 @@ console.log('\neditor groups')
   eq('a group cannot be squeezed away',
     resizeAt(three, 0, -1).sizes[0] > 0.05, true)
   eq('an out-of-range handle is a no-op', resizeAt(three, 5, 0.1), three)
+}
+
+console.log('\nworkspace heat')
+
+{
+  // Local-time dates throughout: a day of use is the user's day, not UTC's.
+  const at = (y: number, m: number, d: number, h = 10, min = 0): number => new Date(y, m - 1, d, h, min).getTime()
+  const T = at(2026, 10, 13)
+  eq('a day is its local date', localDay(at(2026, 1, 5, 23, 59)), '2026-01-05')
+  eq('and sorts as text', localDay(at(2026, 9, 30)) < localDay(at(2026, 10, 1)), true)
+
+  // Recording.
+  eq('a fresh record starts today, empty', JSON.stringify(freshActivity(T)), '{"since":"2026-10-13","days":[]}')
+  const one = recordMinute(undefined, 'used', T)
+  eq('a first minute starts the record, and says when', JSON.stringify(one),
+    `{"since":"2026-10-13","days":[{"day":"2026-10-13","used":1,"output":0}],"usedAt":${T}}`)
+  const two = recordMinute(recordMinute(one, 'used', T + 60_000), 'output', T + 90_000)
+  eq('minutes on the same day add up', two.days[0].used, 2)
+  eq('output is counted apart', two.days[0].output, 1)
+  eq('and dated apart', two.outputAt, T + 90_000)
+  eq('without moving the time of use', two.usedAt, T + 60_000)
+  const next = recordMinute(two, 'used', at(2026, 10, 14))
+  eq('a new day goes first', next.days.map((d) => d.day).join(','), '2026-10-14,2026-10-13')
+  eq('the day before is left alone', next.days[1].used, 2)
+  const back = recordMinute(next, 'used', at(2026, 10, 12))
+  eq('a clock put back still files the day in order',
+    back.days.map((d) => d.day).join(','), '2026-10-14,2026-10-13,2026-10-12')
+  let long: WorkspaceActivity | undefined
+  for (let i = 0; i < KEEP_DAYS + 5; i++) long = recordMinute(long, 'used', at(2026, 1, 1) + i * 86_400_000)
+  eq('a few weeks are kept, the newest', long!.days.length, KEEP_DAYS)
+  eq('…dropping from the old end', long!.days[0].day > long!.days[KEEP_DAYS - 1].day, true)
+
+  // The clock counts days of use.
+  const rec = (days: Array<[string, number, number?]>, since = days[days.length - 1]?.[0] ?? '2026-10-13'): WorkspaceActivity => ({
+    since,
+    days: days.map(([day, used, output = 0]) => ({ day, used, output }))
+  })
+  eq('today is always a day of use', activityClock([], '2026-10-13').join(','), '2026-10-13')
+  eq('every workspace\'s days of use make the clock, newest first, once each',
+    activityClock([rec([['2026-10-10', 3]]), rec([['2026-10-11', 1], ['2026-10-10', 9]])], '2026-10-13').join(','),
+    '2026-10-13,2026-10-11,2026-10-10')
+  eq('a day a terminal printed on its own is not one',
+    activityClock([rec([['2026-10-12', 0, 400], ['2026-10-01', 5]])], '2026-10-13').join(','), '2026-10-13,2026-10-01')
+  eq('nor is a day from a clock that ran ahead', activityClock([rec([['2026-11-01', 5]])], '2026-10-13').join(','), '2026-10-13')
+  const clock = ['2026-10-13', '2026-10-09', '2026-10-02']
+  eq('today is age 0', ageOf('2026-10-13', clock), 0)
+  eq('a day between days of use is as old as those after it', ageOf('2026-10-05', clock), 2)
+
+  // Heat.
+  eq('a minute today is worth a minute', heatOf(rec([['2026-10-13', 60]]), ['2026-10-13']), 60)
+  eq('a day of use ago, three quarters', heatOf(rec([['2026-10-12', 60]]), ['2026-10-13', '2026-10-12']), 45)
+  eq('a fortnight away costs a single day', heatOf(rec([['2026-09-28', 60]]), ['2026-10-13', '2026-09-28']), 45)
+  eq('a terminal printing all day on its own stops short of hot',
+    heatOf(rec([['2026-10-13', 0, 480]]), ['2026-10-13']), OUTPUT_CEILING)
+  check('…which is warm', temperatureOf(rec([['2026-10-13', 0, 480]]), ['2026-10-13']) === 'warm')
+  eq('output adds to use, a tenth as much', heatOf(rec([['2026-10-13', 30, 100]]), ['2026-10-13']), 40)
+  eq('no record has no heat', heatOf(undefined, ['2026-10-13']), 0)
+
+  // Temperature.
+  const today = ['2026-10-13']
+  eq('hot from HOT', temperatureOf(rec([['2026-10-13', HOT]]), today), 'hot')
+  eq('warm just below it', temperatureOf(rec([['2026-10-13', HOT - 1]]), today), 'warm')
+  eq('warm from WARM', temperatureOf(rec([['2026-10-13', WARM]]), today), 'warm')
+  eq('cool just below it', temperatureOf(rec([['2026-10-13', WARM - 1]]), today), 'cool')
+  eq('no record is cool, not cold', temperatureOf(undefined, today), 'cool')
+  const days = (n: number): string[] => Array.from({ length: n + 1 }, (_, i) => localDay(at(2026, 10, 13) - i * 86_400_000))
+  const used = days(COLD_AFTER)
+  eq(`nothing for ${COLD_AFTER} days of use is cold`, temperatureOf(rec([[used[COLD_AFTER], 5]]), used), 'cold')
+  eq('one day fewer is not', temperatureOf(rec([[used[COLD_AFTER - 1], 5]]), used), 'cool')
+  eq('cold goes by recency, however busy it once was',
+    temperatureOf(rec([[used[COLD_AFTER], 5000]]), used), 'cold')
+  eq('a workspace that has just appeared is not cold, whatever the clock says',
+    temperatureOf(freshActivity(at(2026, 10, 13)), used), 'cool')
+  eq('nor one that was there all along, from the day heat arrived', temperatureOf({ since: used[3], days: [] }, used), 'cool')
+  eq(`…until ${COLD_AFTER} days of use pass with nothing in it`, temperatureOf({ since: used[COLD_AFTER], days: [] }, used), 'cold')
+  eq('a terminal printing keeps it from going cold',
+    temperatureOf(rec([['2026-10-13', 0, 30], [used[COLD_AFTER], 50]]), used), 'cool')
+  eq('when anything last happened, whichever kind', lastActiveAt({ since: '2026-10-13', usedAt: 5, outputAt: 9, days: [] }), 9)
+  eq('never is null', lastActiveAt(freshActivity(T)), null)
+
+  // Ordering.
+  const w = (id: string, temperature: Warmth['temperature'], heat: number, lastActive = 0): Warmth & { id: string } =>
+    ({ id, temperature, heat, lastActive })
+  const sorted = [w('cold-old', 'cold', 900, 1), w('cool', 'cool', 2, 5), w('hot', 'hot', 50, 3),
+    w('cold-new', 'cold', 0, 9), w('tie-a', 'cool', 2, 5), w('warm', 'warm', 9, 1)].sort(compareWarmth)
+  eq('hottest first, cold last, recent first among the cold, ties as they were',
+    sorted.map((x) => x.id).join(','), 'hot,warm,cool,tie-a,cold-new,cold-old')
+  eq('equal heat goes to the more recent',
+    [w('a', 'cool', 3, 1), w('b', 'cool', 3, 2)].sort(compareWarmth).map((x) => x.id).join(','), 'b,a')
+
+  // Holding the order under the pointer.
+  const held = { recent: ['a', 'b', 'c'], cold: ['x', 'y'] }
+  const kept = holdRanking(held, { recent: ['c', 'b', 'a', 'x'], cold: ['y'] })
+  eq('a held list keeps its order', kept.recent.join(','), 'a,b,c')
+  eq('one warmed up while held stays where it was', kept.cold.join(','), 'x,y')
+  const moved = holdRanking(held, { recent: ['new', 'c', 'a'], cold: ['y'] })
+  eq('one added since goes at the end', moved.recent.join(','), 'a,c,new')
+  eq('one removed since is gone', moved.cold.join(','), 'y')
+
+  // Time ago.
+  const m = 60_000
+  eq('under a minute is now', shortAgo(T - 59_000, T), 'now')
+  eq('a clock behind is now too', shortAgo(T + 5 * m, T), 'now')
+  eq('minutes', shortAgo(T - 5 * m, T), '5m')
+  eq('hours', shortAgo(T - 3 * 60 * m, T), '3h')
+  eq('days', shortAgo(T - 13 * 1440 * m, T), '13d')
+  eq('weeks from two', shortAgo(T - 14 * 1440 * m, T), '2w')
+  eq('months from two', shortAgo(T - 61 * 1440 * m, T), '2mo')
+  eq('years', shortAgo(T - 400 * 1440 * m, T), '1y')
+  eq('in words', longAgo(T - 3 * 7 * 1440 * m, T), '3 weeks ago')
+  eq('one of a unit is singular', longAgo(T - m, T), '1 minute ago')
+  eq('and now is just now', longAgo(T, T), 'just now')
+
+  // From disk.
+  eq('garbage is nothing', sanitizeActivity('hot'), undefined)
+  eq('a list is nothing', sanitizeActivity([]), undefined)
+  eq('a record with neither a start nor a day is nothing', sanitizeActivity({ days: 'many' }), undefined)
+  const cleaned = sanitizeActivity({
+    since: '2026-09-01',
+    usedAt: 'yesterday',
+    outputAt: 7,
+    days: [
+      { day: '2026-10-01', used: 3.7, output: -2 },
+      { day: '2026-10-05', used: Number.NaN, output: 4 },
+      { day: '2026-10-01', used: 99, output: 99 },
+      { day: 'Tuesday', used: 1, output: 1 },
+      null
+    ]
+  })
+  eq('days come back newest first, once each, counted in whole minutes',
+    JSON.stringify(cleaned?.days), '[{"day":"2026-10-05","used":0,"output":4},{"day":"2026-10-01","used":3,"output":0}]')
+  eq('a time that is not one is dropped', cleaned?.usedAt, undefined)
+  eq('one that is, kept', cleaned?.outputAt, 7)
+  eq('no start falls back to the oldest day', sanitizeActivity({ days: [{ day: '2026-10-02', used: 1, output: 0 }] })?.since, '2026-10-02')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

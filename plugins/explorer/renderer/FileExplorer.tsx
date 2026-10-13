@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   addWorkspaceFolders,
   icons,
@@ -9,9 +9,10 @@ import {
   setPluginState,
   useActiveWorkspace,
   useFileDecoration,
-  usePluginState
+  usePluginState,
+  workspaceDir
 } from '@rigee/plugin-api'
-import type { FileDecoration, FileStat } from '@rigee/plugin-api'
+import type { FileDecoration, FileStat, Workspace } from '@rigee/plugin-api'
 import { invalidateAll, listings, useListingGeneration, watchFolders } from './listings'
 
 /** This plugin's id, which is also the key its per-workspace state is filed under. */
@@ -33,12 +34,41 @@ function readExpanded(state: Record<string, unknown> | undefined): string[] | un
   return Array.isArray(dirs) ? (dirs as string[]) : undefined
 }
 
+/** A folder at the top level of the tree. */
+interface Root {
+  path: string
+  name: string
+  /** The workspace's own folder, which heads the tree and is drawn so it cannot be missed. */
+  own: boolean
+}
+
+/**
+ * The tree's top-level folders: the workspace's own folder first, once it has been saved to a
+ * `.code-workspace` file, then the folders it lists.
+ *
+ * The own folder is the one the file is in, and where new terminals start — the workspace's rather
+ * than any one repo's, so it is where an agent working across all of them keeps its notes. The tree
+ * used to show every folder but that one. A file that lists its own folder too (`"path": "."`)
+ * gets it once, at the top, rather than twice.
+ */
+function rootsOf(workspace: Workspace | null): Root[] {
+  if (!workspace) return []
+  const dir = workspaceDir(workspace)
+  const listed = workspace.folders.map((f) => ({ path: f.path, name: f.name, own: f.path === dir }))
+  if (!dir) return listed
+  const own = listed.find((r) => r.own) ?? { path: dir, name: basename(dir), own: true }
+  return [own, ...listed.filter((r) => !r.own)]
+}
+
+/** Empty segments dropped, so a folder at the root is called by its path rather than nothing. */
+const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
 
 export function FileExplorer(): React.ReactElement {
   const workspace = useActiveWorkspace()
   const [dropping, setDropping] = useState(false)
   const workspaceId = workspace?.id ?? null
   const expanded = readExpanded(usePluginState(PLUGIN_ID, workspaceId))
+  const roots = useMemo(() => rootsOf(workspace), [workspace])
 
   const setExpandedDirs = useCallback((id: string, paths: string[]) => {
     setPluginState(PLUGIN_ID, id, { expandedDirs: [...new Set(paths)] })
@@ -53,10 +83,9 @@ export function FileExplorer(): React.ReactElement {
    * undo itself on the next visit.
    */
   useEffect(() => {
-    if (!workspaceId || expanded !== undefined) return
-    if (!workspace || workspace.folders.length === 0) return
-    setExpandedDirs(workspaceId, workspace.folders.map((f) => f.path))
-  }, [workspaceId, expanded, workspace, setExpandedDirs])
+    if (!workspaceId || expanded !== undefined || roots.length === 0) return
+    setExpandedDirs(workspaceId, roots.map((r) => r.path))
+  }, [workspaceId, expanded, roots, setExpandedDirs])
 
   const anyOpen = open.size > 0
 
@@ -65,11 +94,11 @@ export function FileExplorer(): React.ReactElement {
    * on mount: while the tree was not showing, or another workspace was, nothing was keeping the
    * cache current for these folders.
    */
-  const roots = workspace?.folders.map((f) => f.path).join('\n') ?? ''
+  const rootPaths = roots.map((r) => r.path).join('\n')
   useEffect(() => {
     invalidateAll()
-    watchFolders(roots ? roots.split('\n') : [])
-  }, [roots])
+    watchFolders(rootPaths ? rootPaths.split('\n') : [])
+  }, [rootPaths])
 
   /**
    * Collapse everything, or put it back.
@@ -80,7 +109,7 @@ export function FileExplorer(): React.ReactElement {
    * those listings are all still cached, and reaches anything else the user has browsed to.
    */
   const toggleAll = useCallback(() => {
-    if (!workspaceId || !workspace) return
+    if (!workspaceId) return
     if (anyOpen) { setExpandedDirs(workspaceId, []); return }
 
     const out: string[] = []
@@ -88,9 +117,9 @@ export function FileExplorer(): React.ReactElement {
       out.push(dir)
       for (const child of listings.get(dir) ?? []) if (child.isDir) walk(child.path)
     }
-    for (const f of workspace.folders) walk(f.path)
+    for (const r of roots) walk(r.path)
     setExpandedDirs(workspaceId, out)
-  }, [anyOpen, workspace, workspaceId, setExpandedDirs])
+  }, [anyOpen, roots, workspaceId, setExpandedDirs])
 
   /**
    * Dropping folders here collects them, which is the input side of "Save Workspace As".
@@ -123,7 +152,7 @@ export function FileExplorer(): React.ReactElement {
         <button
           className="icon-button"
           title="Refresh"
-          disabled={!workspace || workspace.folders.length === 0}
+          disabled={roots.length === 0}
           onClick={invalidateAll}
         >
           <icons.Reload size={13} />
@@ -131,7 +160,7 @@ export function FileExplorer(): React.ReactElement {
         <button
           className="icon-button"
           title={anyOpen ? 'Collapse all folders' : 'Expand folders'}
-          disabled={!workspace || workspace.folders.length === 0}
+          disabled={roots.length === 0}
           onClick={toggleAll}
         >
           {anyOpen ? <icons.CollapseAll size={14} /> : <icons.ExpandAll size={14} />}
@@ -139,14 +168,17 @@ export function FileExplorer(): React.ReactElement {
       </div>
       <div className={`explorer__body${dropping ? ' explorer__body--dropping' : ''}`}>
         {!workspace && <div className="muted">Open a workspace to browse files.</div>}
-        {workspace && workspace.folders.length === 0 && (
+        {workspace && roots.length === 0 && (
           <div className="muted">
             No folders here. Terminals still work — drop a folder to make a workspace.
           </div>
         )}
-        {workspace?.folders.map((f) => (
-          <DirNode key={f.path} path={f.path} name={f.name} depth={0}
-            open={open} workspaceId={workspaceId} />
+        {roots.map((r) => (
+          <Fragment key={r.path}>
+            <DirNode path={r.path} name={r.name} depth={0} open={open} workspaceId={workspaceId} own={r.own} />
+            {/* Below everything the own folder shows, so where the repos start is plain even with it open. */}
+            {r.own && roots.length > 1 && <div className="explorer__divider" />}
+          </Fragment>
         ))}
       </div>
     </div>
@@ -160,6 +192,8 @@ interface DirNodeProps {
   /** Expanded paths for the active workspace. Held in the store so it survives a switch. */
   open: ReadonlySet<string>
   workspaceId: string | null
+  /** The workspace's own folder, at the head of the tree. */
+  own?: boolean
 }
 
 /**
@@ -167,7 +201,7 @@ interface DirNodeProps {
  * collapsing and re-expanding a large directory costs nothing and neither does leaving the
  * workspace and coming back.
  */
-function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.ReactElement {
+function DirNode({ path, name, depth, open, workspaceId, own }: DirNodeProps): React.ReactElement {
   const isOpen = open.has(path)
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
   const [error, setError] = useState<string | null>(null)
@@ -189,15 +223,16 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
         listings.set(path, list)
         if (!cancelled) { setChildren(list); setError(null) }
       })
-      .catch((e: Error) => { if (!cancelled) setError(e.message) })
+      .catch((e: Error) => { if (!cancelled) setError(listingProblem(e)) })
     return () => { cancelled = true }
   }, [isOpen, path, generation])
 
   return (
     <>
       <div
-        className="row row--clickable"
+        className={`row row--clickable${own ? ' explorer__own' : ''}`}
         style={{ paddingLeft: 8 + depth * 12 }}
+        title={own ? `${path}\nThe folder this workspace's .code-workspace file is in, where new terminals start.` : undefined}
         onClick={() => { if (workspaceId) toggleDir(workspaceId, open, path) }}
         onContextMenu={(e) => {
           e.preventDefault()
@@ -207,11 +242,18 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
         <span style={{ color: 'var(--fg-faint)', display: 'grid', placeItems: 'center', width: 13 }}>
           <icons.Chevron size={12} open={isOpen} />
         </span>
-        <Label name={name} decoration={decoration} />
+        {/* The icon the workspace list draws for a workspace, since this folder is the workspace's own. */}
+        {own && (
+          <span className="explorer__own-icon">
+            <icons.Folder size={13} />
+          </span>
+        )}
+        <Label name={name} decoration={decoration} tag={own ? 'Workspace' : undefined} />
       </div>
+      {/* One line, like every row: wrapped, a long reason ran over the rows around it. */}
       {isOpen && error && (
-        <div className="row" style={{ paddingLeft: 8 + (depth + 1) * 12 }}>
-          <span style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{error}</span>
+        <div className="row" style={{ paddingLeft: 8 + (depth + 1) * 12 }} title={error}>
+          <span className="row__label" style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{error}</span>
         </div>
       )}
       {isOpen &&
@@ -225,6 +267,16 @@ function DirNode({ path, name, depth, open, workspaceId }: DirNodeProps): React.
         )}
     </>
   )
+}
+
+/**
+ * What the tree says under a folder it could not read: main's reason, without the IPC plumbing
+ * Electron wraps round it, and in words for the usual one — a folder that has gone, which is most
+ * often a workspace's own, its file moved or deleted since it was opened.
+ */
+function listingProblem(e: Error): string {
+  const reason = e.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?(?:[\w-]+:[\w-]+: )?/, '')
+  return reason.startsWith('ENOENT') ? 'This folder is no longer there.' : reason
 }
 
 function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.ReactElement {
@@ -248,11 +300,19 @@ function FileNode({ stat, depth }: { stat: FileStat; depth: number }): React.Rea
   )
 }
 
-/** A row's name, coloured as source control says — and its letter, for files that have one. */
-function Label({ name, decoration }: { name: string; decoration: FileDecoration | undefined }): React.ReactElement {
+/**
+ * A row's name, coloured as source control says — and its letter, for files that have one. A tag
+ * goes between the two, so the letters still line up down the right edge.
+ */
+function Label({ name, decoration, tag }: {
+  name: string
+  decoration: FileDecoration | undefined
+  tag?: string
+}): React.ReactElement {
   return (
     <>
       <span className="row__label" style={decoration && { color: decoration.color }}>{name}</span>
+      {tag && <span className="explorer__tag">{tag}</span>}
       {decoration && (
         <span className="explorer__badge" style={{ color: decoration.color }} title={decoration.tooltip}>
           {decoration.badge ?? '•'}

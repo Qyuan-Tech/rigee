@@ -32,6 +32,7 @@ import {
   type KeyBindings,
   type PaneNode,
   type Workspace,
+  type WorkspaceActivity,
   type WorkspaceId
 } from '@shared/types'
 import type { PluginId } from '@rigee/plugin-api/manifest'
@@ -74,6 +75,13 @@ interface AppState {
    * `WorkspaceUiState.pluginState`; this replaced a hard-coded `expandedDirs` map.
    */
   pluginStateByWorkspace: Record<WorkspaceId, Record<PluginId, Record<string, unknown>>>
+
+  /**
+   * How each workspace has been used lately, minute by minute and day by day — what the side bar's
+   * heat is worked out from (heat.ts). Written by activity.ts, at most once a minute per workspace,
+   * and persisted as `WorkspaceUiState.activity`.
+   */
+  activityByWorkspace: Record<WorkspaceId, WorkspaceActivity>
 
   keybindings: KeyBindings
   /** Preferences other than key bindings: the settings dialog's General page. */
@@ -133,6 +141,7 @@ interface AppState {
     pluginId: PluginId,
     patch: Record<string, unknown>
   ) => void
+  setActivity: (workspaceId: WorkspaceId, activity: WorkspaceActivity) => void
   setKeybindings: (keybindings: KeyBindings) => void
   setSettings: (settings: AppSettings) => void
   setSettingsOpen: (open: boolean) => void
@@ -147,6 +156,7 @@ export const useApp = create<AppState>()(
     rowsByWorkspace: {},
     layout: { ...DEFAULT_PANEL_LAYOUT },
     pluginStateByWorkspace: {},
+    activityByWorkspace: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
     settings: {},
     settingsOpen: false,
@@ -169,9 +179,12 @@ export const useApp = create<AppState>()(
         const workspaces = s.workspaces.filter((w) => w.id !== id)
         const rowsByWorkspace = { ...s.rowsByWorkspace }
         delete rowsByWorkspace[id]
+        const activityByWorkspace = { ...s.activityByWorkspace }
+        delete activityByWorkspace[id]
         return {
           workspaces,
           rowsByWorkspace,
+          activityByWorkspace,
           activeWorkspaceId: s.activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : s.activeWorkspaceId
         }
       }),
@@ -321,6 +334,9 @@ export const useApp = create<AppState>()(
           }
         }
       }),
+
+    setActivity: (workspaceId, activity) =>
+      set((s) => ({ activityByWorkspace: { ...s.activityByWorkspace, [workspaceId]: activity } })),
 
     setKeybindings: (keybindings) => set({ keybindings }),
     setSettings: (settings) => set({ settings }),

@@ -289,6 +289,43 @@ export interface AppSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Activity
+// ---------------------------------------------------------------------------
+
+/**
+ * One day of a workspace's activity.
+ *
+ * Counted in minutes rather than events: a minute counts once however much happened in it, so a
+ * burst of typing weighs the time it took, and a terminal printing a thousand lines a second weighs
+ * no more than one printing ten.
+ */
+export interface ActivityDay {
+  /** The local date, `YYYY-MM-DD`. */
+  day: string
+  /** Minutes in which the user did something here: switched to it, typed, clicked, scrolled. */
+  used: number
+  /** Minutes in which its terminals printed in earnest — an agent at work, a build — whoever was looking. */
+  output: number
+}
+
+/**
+ * How a workspace has been used lately: what the side bar's heat is worked out from (see heat.ts).
+ *
+ * Kept raw — minutes per day, not a score — so that weighing them differently later is a change to
+ * arithmetic rather than to a document on disk.
+ */
+export interface WorkspaceActivity {
+  /** The day this record began, `YYYY-MM-DD`: the workspace was opened, or this build first saw it. */
+  since: string
+  /** When the user last did something here, epoch ms. */
+  usedAt?: number
+  /** When its terminals last printed in earnest, epoch ms. */
+  outputAt?: number
+  /** The most recent days with anything in them, newest first; a few weeks' worth at most. */
+  days: ActivityDay[]
+}
+
+// ---------------------------------------------------------------------------
 // Layout + persistence
 // ---------------------------------------------------------------------------
 
@@ -330,6 +367,13 @@ export interface WorkspaceUiState {
    * workspace open collapsed, permanently.
    */
   pluginState?: Record<PluginId, Record<string, unknown>>
+  /**
+   * How the workspace has been used lately, which its heat in the side bar is worked out from.
+   * Here rather than on the workspace because it is the shell's bookkeeping, not part of the
+   * workspace a plugin is handed — and because this map is written whole, so a workspace's record
+   * goes when the workspace does. Absent in a document written before there was any.
+   */
+  activity?: WorkspaceActivity
 }
 
 /**

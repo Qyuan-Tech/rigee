@@ -34,6 +34,11 @@ running your own shell.
   multi-root workspace. Choose a workspace files folder in Settings and *Save Workspace As…* asks
   only for a name, filing it as `<folder>/<name>/<name>.code-workspace`. Right-click a workspace to
   add a folder to it or save it; a folder added to a saved workspace is written into its file too.
+  A saved workspace's file tree starts with the folder its file is in — tinted and tagged
+  *Workspace*, above the repos — because that folder is the workspace's own.
+  The list is ordered by [heat](#workspace-heat): the workspaces you have been busiest in come
+  first, orange when hot and amber when warm, and the ones you have not touched in a while fade
+  out below a *Cold* divider, with a checklist for removing them.
 - **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a diff, or a
   Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
@@ -99,6 +104,9 @@ an app launched from Finder inherits almost none of it.
 | Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
 | A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
+| A saved workspace's explorer starts with that folder, marked out from the repos below it | works |
+| Workspace heat — the list ordered by how much each workspace has been used lately, hot and warm ones coloured, with how long since anything happened in each | works |
+| Cold workspaces — nothing in them for ten days of use — faded under their own divider, with a checklist to remove them | works |
 | A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
 | Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split beside the terminal on screen | works |
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
@@ -229,6 +237,39 @@ one key. It is set, or turned off, in the same place.
 Either side panel can be collapsed from the chevron in its header, or with the shortcuts above. A
 collapsed panel leaves a labelled strip on that edge — click it to bring the panel back.
 
+## Workspace heat
+
+The workspace list shows at a glance where the work is. Each workspace has a heat — how much it has
+been used lately — and the list is ordered by it, with Scratch always first:
+
+| | |
+|---|---|
+| **Hot** — orange, filled | about an hour of use today, or more spread over the last few days |
+| **Warm** — amber | ten minutes or so today, or an agent busy in it |
+| **Cool** — grey | little use lately |
+| **Cold** — faded, below a divider | nothing at all in it for ten days of use |
+
+On the right of each row is how long since anything happened there — `5m`, `3h`, `2d`, `3w` — and
+hovering a row says what its heat is made of.
+
+What counts is a minute in which you did something in the workspace: switched to it, typed, clicked
+or scrolled in it. A minute in which its terminals printed in earnest — an agent at work or a
+build, even while you are in another workspace — counts for a tenth as much, and all of that
+together can make a workspace warm but never hot: an agent keeps its workspace from going cold, but
+only you make one hot. A shell drawing its prompt does not count. Each day of use is worth a
+quarter less than the one after it.
+
+Time is counted in **days you used Rigee**, not calendar days, so a weekend or a holiday changes
+nothing — you do not come back to a list of cold workspaces. Workspaces that existed before heat
+did start counting from the day you upgrade, so none of them is cold until ten days of use have
+gone by without it.
+
+The list holds still while the pointer is over it, so nothing moves under a click; it re-sorts when
+the pointer leaves. Cold workspaces are never removed for you. *N cold* in the header, or *Review…*
+on the divider, opens a checklist of them, all ticked; untick any you want to keep, and *Remove*
+does for the rest what a workspace's own remove button does — its tabs close, asking first about
+unsaved files, and its folders and `.code-workspace` file stay where they are.
+
 ## Where Rigee keeps your data
 
 | | |
@@ -237,7 +278,8 @@ collapsed panel leaves a labelled strip on that edge — click it to bring the p
 | Linux | `~/.config/rigee` |
 | Windows | `%APPDATA%\rigee` |
 
-`workspaces.json` holds your workspaces, open tabs, split layouts, key bindings and settings. It is written
+`workspaces.json` holds your workspaces, open tabs, split layouts, key bindings, settings, and how
+much each workspace has been used lately — minutes a day, a few weeks of them. It is written
 when things change, every 15 seconds, and on close, so an unexpected quit loses at most the last
 few seconds of layout. Deleting the directory resets the app and loses nothing but layout.
 

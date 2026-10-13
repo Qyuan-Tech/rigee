@@ -58,7 +58,7 @@ import {
 } from './plugins/installed'
 import { initTrustStore } from './plugins/trust'
 import { PLUGIN_MANIFESTS } from '@plugins/index'
-import { PERSISTED_STATE_VERSION, type FileStat } from '@shared/types'
+import { PERSISTED_STATE_VERSION, type FileStat, type Workspace, type WorkspaceActivity } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -117,6 +117,25 @@ if (process.env.RIGEE_SMOKE) {
     const sink = join(dir, 'sink.sh')
     writeFileSync(sink, '#!/bin/sh\nexec cat >/dev/null\n', { mode: 0o755 })
     process.env.SHELL = sink
+  }
+  // The heat mode starts from workspaces that predate heat, so its document has to be there before
+  // `loadState()` first reads it. Its terminals print what it needs them to: a build's worth from a
+  // folder called chatty, after a pause long enough to have switched away from it; a prompt's worth
+  // anywhere else.
+  if (process.env.RIGEE_SMOKE === 'heat') {
+    plantHeatDocument(dir)
+    const printer = join(dir, 'printer.sh')
+    writeFileSync(
+      printer,
+      '#!/bin/sh\n' +
+        'case "$(pwd)" in\n' +
+        '  */chatty) sleep 3; i=0; while [ "$i" -lt 400 ]; do echo "compiling module $i of 400 ......................................"; i=$((i + 1)); done ;;\n' +
+        "  *) printf 'ready$ ' ;;\n" +
+        'esac\n' +
+        'exec cat >/dev/null\n',
+      { mode: 0o755 }
+    )
+    process.env.SHELL = printer
   }
 }
 
@@ -257,6 +276,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
     else if (process.env.RIGEE_SMOKE === 'video') void runVideoSmoke()
+    else if (process.env.RIGEE_SMOKE === 'heat') void runHeatSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -2306,9 +2326,12 @@ async function runTabsSmoke(): Promise<void> {
  * pane to the terminal on screen that starts in the folder rather than where its neighbour is.
  * The tree keeps up with the disk: a file written or deleted from outside appears or goes by
  * itself, and the Refresh button reads folders again where the watcher does not look (.git).
+ * And a saved workspace's tree is headed by its own folder, the one its file is in: marked as the
+ * workspace's and divided from the repos, it lists the file and keeps up with the disk like any
+ * other, opens on first sight with them, and is shown once when the file lists it too.
  *
- * With RIGEE_SHOT_DIR set it also photographs the General page, the name form and the question a
- * new terminal asks, which are reviewed by looking at them.
+ * With RIGEE_SHOT_DIR set it also photographs the General page, the name form, the head of the
+ * explorer and the question a new terminal asks, which are reviewed by looking at them.
  */
 async function runWorkspaceFilesSmoke(): Promise<void> {
   const wc = shellWc()
@@ -2491,6 +2514,75 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     trail.push(`a terminal in the saved workspace started in ${savedAt}`)
     if (savedAt !== realpathSync(dirname(target))) return finish(false, 'saved-workspace-terminal-not-in-its-folder', savedAt)
 
+    // --- the explorer: headed by the workspace's own folder -------------------------------------
+    // The folder that terminal just started in is first in the tree, marked as the workspace's, with
+    // the repos after a divider, and it is a folder like the rest: it opens, lists the workspace
+    // file, and keeps up with the disk. It appeared when the workspace was saved, after the tree had
+    // opened the repos on first sight, so it starts shut, as any folder added later does.
+    const exploreRow = `const explorerRow = (name) => [...document.querySelectorAll('.explorer__body .row')]
+      .find(r => r.querySelector('.row__label')?.textContent === name)`
+    const seen = async (name: string, present: boolean, ms = 4000): Promise<boolean> =>
+      js<boolean>(`(async () => { ${helpers}; ${exploreRow}
+        return !!(await until(() => ${present ? '' : '!'}explorerRow(${JSON.stringify(name)}), ${ms})) })()`)
+    const tree = `
+      const tree = () => [...document.querySelectorAll('.explorer__body .row')]
+      const label = (r) => r?.querySelector('.row__label')?.textContent ?? null
+      const head = () => tree()[0]?.classList.contains('explorer__own') ? tree()[0] : null
+      const afterDivider = () => label(document.querySelector('.explorer__divider')?.nextElementSibling)`
+    const ownDir = dirname(target)
+    const headed = await js<{ ok: boolean; stage?: string; name?: string | null; tag?: string; title?: string; after?: string | null }>(`(async () => {
+      ${helpers}; ${tree}; ${exploreRow}
+      const own = await until(head)
+      if (!own) return { ok: false, stage: 'tree-not-headed-by-the-workspace-folder', name: label(tree()[0]) }
+      if (document.querySelectorAll('.explorer__own').length !== 1) return { ok: false, stage: 'more-than-one-own-folder' }
+      if (explorerRow('myworkspace.code-workspace')) return { ok: false, stage: 'own-folder-opened-over-a-remembered-tree' }
+      own.click()
+      if (!(await until(() => explorerRow('myworkspace.code-workspace')))) return { ok: false, stage: 'own-folder-does-not-list-the-workspace-file' }
+      return { ok: true, name: label(own), tag: own.querySelector('.explorer__tag')?.textContent, title: own.title, after: afterDivider() }
+    })()`)
+    if (!headed.ok) return finish(false, headed.stage ?? 'own-folder', headed.name)
+    trail.push(`the tree is headed by "${headed.name}", tagged ${headed.tag}, then "${headed.after}"; opened, it lists the workspace file`)
+    if (headed.name !== 'myworkspace' || headed.tag !== 'Workspace' || headed.after !== 'repo-a') return finish(false, 'own-folder-drawn-wrong', headed)
+    if (headed.title?.split('\n')[0] !== ownDir) return finish(false, 'own-folder-hover-names-the-wrong-path', headed.title)
+    await shoot('explorer-own-folder')
+    const noted = join(ownDir, 'written-by-an-agent.md')
+    writeFileSync(noted, 'notes\n')
+    if (!(await seen('written-by-an-agent.md', true))) return finish(false, 'a-file-in-the-own-folder-never-appeared')
+    rmSync(noted)
+    if (!(await seen('written-by-an-agent.md', false))) return finish(false, 'a-file-deleted-from-the-own-folder-stayed')
+    trail.push('a file written into it from outside appeared by itself, and went when deleted')
+
+    // Opened afresh, the workspace's folder opens with its repos. And a file that lists the folder it
+    // is in — `"path": "."` — shows that folder once, at the head, rather than again among the rest.
+    const reopened = await js<{ ok: boolean; stage?: string; open?: string[] }>(`(async () => {
+      ${helpers}; ${tree}; ${exploreRow}
+      store.getState().addWorkspace({
+        id: 'ws-reopened', name: 'reopened', filePath: ${JSON.stringify(target)}, createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(repos[1])}, name: 'repo-b', isGitRepo: false, repoRoot: null }]
+      })
+      const open = await until(() => store.getState().pluginStateByWorkspace['ws-reopened']?.['${EXPLORER_PLUGIN_ID}']?.expandedDirs)
+      if (!open) return { ok: false, stage: 'first-sight-opened-nothing' }
+      if (!(await until(() => explorerRow('myworkspace.code-workspace')))) return { ok: false, stage: 'first-sight-did-not-show-the-own-folder-open' }
+      return { ok: true, open: open.slice().sort() }
+    })()`)
+    if (!reopened.ok) return finish(false, reopened.stage ?? 'own-folder-first-sight')
+    trail.push(`opened afresh, the tree opened ${reopened.open?.join(', ')}`)
+    if (reopened.open?.join() !== [ownDir, repos[1]!].sort().join()) return finish(false, 'first-sight-opened-the-wrong-folders', reopened.open)
+    const inside = await js<{ ok: boolean; stage?: string; name?: string | null; times?: number; after?: string | null }>(`(async () => {
+      ${helpers}; ${tree}
+      store.getState().addWorkspace({
+        id: 'ws-inside', name: 'inside', filePath: ${JSON.stringify(join(repos[1]!, 'inside.code-workspace'))},
+        createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: ${JSON.stringify(repos)}.map(path => ({ path, name: path.split('/').pop(), isGitRepo: false, repoRoot: null }))
+      })
+      const own = await until(() => label(head()) === 'repo-b' && head())
+      if (!own) return { ok: false, stage: 'listed-own-folder-not-at-the-head', name: label(tree()[0]) }
+      return { ok: true, name: label(own), times: tree().filter(r => label(r) === 'repo-b').length, after: afterDivider() }
+    })()`)
+    if (!inside.ok) return finish(false, inside.stage ?? 'own-folder-listed', inside.name)
+    trail.push(`a file inside one of its folders: headed by "${inside.name}", shown ${inside.times} time(s), then "${inside.after}"`)
+    if (inside.times !== 1 || inside.after !== 'repo-a') return finish(false, 'listed-own-folder-shown-twice', inside)
+
     // --- an unsaved workspace asks first; Not Now ----------------------------------------
     const skipped = await js<{ ok: boolean; stage?: string; initial?: string; path?: string; paneId?: string }>(`(async () => {
       ${helpers}
@@ -2616,11 +2708,6 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     // must appear by itself, and go when it is deleted. Inside .git, which the watcher ignores on
     // purpose, a new file stays out of the tree until Refresh is pressed — which is what proves the
     // button reads again rather than the watcher having done it.
-    const exploreRow = `const explorerRow = (name) => [...document.querySelectorAll('.explorer__body .row')]
-      .find(r => r.querySelector('.row__label')?.textContent === name)`
-    const seen = async (name: string, present: boolean, ms = 4000): Promise<boolean> =>
-      js<boolean>(`(async () => { ${helpers}; ${exploreRow}
-        return !!(await until(() => ${present ? '' : '!'}explorerRow(${JSON.stringify(name)}), ${ms})) })()`)
     if (!(await seen('repo-a', true))) return finish(false, 'explorer-shows-no-repo-a')
     if (!(await seen('.git', true))) return finish(false, 'explorer-does-not-list-.git')
     const fresh = join(repos[0]!, 'appeared-from-outside.txt')
@@ -2690,6 +2777,14 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     const goneAt = await whereIs(gone.paneId)
     trail.push(`with its file gone, a terminal started in ${goneAt}`)
     if (goneAt !== realpathSync(homedir())) return finish(false, 'a-gone-folder-did-not-start-at-home', goneAt)
+    // Its tree still heads with the folder, and says in one line under it that the folder has gone.
+    const goneTree = await js<{ name: string | null; says: boolean }>(`(async () => {
+      ${helpers}; ${tree}; ${exploreRow}
+      const says = !!(await until(() => label(head()) === 'gone' && explorerRow('This folder is no longer there.')))
+      return { name: label(head()), says }
+    })()`)
+    trail.push(`its tree is headed by "${goneTree.name}", which says ${goneTree.says ? 'it is no longer there' : 'nothing'}`)
+    if (goneTree.name !== 'gone' || !goneTree.says) return finish(false, 'a-gone-own-folder-not-said-so', goneTree)
 
     // --- right-click: Add Folder, on a saved workspace that is not the active one ---------------
     // Hand-edited first, the way people keep these files: a note, and a setting.
@@ -3002,6 +3097,322 @@ async function runVideoSmoke(): Promise<void> {
     finish(true, 'played')
   } catch (err) {
     console.error('[smoke:video] threw:', err)
+    finish(false, 'threw')
+  }
+}
+
+/**
+ * A document from before heat: two workspaces with no activity record, one of them with a record
+ * nobody could compute with. Planted during module evaluation, as the migrate mode's is, because
+ * `loadState()` reads the document once and caches it for the life of the process.
+ */
+function plantHeatDocument(dir: string): void {
+  const folder = join(dir, 'heat', 'before')
+  mkdirSync(folder, { recursive: true })
+  const workspace = (id: string, name: string): Workspace => ({
+    id, name, createdAt: 1, lastOpenedAt: 1,
+    folders: [{ path: folder, name: 'before', isGitRepo: false, repoRoot: null }]
+  })
+  writeFileSync(join(dir, 'workspaces.json'), JSON.stringify({
+    version: 4,
+    workspaces: [workspace('ws-before', 'before'), workspace('ws-garbled', 'garbled')],
+    activeWorkspaceId: '__scratch__',
+    ui: { 'ws-garbled': { activity: { since: 7, days: 'lots' } } },
+    keybindings: {}
+  }, null, 2), 'utf8')
+  console.log('[smoke:heat] planted a document from before heat in the throwaway userData directory')
+}
+
+/**
+ * End-to-end check of workspace heat: the side bar ordered and coloured by how much each workspace
+ * has been used, the order held still while the pointer is over it, use and terminal output each
+ * counted — output in a workspace nobody is looking at, too — and the cold ones cleared out through
+ * their checklist, with what it all comes to read back from disk.
+ *
+ * It starts from workspaces that predate heat, because that is where everybody upgrading starts,
+ * and none of them may come up cold. `RIGEE_SHOT_DIR` leaves PNGs of the list and the checklist.
+ */
+async function runHeatSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = app.getPath('userData')
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:heat]', JSON.stringify({ ok, stage, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const shoot = async (name: string): Promise<void> => {
+    const to = process.env.RIGEE_SHOT_DIR
+    if (!to) return
+    writeFileSync(join(to, `${name}.png`), (await wc.capturePage()).toPNG())
+    trail.push(`photographed ${name}`)
+  }
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const folders = Object.fromEntries(
+    ['hot', 'warm', 'agent', 'cool', 'new', 'cold', 'stale', 'chatty', 'quiet'].map((name) => {
+      const path = join(dir, 'heat', name)
+      mkdirSync(path, { recursive: true })
+      return [name, path]
+    })
+  )
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store, getTerminal, paneKey, newTerminalTab } = window.__rigee
+    const until = async (test, ms = 10000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }
+    const DAY = 86400000
+    const pad = (n) => String(n).padStart(2, '0')
+    const day = (n) => { const d = new Date(Date.now() - n * DAY); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) }
+    const folders = ${JSON.stringify(folders)}
+    const workspace = (id, name) => ({
+      id, name, createdAt: Date.now(), lastOpenedAt: Date.now(),
+      folders: [{ path: folders[name], name, isGitRepo: false, repoRoot: null }]
+    })
+    const rows = () => [...document.querySelectorAll('.workspace-list .row')]
+    const row = (label) => rows().find(r => r.querySelector('.row__label').textContent === label)
+    const heat = (label) => (row(label)?.className.match(/heat--(\\w+)/) || [])[1]
+    const meta = (label) => row(label)?.querySelector('.row__meta')?.textContent
+    const divider = () => document.querySelector('.workspace-list .heat-divider')?.textContent || ''
+    // The list as it reads down the side bar, the divider as a bar.
+    const layout = () => [...(row('Scratch')?.parentElement?.children ?? [])]
+      .map(e => e.classList.contains('heat-divider') ? '|' : e.querySelector('.row__label')?.textContent ?? '?')
+    const activity = (id) => store.getState().activityByWorkspace[id]`
+  /**
+   * The middle of a workspace's row, in the window's coordinates, as a pointer would reach it —
+   * scrolled into view first, as a person would: the list scrolls, and a point below its fold is
+   * on whatever is drawn there instead.
+   */
+  const rowCentre = (label: string): Promise<{ x: number; y: number } | null> => js(`(() => {
+    ${helpers}
+    row(${JSON.stringify(label)})?.scrollIntoView({ block: 'nearest' })
+    const r = row(${JSON.stringify(label)})?.getBoundingClientRect()
+    return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null
+  })()`)
+  const pointTo = (at: { x: number; y: number }): void => wc.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y })
+  // The middle of the centre pane: well away from the list.
+  const away = { x: 760, y: 460 }
+  const layout = (): Promise<string> => js(`(() => { ${helpers}; return layout().join(' ') })()`)
+  const readDoc = (): { workspaces?: Workspace[]; ui?: Record<string, { activity?: WorkspaceActivity }> } => {
+    try { return JSON.parse(readFileSync(join(dir, 'workspaces.json'), 'utf8')) } catch { return {} }
+  }
+
+  try {
+    // --- the workspaces there were before heat -------------------------------------------------
+    const booted = await js<{ ok: boolean; stage?: string; today?: string; before?: unknown; garbled?: unknown; heats?: string[]; divider?: string }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => store.getState().ready && row('garbled'), 15000))) return { ok: false, stage: 'never-ready' }
+      await sleep(300)
+      return { ok: true, today: day(0), before: activity('ws-before'), garbled: activity('ws-garbled'),
+        heats: [heat('before'), heat('garbled')], divider: divider() }
+    })()`)
+    if (!booted.ok) return finish(false, booted.stage ?? 'boot')
+    const fresh = JSON.stringify({ since: booted.today, days: [] })
+    trail.push(`before heat, read back as ${JSON.stringify(booted.before)}; the garbled one as ${JSON.stringify(booted.garbled)}`)
+    if (JSON.stringify(booted.before) !== fresh) return finish(false, 'a-workspace-from-before-heat-did-not-start-today')
+    if (JSON.stringify(booted.garbled) !== fresh) return finish(false, 'a-garbled-record-was-not-replaced')
+    if (booted.heats?.join() !== 'cool,cool' || booted.divider) {
+      return finish(false, 'a-workspace-from-before-heat-came-up-cold', booted)
+    }
+    trail.push('neither came up cold')
+
+    // --- ordered and coloured --------------------------------------------------------------------
+    const planted = await js<{ layout: string; heats: Record<string, string>; metas: Record<string, string>; divider: string; hint: string }>(`(async () => {
+      ${helpers}
+      const now = Date.now()
+      const s = store.getState()
+      s.setWorkspaces([...s.workspaces, workspace('ws-hot', 'hot'), workspace('ws-warm', 'warm'),
+        workspace('ws-agent', 'agent'), workspace('ws-cool', 'cool'), workspace('ws-new', 'new'),
+        workspace('ws-cold', 'cold'), workspace('ws-stale', 'stale')])
+      // Eleven days of use behind today, all of them in ws-hot: that is the clock the others age by.
+      const hotDays = [{ day: day(0), used: 90, output: 0 }]
+      for (let i = 1; i <= 11; i++) hotDays.push({ day: day(i), used: 30, output: 0 })
+      store.setState((st) => ({ activityByWorkspace: { ...st.activityByWorkspace,
+        'ws-hot': { since: day(11), usedAt: now - 5.5 * 60000, days: hotDays },
+        'ws-warm': { since: day(0), usedAt: now - 2.5 * 3600000, days: [{ day: day(0), used: 12, output: 0 }] },
+        'ws-agent': { since: day(0), outputAt: now - 3.5 * 60000, days: [{ day: day(0), used: 0, output: 300 }] },
+        'ws-cool': { since: day(3), usedAt: now - 3.5 * DAY, days: [{ day: day(3), used: 2, output: 0 }] },
+        'ws-cold': { since: day(11), usedAt: now - 11.5 * DAY, days: [{ day: day(11), used: 60, output: 0 }] },
+        'ws-stale': { since: day(13), usedAt: now - 13.5 * DAY, days: [{ day: day(13), used: 10, output: 0 }] }
+      } }))
+      await sleep(400)
+      const labels = layout().filter(l => l !== '|')
+      return { layout: layout().join(' '), divider: divider(), hint: document.querySelector('.heat-hint')?.textContent || '',
+        heats: Object.fromEntries(labels.map(l => [l, heat(l)])), metas: Object.fromEntries(labels.map(l => [l, meta(l)])) }
+    })()`)
+    trail.push(`the list: ${planted.layout}`)
+    if (planted.layout !== 'Scratch hot agent warm cool before garbled new | cold stale') return finish(false, 'not-ordered-by-heat', planted)
+    const wanted: Record<string, string> = {
+      Scratch: 'cool', hot: 'hot', agent: 'warm', warm: 'warm', cool: 'cool', before: 'cool', garbled: 'cool', new: 'cool', cold: 'cold', stale: 'cold'
+    }
+    const wrong = Object.entries(wanted).filter(([label, t]) => planted.heats[label] !== t)
+    if (wrong.length > 0) return finish(false, 'wrong-temperatures', { wrong, heats: planted.heats })
+    trail.push('an agent printing all day on its own is warm, not hot')
+    const times = ['hot', 'agent', 'warm', 'cool', 'new', 'cold', 'stale'].map((l) => `${l} ${planted.metas[l] || '—'}`).join(', ')
+    trail.push(`last active: ${times}`)
+    if (times !== 'hot 5m, agent 3m, warm 2h, cool 3d, new —, cold 11d, stale 13d') return finish(false, 'wrong-times', planted.metas)
+    if (!planted.divider.includes('Cold · 2')) return finish(false, 'no-cold-divider', planted.divider)
+    if (planted.hint !== '2 cold') return finish(false, 'no-cold-hint-in-the-header', planted.hint)
+    trail.push(`the header says ${planted.hint}, the list scrolling or not`)
+    await shoot('heat-list')
+    if (process.env.RIGEE_SHOT_DIR) {
+      await js(`(async () => { ${helpers}; row('stale').scrollIntoView({ block: 'end' }); await sleep(150) })()`)
+      await shoot('heat-cold')
+      await js(`(async () => { ${helpers}; row('Scratch').scrollIntoView({ block: 'start' }); await sleep(150) })()`)
+    }
+
+    // --- held still under the pointer --------------------------------------------------------
+    const coolAt = await rowCentre('cool')
+    if (!coolAt) return finish(false, 'no-cool-row')
+    pointTo(coolAt)
+    await sleep(250)
+    const underPointer = await js<{ layout: string; heat: string }>(`(async () => {
+      ${helpers}
+      const a = activity('ws-cool')
+      store.getState().setActivity('ws-cool', { ...a, usedAt: Date.now(), days: [{ day: day(0), used: 500, output: 0 }, ...a.days] })
+      await sleep(400)
+      return { layout: layout().join(' '), heat: heat('cool') }
+    })()`)
+    trail.push(`with the pointer on it, cool turned ${underPointer.heat} and the list stayed: ${underPointer.layout}`)
+    if (underPointer.heat !== 'hot') return finish(false, 'heat-did-not-change-under-the-pointer', underPointer)
+    if (underPointer.layout !== planted.layout) return finish(false, 'the-list-moved-under-the-pointer', underPointer)
+    pointTo(away)
+    await sleep(400)
+    const resorted = await layout()
+    trail.push(`pointer gone, the list re-sorted: ${resorted}`)
+    if (resorted !== 'Scratch cool hot agent warm before garbled new | cold stale') return finish(false, 'did-not-re-sort-once-the-pointer-left', resorted)
+
+    // --- a cold workspace, clicked --------------------------------------------------------------
+    const coldAt = await rowCentre('cold')
+    if (!coldAt) return finish(false, 'no-cold-row')
+    pointTo(coldAt)
+    await sleep(250)
+    wc.sendInputEvent({ type: 'mouseDown', x: coldAt.x, y: coldAt.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: coldAt.x, y: coldAt.y, button: 'left', clickCount: 1 })
+    await sleep(400)
+    const clicked = await js<{ active: string; today: unknown; usedAgo: number; scratchUsed: boolean; layout: string; heat: string; selected: boolean; divider: string }>(`(() => {
+      ${helpers}
+      const a = activity('ws-cold')
+      return { active: store.getState().activeWorkspaceId, today: a.days[0], usedAgo: Date.now() - a.usedAt,
+        scratchUsed: activity('__scratch__').days.some(d => d.used > 0),
+        layout: layout().join(' '), heat: heat('cold'), selected: row('cold').classList.contains('row--selected'), divider: divider() }
+    })()`)
+    trail.push(`clicking cold switched to ${clicked.active} and counted ${JSON.stringify(clicked.today)}`)
+    if (clicked.active !== 'ws-cold') return finish(false, 'the-click-did-not-switch', clicked)
+    if (JSON.stringify(clicked.today) !== JSON.stringify({ day: booted.today, used: 1, output: 0 }) || clicked.usedAgo > 5000) {
+      return finish(false, 'switching-was-not-counted-as-use', clicked)
+    }
+    if (clicked.scratchUsed) return finish(false, 'the-press-in-the-list-counted-for-the-workspace-left')
+    if (clicked.heat !== 'cool' || !clicked.selected) return finish(false, 'a-clicked-cold-workspace-did-not-warm', clicked)
+    if (clicked.layout !== resorted) return finish(false, 'the-clicked-row-moved-under-the-pointer', clicked)
+    if (!clicked.divider.includes('Cold · 1')) return finish(false, 'divider-still-counts-the-clicked-one', clicked.divider)
+    trail.push(`it warmed where it was, under the pointer: ${clicked.layout}`)
+    pointTo(away)
+    await sleep(400)
+    const promoted = await layout()
+    trail.push(`pointer gone: ${promoted}`)
+    if (promoted !== 'Scratch cool hot agent warm cold before garbled new | stale') return finish(false, 'clicked-workspace-did-not-move-up', promoted)
+
+    // --- a minute counts once -----------------------------------------------------------------
+    const usedBefore = await js<number>(`window.__rigee.store.getState().activityByWorkspace['ws-cold'].days[0].used`)
+    for (let i = 0; i < 5; i++) {
+      keystroke(wc, 'Shift')
+      await sleep(30)
+    }
+    await sleep(200)
+    const usedAfter = await js<number>(`window.__rigee.store.getState().activityByWorkspace['ws-cold'].days[0].used`)
+    trail.push(`five keystrokes took the minutes from ${usedBefore} to ${usedAfter}`)
+    if (usedAfter - usedBefore > 1) return finish(false, 'keystrokes-counted-more-than-once-a-minute')
+
+    // --- terminals printing, with nobody looking ---------------------------------------------
+    const printing = await js<{ ok: boolean; stage?: string; left?: number; chatty?: WorkspaceActivity; quiet?: WorkspaceActivity | null; scratch?: WorkspaceActivity }>(`(async () => {
+      ${helpers}
+      const s = store.getState()
+      s.setWorkspaces([...s.workspaces, workspace('ws-chatty', 'chatty'), workspace('ws-quiet', 'quiet')])
+      await sleep(100)
+      store.getState().setActiveWorkspace('ws-chatty')
+      const chattyTab = newTerminalTab()
+      store.getState().openTab('ws-chatty', chattyTab)
+      if (!(await until(() => getTerminal(paneKey(chattyTab.id, chattyTab.activeLeafId))?.paneId, 15000))) return { ok: false, stage: 'chatty-terminal-never-started' }
+      // Away before it prints: its shell waits three seconds first.
+      store.getState().setActiveWorkspace('ws-quiet')
+      const left = Date.now()
+      const quietTab = newTerminalTab()
+      store.getState().openTab('ws-quiet', quietTab)
+      if (!(await until(() => getTerminal(paneKey(quietTab.id, quietTab.activeLeafId))?.paneId, 15000))) return { ok: false, stage: 'quiet-terminal-never-started' }
+      if (!(await until(() => activity('ws-chatty')?.outputAt, 10000))) return { ok: false, stage: 'output-in-the-background-not-counted' }
+      await sleep(1000)
+      return { ok: true, left, chatty: activity('ws-chatty'), quiet: activity('ws-quiet') ?? null, scratch: activity('__scratch__') }
+    })()`)
+    if (!printing.ok) return finish(false, printing.stage ?? 'printing')
+    trail.push(`chatty printed ${printing.chatty!.outputAt! - printing.left!} ms after it was left: ${JSON.stringify(printing.chatty!.days[0])}`)
+    if (printing.chatty!.outputAt! <= printing.left!) return finish(false, 'output-was-counted-before-it-was-in-the-background')
+    if (printing.chatty!.days[0]!.output !== 1) return finish(false, 'a-burst-counted-other-than-once', printing.chatty)
+    if (printing.quiet?.outputAt) return finish(false, 'a-prompt-counted-as-output', printing.quiet)
+    if (printing.scratch?.outputAt) return finish(false, 'scratch-prompt-counted-as-output', printing.scratch)
+    trail.push('a prompt is not output: neither quiet nor Scratch has any')
+
+    // --- clearing out the cold --------------------------------------------------------------
+    // From the header, which is always in view: the divider's own button is at the bottom of a list
+    // that scrolls.
+    if (!(await js<boolean>(`!!document.querySelector('.heat-divider__review')`))) return finish(false, 'no-review-button-on-the-divider')
+    if (!(await clickAt(wc, '.heat-hint'))) return finish(false, 'no-cold-hint')
+    // Fetched on demand, and React holds a freshly suspended boundary back for a moment even when
+    // the chunk is already there: waited for, not slept on.
+    await js(`(async () => { ${helpers}; await until(() => document.querySelector('.heat-review'), 3000) })()`)
+    const panel = (): Promise<{ names: string[]; checked: boolean[]; button: string; disabled: boolean } | null> => js(`(() => {
+      const p = document.querySelector('.heat-review')
+      if (!p) return null
+      const b = p.querySelector('.btn--primary')
+      return { names: [...p.querySelectorAll('.heat-review__name')].map(n => n.textContent),
+        checked: [...p.querySelectorAll('input')].map(i => i.checked), button: b.textContent, disabled: b.disabled }
+    })()`)
+    const opened = await panel()
+    trail.push(`the checklist: ${JSON.stringify(opened)}`)
+    if (!opened) return finish(false, 'review-did-not-open')
+    if (opened.names.join() !== 'stale' || opened.checked.join() !== 'true' || opened.button !== 'Remove 1 Workspace') {
+      return finish(false, 'checklist-wrong', opened)
+    }
+    await clickAt(wc, '.heat-review__item input')
+    await sleep(150)
+    const unticked = await panel()
+    if (unticked?.button !== 'Remove 0 Workspaces' || !unticked.disabled) return finish(false, 'unticking-did-not-take-it-out', unticked)
+    await clickAt(wc, '.heat-review__item input')
+    await sleep(150)
+    await shoot('heat-review')
+    await clickAt(wc, '.heat-review .btn--primary')
+    const cleared = await js<{ ok: boolean; panel: boolean; divider: string; record: boolean; layout: string }>(`(async () => {
+      ${helpers}
+      const ok = !!(await until(() => !store.getState().workspaces.some(w => w.id === 'ws-stale'), 5000))
+      await sleep(200)
+      return { ok, panel: !!document.querySelector('.heat-review'), divider: divider(), record: !!activity('ws-stale'), layout: layout().join(' ') }
+    })()`)
+    trail.push(`after removing: ${cleared.layout}`)
+    if (!cleared.ok) return finish(false, 'stale-not-removed', cleared)
+    if (cleared.panel || cleared.divider || cleared.record) return finish(false, 'removal-left-something-behind', cleared)
+
+    // --- what reached the disk ----------------------------------------------------------------
+    let doc = readDoc()
+    for (let i = 0; i < 30 && (doc.ui?.['ws-stale'] || !doc.ui?.['ws-chatty']?.activity?.outputAt); i++) {
+      await sleep(100)
+      doc = readDoc()
+    }
+    const hot = doc.ui?.['ws-hot']?.activity
+    const before = doc.ui?.['ws-before']?.activity
+    const garbled = doc.ui?.['ws-garbled']?.activity
+    trail.push(`on disk: hot has ${hot?.days.length} days, before ${JSON.stringify(before)}, garbled ${JSON.stringify(garbled)}`)
+    if (hot?.days.length !== 12) return finish(false, 'activity-not-persisted', hot)
+    if (before?.since !== booted.today || before?.days.length !== 0) return finish(false, 'the-fresh-record-not-persisted', before)
+    if (garbled?.since !== booted.today) return finish(false, 'the-garbled-record-persisted-as-it-was', garbled)
+    if (!doc.ui?.['ws-chatty']?.activity?.outputAt) return finish(false, 'output-not-persisted')
+    if (doc.ui?.['ws-stale'] || doc.workspaces?.some((w) => w.id === 'ws-stale')) return finish(false, 'removed-workspace-still-on-disk')
+    trail.push('the removed workspace and its record are gone from disk')
+
+    finish(true, 'heat')
+  } catch (err) {
+    console.error('[smoke:heat] threw:', err)
     finish(false, 'threw')
   }
 }

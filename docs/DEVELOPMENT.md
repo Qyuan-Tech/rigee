@@ -17,7 +17,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 348 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, and the Range headers a video element sends |
+| `pnpm panes:selftest` | 412 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, the Range headers a video element sends, and the arithmetic of workspace heat |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
@@ -31,7 +31,8 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:editing` | workspace search, opening a result, saving, the unsaved-changes prompts, a file changed on disk, in-file find |
 | `pnpm smoke:shutdown` | quits for real, and asserts plugin teardown finished before the app went |
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
-| `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — a workspace's right-click menu adding a folder to its file with the comments intact, a folder's Open in Terminal Tab and Split, and the explorer showing files created and deleted from outside, with Refresh for what the watcher ignores |
+| `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — a workspace's right-click menu adding a folder to its file with the comments intact, a folder's Open in Terminal Tab and Split, the explorer showing files created and deleted from outside, with Refresh for what the watcher ignores, and a saved workspace's tree headed by the folder its file is in — once, even when the file lists it, and saying so when it has gone |
+| `pnpm smoke:heat` | boots on workspaces from before heat and asserts none comes up cold; then the list ordered and coloured by heat, held still under the pointer and re-sorted once it leaves, a switch and a minute of typing each counted once, a terminal printing in a workspace nobody is looking at counted and a prompt not, the cold ones removed through their checklist, and what reached the disk. `RIGEE_SHOT_DIR` leaves PNGs of the list, its cold run and the checklist |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -402,6 +403,34 @@ Emptying a group removes it and gives its width back, except for the last one, w
 the "Nothing open" state. `pnpm panes:selftest` covers the arithmetic, `pnpm smoke:tabs` covers the
 button and `pnpm smoke:pdf` covers the whole point of it: a PDF still rendering, with ink, beside a
 terminal that got its own pty.
+
+### Workspace heat
+
+The side bar orders and colours the workspace list by how much each has been used lately. Three
+files: `heat.ts` is the arithmetic and is pure, so `panes:selftest` holds it to its numbers;
+`activity.ts` notices use and output; the side bar draws the result.
+
+- **What is stored is raw, and where.** Minutes per day — `used` and `output` — a few weeks of
+  them, in `WorkspaceUiState.activity`, never a score: weighing them differently later is a change
+  to arithmetic, not to a document on disk. Not on `Workspace`, because `Workspace` is a type in
+  `@rigee/plugin-api` and the shell's bookkeeping is nobody's contract; and the UI map is written
+  whole by `saveAllUi`, so a workspace's record is pruned with the workspace.
+- **Counted once a minute, which is what makes it cheap.** The output hook sits on every frame of
+  every terminal and the input hook on every keystroke; each costs a clock read and a map lookup,
+  and the store is written once a minute per workspace at most. Output must reach
+  `OUTPUT_MINUTE_CHARS` in a minute to count, so a restored terminal drawing its prompt does not
+  warm the workspace it is in.
+- **Age is days of use, not calendar days.** A day counts if the user did something in some
+  workspace that day; output alone does not make one, or a program left printing over a holiday
+  would age everything else. Do not "simplify" this to wall-clock decay: the list would come back
+  from two weeks away with every workspace cold.
+- **Cold goes by recency, heat by score.** Cold is ten days of use with nothing at all in a
+  workspace, however busy it once was — the one thing the side bar offers to remove, so its reason
+  has to be one anybody can check. A workspace with no record is cool, never cold, which is how the
+  ones that predate heat survive the upgrade.
+- **The list scrolls.** It is capped at 220 px, so the cold run is usually below its fold. That is
+  why *N cold* is in the header, and why `smoke:heat` scrolls a row into view before clicking it —
+  a point below the fold is on the explorer, and a click there switches nothing.
 
 ## Things that will bite you
 

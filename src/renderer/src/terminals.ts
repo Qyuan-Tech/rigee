@@ -1,4 +1,5 @@
 import { loadXterm } from './lazy'
+import { noteOutput } from './activity'
 import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
@@ -623,7 +624,11 @@ export function ensureTerminalTransport(workspaceId: string): void {
   // reader, but the queue is bounded, and the first thing a restored terminal does is redraw.
   transports.set(
     workspaceId,
-    window.rigee.onTerminalData(workspaceId, (paneId, data) => writeToPane(paneId, data))
+    window.rigee.onTerminalData(workspaceId, (paneId, data) => {
+      writeToPane(paneId, data)
+      // Whichever workspace is on screen: an agent printing in another is what keeps that one warm.
+      noteOutput(workspaceId, data.length)
+    })
   )
   void rpc['terminal:requestPort']({ workspaceId })
 }

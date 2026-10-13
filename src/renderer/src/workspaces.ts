@@ -138,17 +138,26 @@ export async function saveWorkspaceFile(
 }
 
 /**
+ * The workspace's own folder: the one its `.code-workspace` file is in. Null when it has no file —
+ * never saved, opened as a plain folder, or Scratch.
+ *
+ * With a workspace files folder in Settings it is `<folder>/<name>/`, made for it, while the folders
+ * the workspace lists are typically repos that each belong to something else. Its terminals start
+ * here, and the explorer heads its tree with it; one definition, so the two cannot disagree.
+ */
+export function workspaceDir(ws: Workspace): string | null {
+  return ws.filePath ? workspaceFileDir(ws.filePath) : null
+}
+
+/**
  * Where a new terminal in this workspace starts, when it is not a split of one already running.
  *
- * A saved workspace starts in the folder its file is in. That folder is the workspace's own — with
- * a workspace files folder in Settings it is `<folder>/<name>/`, made for it — while its folders
- * are typically repos that each belong to something else, and an agent started in one of them
- * sees that repo rather than the workspace. Unsaved, there is no such folder, and the first one
- * stands in. A folder that has gone since is main's to notice: it starts the shell at home.
+ * A saved workspace starts in its own folder (see `workspaceDir`), because an agent started in one
+ * of its repos sees that repo rather than the workspace. Unsaved, there is no such folder, and the
+ * first one stands in. A folder that has gone since is main's to notice: it starts the shell at home.
  */
 export function terminalCwd(ws: Workspace): string {
-  if (ws.filePath) return workspaceFileDir(ws.filePath)
-  return ws.folders[0]?.path ?? ws.defaultCwd ?? '.'
+  return workspaceDir(ws) ?? ws.folders[0]?.path ?? ws.defaultCwd ?? '.'
 }
 
 /**

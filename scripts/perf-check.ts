@@ -28,8 +28,15 @@ import { join } from 'node:path'
 const OUT = join(process.cwd(), 'out/renderer')
 const ASSETS = join(OUT, 'assets')
 
-/** Measured 276,067 B before the plugin system; the shell only gets smaller as features leave. */
-const ENTRY_BUDGET_BYTES = 320_000
+/**
+ * Measured 276,067 B before the plugin system; the shell only gets smaller as features leave.
+ *
+ * Moved from 320 kB to 327 kB for workspace heat, measured at 324,889 B: the side bar is ordered
+ * and coloured by it from the first frame, and its clock has to be counting from the first
+ * keystroke, so that much cannot wait for a chunk. Its checklist of cold workspaces, which can, is
+ * fetched on demand.
+ */
+const ENTRY_BUDGET_BYTES = 327_000
 
 let failures = 0
 let checks = 0
