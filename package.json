@@ -95,6 +95,10 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [],
+    "overrides": {
+      "monaco-editor>dompurify": "3.4.16",
+      "@electron/get>global-agent": "4.1.3"
+    },
     "supportedArchitectures": {
       "os": [
         "darwin",
