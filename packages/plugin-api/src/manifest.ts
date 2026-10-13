@@ -61,6 +61,7 @@ export type IconName =
   | 'search'
   | 'image'
   | 'video'
+  | 'preview'
 
 /**
  * A file matcher, in the only two forms worth supporting before someone asks for a third:
@@ -89,6 +90,31 @@ export interface EditorContribution {
    * editor beats it, and a file nothing else claims still opens.
    */
   priority?: number
+  /**
+   * Open a file in this editor only when the user asks for it by name, never because it claims the
+   * file — and say how they ask.
+   *
+   * For a second way of looking at a file that has a first one already: a Markdown file is source,
+   * written in the text editor, and its preview is something you ask for. Claiming `*.md` outright
+   * would take the editing away; claiming it at a priority below the text editor is impossible,
+   * because the text editor is the floor. So `priority` does not apply here, and the file opens in
+   * whatever else claims it — this editor is offered in its menu instead.
+   *
+   * Such an editor is taken to SHOW the file, never to edit it: its tab is not somewhere unsaved
+   * changes can be, so closing the file's own tab beside it still asks about them.
+   */
+  onRequest?: EditorRequest
+}
+
+/** How an editor that opens only on request is asked for, and how its tabs read. */
+export interface EditorRequest {
+  /** The item in a file's menu that opens it: `Open Preview`. */
+  label: string
+  /**
+   * Put before the file's name on the tab, so it reads apart from the file's own tab beside it:
+   * `Preview` gives `Preview README.md`.
+   */
+  tabPrefix?: string
 }
 
 /**

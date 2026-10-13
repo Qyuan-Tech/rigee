@@ -21,6 +21,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
+| `pnpm smoke:markdown` | right-clicks a README in the explorer, opens its preview from the menu, and asserts what was drawn — GitHub's anchors, a table, a task list, an alert, front matter, code coloured without losing a tab — and what was not: no script ran, no style, no borrowed class, no bare id. Then pictures: one on disk shown, one on the web fetched only when asked (counted by a server it runs itself), one on another machine's share and one that is a symlink to /dev/zero refused, one written after the document shown at its next change. Links followed without the window navigating; closing a file's unsaved text tab with its preview open still asks; a thousand-column table and a link used 20,000 times stopped before they reach the page; and the file changing, the reader's place kept through redraws and tab switches, and its whole folder deleted and put back. `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
 | `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split button: copy a file, move a terminal |
@@ -118,6 +119,7 @@ plugins/       the features, one folder each — OUTSIDE src/, see below
   pdf/           the PDF reader
   image/         the image viewer
   video/         the video player, streaming through the shell's media scheme
+  markdown/      the Markdown preview, offered in a file's menu and kept current as the file changes
   scm/           git: status, staging by line, commits, diffs
   search/        find in every file of the workspace
   browser/       Chromium tabs as native WebContentsViews
@@ -171,6 +173,13 @@ plugin owns outright, with its own persisted state), `views` (a side-bar panel),
 `overlays` (a dialog mounted at the shell root while the plugin is active). All declarative: the
 shell can draw the tab strip, draw the activity bar, resolve which viewer opens a `.pdf` and decide
 what goes in the right rail without loading a line of plugin code.
+
+**An editor can be offered rather than chosen.** One that declares `onRequest` never opens a file
+by claiming it — a Markdown file is source, and clicking one must go on opening the text editor —
+and is listed instead by `editorsOnRequest(path)`, which is what the explorer puts in a file's
+right-click menu; picking it is `openFile({ path, viewType })`. Its tab sits beside the file's own,
+because editor tabs are told apart by path *and* view type, and its `tabPrefix` names it
+(`Preview README.md`) so the two read apart.
 
 The two view slots are arranged differently and the difference is deliberate. **`slot: 'left'` is
 an activity bar** — one icon per view down the rail, one view showing, the selection remembered in

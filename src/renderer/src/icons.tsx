@@ -248,6 +248,14 @@ export const VideoIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** An eye: a file shown as it reads rather than as it is written — a Markdown file's preview. */
+export const PreviewIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M1.5 8s2.25-4.5 6.5-4.5S14.5 8 14.5 8s-2.25 4.5-6.5 4.5S1.5 8 1.5 8Z" />
+    <circle cx="8" cy="8" r="2" />
+  </Svg>
+)
+
 /** A puzzle piece: plugins. The one icon everyone already reads as "extensions". */
 export const PluginIcon = (p: Props): React.ReactElement => (
   <Svg {...p}>
@@ -288,5 +296,6 @@ export const ICONS: Record<IconName, (p: Props) => React.ReactElement> = {
   plugin: PluginIcon,
   search: SearchIcon,
   image: ImageIcon,
-  video: VideoIcon
+  video: VideoIcon,
+  preview: PreviewIcon
 }

@@ -11,6 +11,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { isUtf8 } from 'node:buffer'
@@ -325,6 +326,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
     else if (process.env.RIGEE_SMOKE === 'video') void runVideoSmoke()
+    else if (process.env.RIGEE_SMOKE === 'markdown') void runMarkdownSmoke()
     else if (process.env.RIGEE_SMOKE === 'heat') void runHeatSmoke()
     else if (process.env.RIGEE_SMOKE === 'running') void runRunningSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
@@ -3626,6 +3628,547 @@ async function runVideoSmoke(): Promise<void> {
     finish(true, 'played')
   } catch (err) {
     console.error('[smoke:video] threw:', err)
+    finish(false, 'threw')
+  }
+}
+
+/**
+ * The Markdown preview, end to end, from a right-click in the explorer.
+ *
+ * What it asserts: a Markdown file still opens as text and offers Open Preview instead, and a file
+ * nothing previews offers no menu at all; the preview opens from that menu, once, titled as what
+ * it is, its main half loaded only then; the document is drawn — GitHub's heading anchors, a
+ * table, a task list, an alert, the front matter, code coloured without losing a tab — and nothing
+ * hostile in it survives: no script runs, no style, no borrowed class, no bare id; a picture on disk
+ * is shown and one on the web is not fetched until asked for; links go where they say and the
+ * window never navigates; and the file changing, going and coming back is followed on screen.
+ *
+ * The picture "on the web" is served from here, so every request for it is counted. RIGEE_SHOT
+ * leaves a PNG of the preview.
+ */
+async function runMarkdownSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const { createServer } = await import('node:http')
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAFElEQVR4nGP4z8DwHwgbQBQDMgcAeyoI+eLGsqMAAAAASUVORK5CYII=', 'base64')
+  let requests = 0
+  // Read through a call: the server's callback counts, and a narrowed `requests` would not see it.
+  const fetched = (): number => requests
+  const server = createServer((_req, res) => {
+    requests++
+    res.writeHead(200, { 'Content-Type': 'image/png' })
+    res.end(png)
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  const port = (server.address() as { port: number }).port
+
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:markdown]', JSON.stringify({ ok, stage, trail, ...(extra === undefined ? {} : { extra }) }))
+    server.close()
+    app.exit(ok ? 0 : 1)
+  }
+
+  const root = join(app.getPath('userData'), 'markdown-fixture')
+  const readme = join(root, 'docs', 'README.md')
+  const source = join(root, 'src', 'app.ts')
+  const filler = Array.from({ length: 60 }, (_, i) => `Filler paragraph ${i + 1}.`).join('\n\n')
+  const code = "const answer: number = 42\n\tconst tabbed = 'kept'\n"
+  const readmeText = [
+    '---',
+    'title: Smoke',
+    '---',
+    '',
+    '# Markdown smoke',
+    '',
+    "Some **bold**, `code`, and [the guide's setup](guide.md#setup).",
+    '',
+    '[external](https://example.com/) · [line three](../src/app.ts#L3) · [rooted](/src/app.ts) · [jump](#install)',
+    '',
+    '> [!WARNING]',
+    '> Mind the gap.',
+    '',
+    '| a | b |',
+    '|---|---|',
+    '| 1 | 2 |',
+    '| 3 | 4 |',
+    '',
+    '- [x] done',
+    '- [ ] todo',
+    '',
+    '```ts',
+    code + '```',
+    '',
+    `![local picture](pic.png) ![badge](http://127.0.0.1:${port}/badge.png)`,
+    '',
+    '![tall](tall.png)',
+    '',
+    // Written before the picture it shows exists, as an agent might; and three it must not read:
+    // another machine's share, two ways, and a device that never ends.
+    '![later](later.png) ![zero](zero.png)',
+    '',
+    '<img src="\\\\host\\share\\a.png" alt="unc"> <img src="/\\host\\share\\b.png" alt="unc-slash">',
+    '',
+    "<script>window.__mdPwned = 'script'</script>",
+    '<img src="x" onerror="window.__mdPwned = \'onerror\'">',
+    '<a href="javascript:window.__mdPwned=\'href\'">js link</a>',
+    '<div style="position:fixed;inset:0" class="tabstrip" id="rigee">borrowed</div>',
+    '<iframe src="https://example.com/"></iframe>',
+    '',
+    filler,
+    '',
+    '## Install',
+    '',
+    // As much again below the heading, or the end of the document stops it short of the top.
+    filler,
+    ''
+  ].join('\n')
+  mkdirSync(join(root, 'docs'), { recursive: true })
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(readme, readmeText)
+  writeFileSync(join(root, 'docs', 'guide.md'), `# Guide\n\n${filler}\n\n## Setup\n\n${filler}\n`)
+  writeFileSync(join(root, 'docs', 'pic.png'), png)
+  // Tall enough that the page laid out without it for a frame would lose the reader's place.
+  writeFileSync(join(root, 'docs', 'tall.png'), solidPng(40, 600))
+  // A picture checked in as a symlink to a device: no size, no end. Read whole, it would fill main.
+  if (process.platform !== 'win32') symlinkSync('/dev/zero', join(root, 'docs', 'zero.png'))
+  // Two small files that render to a great deal: a thousand-column table, and one long link
+  // definition used twenty thousand times.
+  const wide = join(root, 'docs', 'wide.md')
+  const refs = join(root, 'docs', 'refs.md')
+  writeFileSync(wide, `|${Array.from({ length: 1000 }, (_, i) => `c${i}`).join('|')}|\n|${'-|'.repeat(1000)}\n${'|a|\n'.repeat(2000)}`)
+  writeFileSync(refs, `[d]: https://e.com/${'a'.repeat(5000)}\n\n${'[x][d] '.repeat(20000)}\n`)
+  writeFileSync(source, 'export const a = 1\nexport const b = 2\nexport const c = 3\n')
+
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store, plugins, menus } = window.__rigee
+    const until = async (test, ms = 10000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }
+    const row = (label) => [...document.querySelectorAll('.explorer__body .row')]
+      .find(r => r.querySelector('.row__label')?.textContent === label)
+    const activeTab = () => {
+      const s = store.getState()
+      const r = s.rowsByWorkspace[s.activeWorkspaceId]
+      const g = r?.groups.find(g => g.id === r.activeGroupId)
+      return g?.tabs.find(t => t.id === g.activeTabId) ?? null
+    }
+    const tabsOf = (path, viewType) => store.getState().rowsByWorkspace['ws-markdown'].groups
+      .flatMap(g => g.tabs).filter(t => t.kind === 'editor' && t.filePath === path && t.viewType === viewType)
+    const doc = () => document.querySelector('.markdown__doc')
+    const link = (text) => [...(doc()?.querySelectorAll('a') ?? [])].find(a => a.textContent === text)
+    const bar = (label) => [...document.querySelectorAll('.markdown__bar .btn')].find(b => b.textContent === label)
+    // The preview's own notice: other panels in a workspace with folders have notices of their own.
+    const noticeText = () => [...(document.querySelector('.markdown__body')?.querySelectorAll('div') ?? [])]
+      .find(d => d.style.placeItems === 'center' && d.textContent)?.textContent || ''`
+
+  try {
+    // --- a Markdown file is text that offers a preview ------------------------------------------
+    const claims = await js<{ ready: boolean; md: string | null; offers: unknown; ts: unknown }>(`(async () => {
+      ${helpers}
+      const ready = !!(await until(() => store.getState().ready, 15000))
+      return {
+        ready,
+        md: plugins.resolveViewType('/x/notes.md'),
+        offers: plugins.editorsOnRequest('/x/NOTES.MARKDOWN'),
+        ts: plugins.editorsOnRequest('/x/a.ts')
+      }
+    })()`)
+    if (!claims.ready) return finish(false, 'never-ready')
+    trail.push(`.md opens in ${claims.md}; offers ${JSON.stringify(claims.offers)}; .ts offers ${JSON.stringify(claims.ts)}`)
+    if (claims.md !== 'text-editor.monaco') return finish(false, 'markdown-taken-from-the-text-editor')
+    if (JSON.stringify(claims.offers) !== '[{"viewType":"markdown.preview","label":"Open Preview"}]') return finish(false, 'preview-not-offered')
+    if (JSON.stringify(claims.ts) !== '[]') return finish(false, 'preview-offered-for-a-ts-file')
+
+    // --- Open Preview, from the explorer ------------------------------------------------------------
+    const activeBefore = pluginHost?.active().includes('markdown') ?? false
+    const opened = await js<{ ok: boolean; stage?: string; offered?: string[]; title?: string; notice?: string }>(`(async () => {
+      ${helpers}
+      store.getState().addWorkspace({
+        id: 'ws-markdown', name: 'markdown', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(root)}, name: 'mdroot', isGitRepo: false, repoRoot: null }]
+      })
+      const docs = await until(() => row('docs'))
+      if (!docs) return { ok: false, stage: 'no-docs-row' }
+      docs.click()
+      const file = await until(() => row('README.md'))
+      if (!file) return { ok: false, stage: 'no-readme-row' }
+      let offered = null
+      menus.answer = (items) => { offered = items; return 'markdown.preview' }
+      file.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const tab = await until(() => { const t = activeTab(); return t && t.viewType === 'markdown.preview' ? t : null })
+      menus.answer = null
+      if (!offered) return { ok: false, stage: 'right-click-opened-no-menu' }
+      const labels = offered.map(i => i.kind === 'separator' ? '—' : i.label)
+      if (!tab) return { ok: false, stage: 'open-preview-opened-nothing', offered: labels }
+      const drawn = await until(() => doc()?.querySelector('h1'))
+      return { ok: !!drawn, stage: 'never-drawn', offered: labels, title: tab.title, notice: noticeText() }
+    })()`)
+    if (!opened.ok) return finish(false, opened.stage ?? 'open', opened)
+    trail.push(`README.md's menu: ${opened.offered?.join(' | ')}; Open Preview opened "${opened.title}"`)
+    // First, and in a group of its own, ahead of everything the tree offers for any file.
+    if (opened.offered?.[0] !== 'Open Preview' || opened.offered[1] !== '—') return finish(false, 'open-preview-not-first-in-the-menu', opened.offered)
+    if (opened.title !== 'Preview README.md') return finish(false, 'preview-tab-titled-wrong', opened.title)
+    if (activeBefore || !pluginHost?.active().includes('markdown')) return finish(false, 'main-half-not-loaded-on-demand', { activeBefore })
+
+    // --- what was drawn ---------------------------------------------------------------------------
+    const drawn = await js<Record<string, unknown>>(`(async () => {
+      ${helpers}
+      const d = doc()
+      const code = d.querySelector('pre code.language-ts')
+      const coloured = await until(() => code?.querySelector('.tok-keyword'), 20000)
+      return {
+        h1: d.querySelector('h1')?.textContent,
+        install: d.querySelector('h2')?.id,
+        rows: d.querySelectorAll('table tbody tr').length,
+        boxes: [...d.querySelectorAll('input[type=checkbox]')].map(b => (b.checked ? 'x' : 'o') + (b.disabled ? 'd' : 'e')).join(','),
+        alert: d.querySelector('.markdown-alert--warning .markdown-alert__title')?.textContent,
+        alertBody: d.querySelector('.markdown-alert--warning p:last-child')?.textContent,
+        front: d.querySelector('.markdown-frontmatter code')?.textContent,
+        coloured: !!coloured,
+        code: code?.textContent
+      }
+    })()`)
+    trail.push(`drawn: ${JSON.stringify({ ...drawn, code: undefined })}`)
+    if (drawn.h1 !== 'Markdown smoke') return finish(false, 'heading-not-drawn', drawn)
+    if (drawn.install !== 'user-content-install') return finish(false, 'heading-anchor-not-githubs', drawn)
+    if (drawn.rows !== 2 || drawn.boxes !== 'xd,od') return finish(false, 'table-or-task-list-wrong', drawn)
+    if (drawn.alert !== 'Warning' || drawn.alertBody !== 'Mind the gap.') return finish(false, 'alert-not-drawn', drawn)
+    if (drawn.front !== 'title: Smoke\n') return finish(false, 'front-matter-not-shown', drawn)
+    if (!drawn.coloured) return finish(false, 'code-never-coloured', drawn)
+    if (drawn.code !== code) return finish(false, 'coloured-code-is-not-the-code', drawn.code)
+
+    // --- what was not -------------------------------------------------------------------------------
+    const hostile = await js<Record<string, unknown>>(`(async () => {
+      ${helpers}
+      await sleep(500)
+      const d = doc()
+      return {
+        ran: window.__mdPwned ?? null,
+        elements: d.querySelectorAll('script, style, iframe').length,
+        handlers: [...d.querySelectorAll('*')].filter(e => [...e.attributes].some(a => a.name.startsWith('on'))).length,
+        styled: d.querySelectorAll('[style]').length,
+        borrowed: d.querySelectorAll('.tabstrip').length,
+        bareId: d.querySelectorAll('#rigee').length,
+        prefixedId: d.querySelectorAll('#user-content-rigee').length,
+        scripted: d.querySelectorAll('a[href^="javascript"]').length
+      }
+    })()`)
+    trail.push(`hostile HTML: ${JSON.stringify(hostile)}`)
+    if (hostile.ran !== null) return finish(false, 'a-document-ran-script', hostile)
+    if (hostile.elements !== 0 || hostile.handlers !== 0 || hostile.styled !== 0 || hostile.scripted !== 0) {
+      return finish(false, 'hostile-html-survived', hostile)
+    }
+    if (hostile.borrowed !== 0 || hostile.bareId !== 0 || hostile.prefixedId !== 1) return finish(false, 'class-or-id-not-contained', hostile)
+
+    // --- pictures: on disk at once, on the web only when asked -----------------------------------------
+    const pictures = await js<{ local: boolean; held?: string; offered: boolean; standing: Record<string, string> }>(`(async () => {
+      ${helpers}
+      const d = doc()
+      const local = await until(() => [...d.querySelectorAll('img')].find(i => i.src.startsWith('blob:') && i.complete && i.naturalWidth === 3))
+      await until(() => d.querySelector('.markdown-image[title*="later.png"]'))
+      await sleep(300)
+      return {
+        local: !!local,
+        held: d.querySelector('.markdown-image[title*="127.0.0.1"]')?.textContent,
+        offered: !!bar('Show remote images'),
+        standing: Object.fromEntries([...d.querySelectorAll('.markdown-image')].map(b => [b.textContent, b.title]))
+      }
+    })()`)
+    trail.push(`local picture shown: ${pictures.local}; remote one held as "${pictures.held}", fetched ${fetched()} times; offered: ${pictures.offered}`)
+    trail.push(`standing in: ${JSON.stringify(pictures.standing)}`)
+    if (!pictures.local) return finish(false, 'local-picture-not-shown')
+    if (pictures.held !== 'badge' || !pictures.offered) return finish(false, 'remote-picture-not-held', pictures)
+    if (fetched() !== 0) return finish(false, 'remote-picture-fetched-unasked', fetched())
+    const refused = (alt: string): boolean => pictures.standing[alt]?.endsWith('is not somewhere this preview can load a picture from.') ?? false
+    if (!refused('unc') || !refused('unc-slash')) return finish(false, 'a-share-on-another-machine-was-not-refused', pictures.standing)
+    if (process.platform !== 'win32' && pictures.standing.zero !== 'zero.png is not a picture') return finish(false, 'a-device-was-read-as-a-picture', pictures.standing)
+    if (pictures.standing.later !== 'later.png was not found.') return finish(false, 'missing-picture-not-said', pictures.standing)
+    if (process.env.RIGEE_SHOT) writeFileSync(process.env.RIGEE_SHOT, (await wc.capturePage()).toPNG())
+
+    const asked = await js<{ shown: boolean; offered: boolean }>(`(async () => {
+      ${helpers}
+      bar('Show remote images').click()
+      const shown = await until(() => [...doc().querySelectorAll('img')].filter(i => i.src.startsWith('blob:') && i.complete && i.naturalWidth === 3).length === 2)
+      return { shown: !!shown, offered: !!bar('Show remote images') }
+    })()`)
+    trail.push(`asked: remote picture shown ${asked.shown}, fetched ${fetched()} time(s)`)
+    if (!asked.shown || asked.offered || fetched() !== 1) {
+      return finish(false, 'remote-picture-not-fetched-when-asked', { ...asked, fetched: fetched() })
+    }
+
+    // --- links ---------------------------------------------------------------------------------------
+    const links = await js<Record<string, unknown>>(`(async () => {
+      ${helpers}
+      const real = window.open
+      const opened = []
+      window.open = (url) => { opened.push(String(url)); return null }
+      const before = location.href
+      link('external').click()
+      const aux = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true })
+      link('external').dispatchEvent(aux)
+      window.open = real
+      const scroller = document.querySelector('.markdown__scroller')
+      scroller.scrollTop = 0
+      link('jump').click()
+      await sleep(100)
+      const install = doc().querySelector('#user-content-install')
+      return {
+        opened,
+        stayed: location.href === before,
+        auxCancelled: aux.defaultPrevented,
+        jumped: scroller.scrollTop,
+        offset: Math.round(install.getBoundingClientRect().top - scroller.getBoundingClientRect().top)
+      }
+    })()`)
+    trail.push(`links: ${JSON.stringify(links)}`)
+    if (JSON.stringify(links.opened) !== '["https://example.com/"]' || !links.stayed || !links.auxCancelled) {
+      return finish(false, 'external-link-not-handed-to-the-browser', links)
+    }
+    if ((links.jumped as number) < 300 || Math.abs((links.offset as number) - 12) > 3) return finish(false, 'anchor-link-did-not-scroll', links)
+
+    const across = await js<{ ok: boolean; stage?: string; title?: string; top?: number; offset?: number }>(`(async () => {
+      ${helpers}
+      link("the guide's setup").click()
+      const tab = await until(() => { const t = activeTab(); return t?.title === 'Preview guide.md' ? t : null })
+      if (!tab || tab.viewType !== 'markdown.preview') return { ok: false, stage: 'guide-link-opened-no-preview' }
+      const setup = await until(() => document.querySelector('.markdown__doc #user-content-setup'))
+      if (!setup) return { ok: false, stage: 'guide-never-drawn' }
+      await sleep(200)
+      const scroller = document.querySelector('.markdown__scroller')
+      return { ok: true, title: tab.title, top: scroller.scrollTop, offset: Math.round(setup.getBoundingClientRect().top - scroller.getBoundingClientRect().top) }
+    })()`)
+    trail.push(`a link to guide.md#setup opened "${across.title}", scrolled to ${across.top} (heading at ${across.offset}px)`)
+    if (!across.ok) return finish(false, across.stage ?? 'guide')
+    if ((across.top ?? 0) < 300 || Math.abs((across.offset ?? 0) - 12) > 3) return finish(false, 'linked-anchor-not-scrolled-to', across)
+
+    const files = await js<{ ok: boolean; stage?: string; lineThree?: string; rooted?: string }>(`(async () => {
+      ${helpers}
+      const back = async () => {
+        store.getState().setActiveTab('ws-markdown', tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0].id)
+        return await until(() => link('line three'))
+      }
+      const opensText = () => until(() => { const t = activeTab(); return t?.viewType === 'text-editor.monaco' ? t : null })
+      if (!(await back())) return { ok: false, stage: 'readme-preview-never-came-back' }
+      link('line three').click()
+      const first = await opensText()
+      if (!first) return { ok: false, stage: 'file-link-opened-nothing' }
+      store.getState().closeTab('ws-markdown', first.id)
+      if (!(await back())) return { ok: false, stage: 'readme-preview-never-came-back' }
+      link('rooted').click()
+      const second = await opensText()
+      if (!second) return { ok: false, stage: 'rooted-link-opened-nothing' }
+      store.getState().closeTab('ws-markdown', second.id)
+      return { ok: true, lineThree: first.filePath, rooted: second.filePath }
+    })()`)
+    trail.push(`../src/app.ts#L3 opened ${files.lineThree}; /src/app.ts opened ${files.rooted}`)
+    if (!files.ok) return finish(false, files.stage ?? 'file-links')
+    if (files.lineThree !== source || files.rooted !== source) return finish(false, 'file-link-resolved-wrong', files)
+
+    // --- Edit, unsaved changes beside the preview ----------------------------------------------------
+    const edited = await js<{ ok: boolean; stage?: string; edit?: string }>(`(async () => {
+      ${helpers}
+      const preview = tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0]
+      store.getState().setActiveTab('ws-markdown', preview.id)
+      // README's own bar, not the one still on screen from the tab before it.
+      const edit = await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/README.md' && bar('Edit'))
+      if (!edit) return { ok: false, stage: 'no-edit-button' }
+      edit.click()
+      const text = await until(() => { const t = activeTab(); return t?.viewType === 'text-editor.monaco' && t.filePath === ${JSON.stringify(readme)} ? t : null })
+      if (!text) return { ok: false, stage: 'edit-opened-no-text-editor' }
+      const input = await until(() => document.querySelector('.monaco-editor .native-edit-context, .monaco-editor textarea'), 15000)
+      if (!input) return { ok: false, stage: 'text-editor-never-mounted' }
+      input.focus()
+      return { ok: document.activeElement === input, stage: 'text-editor-would-not-take-the-keyboard', edit: text.title }
+    })()`)
+    if (!edited.ok) return finish(false, edited.stage ?? 'edit', edited)
+    await typeText(wc, 'x')
+    // The preview open beside it must not count as the changes still being open somewhere.
+    process.env.RIGEE_SMOKE_UNSAVED_ANSWER = 'cancel'
+    const unsaved = await js<{ ok: boolean; stage?: string; marked?: string[]; kept?: boolean }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => document.querySelector('.tab__close--dirty'), 5000))) return { ok: false, stage: 'typing-left-nothing-unsaved' }
+      const tabs = () => [...document.querySelectorAll('.tab')]
+      const marked = tabs().filter(t => t.querySelector('.tab__close--dirty')).map(t => t.querySelector('.tab__label')?.textContent)
+      tabs().find(t => t.querySelector('.tab__label')?.textContent === 'README.md')?.querySelector('.tab__close')?.click()
+      await sleep(600)
+      return { ok: true, marked, kept: tabsOf(${JSON.stringify(readme)}, 'text-editor.monaco').length === 1 }
+    })()`)
+    process.env.RIGEE_SMOKE_UNSAVED_ANSWER = 'discard'
+    const dropped = await js<boolean>(`(async () => {
+      ${helpers}
+      ;[...document.querySelectorAll('.tab')].find(t => t.querySelector('.tab__label')?.textContent === 'README.md')?.querySelector('.tab__close')?.click()
+      return !!(await until(() => tabsOf(${JSON.stringify(readme)}, 'text-editor.monaco').length === 0 && !store.getState().dirtyFiles[${JSON.stringify(readme)}], 5000))
+    })()`)
+    delete process.env.RIGEE_SMOKE_UNSAVED_ANSWER
+    trail.push(`Edit opened "${edited.edit}"; typed into it, the unsaved dot was on ${JSON.stringify(unsaved.marked)}; closing it with the preview open asked (kept on Cancel: ${unsaved.kept}); Don't Save closed it: ${dropped}`)
+    if (!unsaved.ok) return finish(false, unsaved.stage ?? 'unsaved', unsaved)
+    if (edited.edit !== 'README.md' || JSON.stringify(unsaved.marked) !== '["README.md"]') return finish(false, 'unsaved-dot-on-the-wrong-tab', unsaved)
+    if (!unsaved.kept) return finish(false, 'closing-unsaved-text-beside-its-preview-did-not-ask', unsaved)
+    if (!dropped) return finish(false, 'dont-save-did-not-close', unsaved)
+
+    // --- the same preview twice, and a file nothing previews ----------------------------------------
+    const menus = await js<{ ok: boolean; stage?: string; previews?: number; tsOffered?: string[] | null }>(`(async () => {
+      ${helpers}
+      const preview = tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0]
+      menus.answer = () => 'markdown.preview'
+      row('README.md').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      await until(() => activeTab()?.id === preview.id)
+      menus.answer = null
+      const previews = tabsOf(${JSON.stringify(readme)}, 'markdown.preview').length
+      row('src').click()
+      const ts = await until(() => row('app.ts'))
+      if (!ts) return { ok: false, stage: 'no-app-ts-row' }
+      let tsOffered = null
+      menus.answer = (items) => { tsOffered = items.map(i => i.kind === 'separator' ? '—' : i.label); return null }
+      ts.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      await sleep(300)
+      menus.answer = null
+      return { ok: activeTab()?.id === preview.id, stage: 'preview-not-reactivated', previews, tsOffered }
+    })()`)
+    trail.push(`previews of README.md after asking twice: ${menus.previews}; app.ts's menu: ${menus.tsOffered?.join(' | ')}`)
+    if (!menus.ok) return finish(false, menus.stage ?? 'menus', menus)
+    if (menus.previews !== 1) return finish(false, 'asking-twice-opened-two-previews', menus)
+    // The tree's own menu, as for any file, with nothing in it that previews.
+    if (!menus.tsOffered || menus.tsOffered.includes('Open Preview')) return finish(false, 'a-file-nothing-previews-was-offered-a-preview', menus.tsOffered)
+
+    // --- the file changes while it is read ---------------------------------------------------------
+    // The picture the document has shown as missing since it opened turns up, and then the document
+    // changes: the redraw asks for the picture again.
+    writeFileSync(join(root, 'docs', 'later.png'), solidPng(30, 20))
+    writeFileSync(readme, readmeText + '\n## Late\n\nThe picture is there now.\n')
+    const late = await js<boolean>(`(async () => {
+      ${helpers}
+      await until(() => doc()?.querySelector('#user-content-late'), 5000)
+      return !!(await until(() => [...doc().querySelectorAll('img')].find(i => i.complete && i.naturalWidth === 30), 5000))
+    })()`)
+    trail.push(`a picture written after the document, shown at its next change: ${late}`)
+    if (!late) return finish(false, 'a-picture-that-turned-up-was-not-shown')
+
+    // Read from below the tall picture, and measure what the reader sees — where the Install heading
+    // sits — while the file grows at its end, as a plan an agent is writing does. Nothing above the
+    // reader changes, so nothing they are looking at may move: not by a scroll, and not by the page
+    // being laid out for a frame without the pictures above.
+    const where = `(() => {
+      const scroller = document.querySelector('.markdown__scroller')
+      const heading = doc()?.querySelector('#user-content-install')
+      return heading && scroller ? Math.round(heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top) : null
+    })()`
+    const reading = await js<number | null>(`(async () => {
+      ${helpers}
+      await until(() => [...doc().querySelectorAll('img')].find(i => i.complete && i.naturalHeight === 600))
+      link('jump').click()
+      await sleep(100)
+      return ${where}
+    })()`)
+    writeFileSync(readme, readmeText + '\n## Late\n\nThe picture is there now.\n\n## Fresh\n\nWritten while it was open.\n')
+    const fresh = await js<{ drawn: boolean; at: number | null }>(`(async () => {
+      ${helpers}
+      const drawn = !!(await until(() => doc()?.querySelector('#user-content-fresh'), 5000))
+      await sleep(300)
+      return { drawn, at: ${where} }
+    })()`)
+    trail.push(`a change at the end drawn: ${fresh.drawn}; Install heading at ${reading}px before, ${fresh.at}px after`)
+    if (!fresh.drawn) return finish(false, 'change-on-disk-not-drawn')
+    if (reading === null || Math.abs((fresh.at ?? 0) - reading) > 1) return finish(false, 'redraw-lost-the-readers-place', { reading, ...fresh })
+
+    // --- away and back ------------------------------------------------------------------------------
+    // Another tab takes the column and the preview unmounts; coming back finds its pictures already
+    // here, so the page is its full height at once and the place is where it was.
+    const remount = await js<{ ok: boolean; stage?: string; at?: number | null }>(`(async () => {
+      ${helpers}
+      const preview = tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0]
+      const guide = tabsOf(${JSON.stringify(join(root, 'docs', 'guide.md'))}, 'markdown.preview')[0]
+      store.getState().setActiveTab('ws-markdown', guide.id)
+      if (!(await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/guide.md'))) return { ok: false, stage: 'guide-never-came' }
+      store.getState().setActiveTab('ws-markdown', preview.id)
+      if (!(await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/README.md' && doc()?.querySelector('#user-content-install')))) {
+        return { ok: false, stage: 'readme-never-came-back' }
+      }
+      await sleep(500)
+      return { ok: true, at: ${where} }
+    })()`)
+    trail.push(`away and back: Install heading at ${remount.at}px`)
+    if (!remount.ok) return finish(false, remount.stage ?? 'remount')
+    if (Math.abs((remount.at ?? 0) - (fresh.at ?? 0)) > 2) return finish(false, 'coming-back-lost-the-readers-place', { before: fresh.at, after: remount.at })
+
+    // --- documents that render to too much ---------------------------------------------------------
+    const bombs = await js<{ wide: boolean; table: boolean; refs: string | null }>(`(async () => {
+      ${helpers}
+      const open = (id, path) => store.getState().openTab('ws-markdown', {
+        id, kind: 'editor', title: 'Preview ' + path.split('/').pop(), pinned: false,
+        filePath: path, repoId: null, readOnly: false, viewType: 'markdown.preview'
+      })
+      const at = (name) => document.querySelector('.markdown__where')?.textContent === 'docs/' + name
+      open('md-wide', ${JSON.stringify(wide)})
+      const wide = !!(await until(() => at('wide.md') && doc()?.textContent.includes('c999'), 15000))
+      const table = !!doc()?.querySelector('table')
+      open('md-refs', ${JSON.stringify(refs)})
+      const refs = await until(() => at('refs.md') && noticeText().includes('renders to more') ? noticeText() : null, 15000)
+      store.getState().closeTab('ws-markdown', 'md-wide')
+      store.getState().closeTab('ws-markdown', 'md-refs')
+      store.getState().setActiveTab('ws-markdown', tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0].id)
+      await until(() => at('README.md') && doc()?.querySelector('h1'))
+      return { wide, table, refs }
+    })()`)
+    trail.push(`a thousand-column table drawn as text: ${bombs.wide && !bombs.table}; a link used 20,000 times: "${bombs.refs}"`)
+    if (!bombs.wide || bombs.table) return finish(false, 'oversized-table-was-built', bombs)
+    if (bombs.refs !== 'This document renders to more than the preview can show.') return finish(false, 'link-expansion-not-stopped', bombs)
+
+    // --- the folder goes, and comes back --------------------------------------------------------------
+    // A checkout of a branch without it, and back again: the preview says what happened, and then
+    // follows the file again — including the change after, which needs the folder watched anew.
+    rmSync(join(root, 'docs'), { recursive: true, force: true })
+    const gone = await js<string | null>(`(async () => {
+      ${helpers}
+      return await until(() => noticeText().includes('no longer there') ? noticeText() : null, 5000)
+    })()`)
+    trail.push(`folder deleted: "${gone}"`)
+    if (gone !== 'README.md is no longer there.') return finish(false, 'deletion-not-said', gone)
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(readme, readmeText)
+    const back = await js<boolean>(`(async () => { ${helpers}; return !!(await until(() => !noticeText() && doc()?.querySelector('h1'), 8000)) })()`)
+    writeFileSync(readme, readmeText + '\n## Again\n\nFollowed after the folder came back.\n')
+    const again = await js<boolean>(`(async () => { ${helpers}; return !!(await until(() => doc()?.querySelector('#user-content-again'), 8000)) })()`)
+    trail.push(`folder back: drawn again ${back}, and a change after it followed: ${again}`)
+    if (!back) return finish(false, 'recreated-folder-not-drawn')
+    if (!again) return finish(false, 'change-after-the-folder-came-back-not-followed')
+
+    // --- renamed in the tree ----------------------------------------------------------------------
+    // The tree's own Rename, from its menu: the preview follows the file and stays a preview, under
+    // its new name, still watching it.
+    const renamed = await js<{ ok: boolean; stage?: string; viewType?: string; title?: string }>(`(async () => {
+      ${helpers}
+      const file = await until(() => row('README.md'))
+      if (!file) return { ok: false, stage: 'no-readme-row-after-the-folder-came-back' }
+      menus.answer = () => 'rename'
+      file.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const input = await until(() => document.querySelector('.explorer__input'))
+      menus.answer = null
+      if (!input) return { ok: false, stage: 'no-name-box' }
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'OVERVIEW.md')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await sleep(50)
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+      const tab = await until(() => { const t = activeTab(); return t?.filePath.endsWith('OVERVIEW.md') ? t : null }, 8000)
+      if (!tab) return { ok: false, stage: 'the-preview-did-not-follow-the-rename' }
+      const drawn = await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/OVERVIEW.md' && doc()?.querySelector('h1'), 8000)
+      return { ok: !!drawn, stage: 'the-renamed-preview-never-drew', viewType: tab.viewType, title: tab.title }
+    })()`)
+    const overview = join(root, 'docs', 'OVERVIEW.md')
+    if (renamed.ok) writeFileSync(overview, readmeText + '\n## Renamed\n\nStill followed under its new name.\n')
+    const followed = renamed.ok && (await js<boolean>(`(async () => { ${helpers}; return !!(await until(() => doc()?.querySelector('#user-content-renamed'), 8000)) })()`))
+    trail.push(`renamed in the tree: the tab is "${renamed.title}", ${renamed.viewType}; a change to OVERVIEW.md followed: ${followed}`)
+    if (!renamed.ok) return finish(false, renamed.stage ?? 'rename', renamed)
+    if (renamed.viewType !== 'markdown.preview' || renamed.title !== 'Preview OVERVIEW.md') return finish(false, 'a-renamed-preview-stopped-being-one', renamed)
+    if (!followed) return finish(false, 'the-renamed-file-is-not-watched')
+
+    finish(true, 'previewed')
+  } catch (err) {
+    console.error('[smoke:markdown] threw:', err)
     finish(false, 'threw')
   }
 }

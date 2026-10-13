@@ -9,7 +9,7 @@ import { PluginsView } from './components/PluginsView'
 import { menuProbe } from './contextMenu'
 import { activatedPlugins } from './plugins/activate'
 import { bind } from './plugins/bindings'
-import { resolveViewType } from './plugins/registry'
+import { editorsOnRequest, resolveViewType } from './plugins/registry'
 import { useApp, newTerminalTab } from './store'
 import { getTerminal, paneKey } from './terminals'
 import { applyFonts } from './fonts'
@@ -22,8 +22,9 @@ import './theme.css'
  * only way to exercise the real keystroke path without a human at the keyboard.
  *
  * `plugins` is here for `pnpm smoke:plugins`, which has to assert a negative the DOM cannot show:
- * that opening a text file did NOT load the PDF plugin. Both are cordis-free lookups, so reaching
- * for them from the smoke script cannot itself change what is loaded.
+ * that opening a text file did NOT load the PDF plugin — and for `pnpm smoke:markdown`, that a
+ * Markdown file still opens as text and offers its preview instead. All are cordis-free lookups, so
+ * reaching for them from the smoke script cannot itself change what is loaded.
  *
  * `menus` is for `pnpm smoke:tabs`: the tab strip's menu is native, so the check answers it here
  * rather than clicking it.
@@ -35,7 +36,11 @@ declare global {
       getTerminal: typeof getTerminal
       paneKey: typeof paneKey
       newTerminalTab: typeof newTerminalTab
-      plugins: { activated: typeof activatedPlugins; resolveViewType: typeof resolveViewType }
+      plugins: {
+        activated: typeof activatedPlugins
+        resolveViewType: typeof resolveViewType
+        editorsOnRequest: typeof editorsOnRequest
+      }
       menus: typeof menuProbe
     }
   }
@@ -45,7 +50,7 @@ window.__rigee = {
   getTerminal,
   paneKey,
   newTerminalTab,
-  plugins: { activated: activatedPlugins, resolveViewType },
+  plugins: { activated: activatedPlugins, resolveViewType, editorsOnRequest },
   menus: menuProbe
 }
 

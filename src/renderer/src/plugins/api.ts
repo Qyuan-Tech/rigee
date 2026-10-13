@@ -7,7 +7,7 @@ import { focusGroupContent } from '../shortcuts'
 import { nextTabId, rowOf, takeDuplicateOrigin, useApp } from '../store'
 import { openTerminalTab, splitTerminalAt } from '../terminals'
 import { addFolders, openAsWorkspace } from '../workspaces'
-import { ownerOf, resolveViewType } from './registry'
+import { editorTabTitle, ownerOf, viewTypeFor } from './registry'
 
 /**
  * The shell side of `@rigee/plugin-api` — the behaviour behind the shim a plugin imports.
@@ -245,18 +245,19 @@ export function openFile(request: OpenFileRequest): TabId | null {
   const groupId = near?.id ?? before.activeGroupId
   const showing = groupById(before, groupId)?.activeTabId ?? null
 
+  // Resolved once, here, from the manifests alone: an array scan over a handful of declarations,
+  // and no plugin loaded. Doing it in the pane instead would either scan on every render or force
+  // the viewer to load before the user has committed to the file.
+  const viewType = viewTypeFor(request.path, request.viewType) ?? undefined
   const tab: EditorTab = {
     id: nextTabId(),
     kind: 'editor',
-    title: request.title ?? basename(request.path),
+    title: request.title ?? editorTabTitle(request.path, viewType),
     pinned: false,
     filePath: request.path,
     repoId: null,
     readOnly: request.readOnly ?? false,
-    // Resolved once, here, from the manifests alone: an array scan over a handful of declarations,
-    // and no plugin loaded. Doing it in the pane instead would either scan on every render or
-    // force the viewer to load before the user has committed to the file.
-    viewType: resolveViewType(request.path) ?? undefined
+    viewType
   }
   store.openTab(workspaceId, tab, groupId)
   // openTab re-activates an existing tab for the same file rather than adding this one, so read
@@ -278,8 +279,6 @@ export function openFile(request: OpenFileRequest): TabId | null {
   }
   return opened
 }
-
-const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
 
 /**
  * The one tab with the keyboard: the active group's active tab, in the active workspace.

@@ -43,8 +43,8 @@ running your own shell.
   out below a *Cold* divider, with a checklist for removing them. Each row also counts the
   [terminals at work](#terminals-at-work) in it — an agent or a build printing — and, in green, the
   ones that have finished since you last looked; click a count to go to that terminal.
-- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a diff, or a
-  Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
+- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a Markdown
+  preview, a diff, or a Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
 - **Right** — source control, aware of every git repo in the workspace at once.
 
@@ -104,6 +104,7 @@ an app launched from Finder inherits almost none of it.
 | PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
 | Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan | works |
 | Video player — MP4, MOV, M4V, WebM, MKV, Ogg (H.264, HEVC, AV1, VP8, VP9); streamed from disk, so a long film starts at once and seeks anywhere | works |
+| Markdown preview — right-click a `.md` for *Open Preview*: GitHub-flavoured, code coloured, redrawn as the file changes on disk, pictures from the web only when asked | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
 | Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
 | A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
@@ -128,8 +129,8 @@ an app launched from Finder inherits almost none of it.
 
 Rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
-the text editor, the PDF reader, the image viewer, the video player, source control and the browser
-are each a folder under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+the text editor, the PDF reader, the image viewer, the video player, the Markdown preview, source
+control and the browser are each a folder under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
 
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
 open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.
@@ -281,6 +282,10 @@ A single click opens a file and leaves the keyboard in the tree, so the arrows a
 acting on the tree; double-click to start typing in the file. A file renamed or moved in the tree
 takes its tabs with it, and one deleted there closes them. A file with unsaved changes is not
 renamed or moved until they are saved or undone, and deleting one says that they will be lost.
+
+A Markdown file's menu starts with *Open Preview*: the file rendered, GitHub-flavoured, in a tab
+beside its own, and redrawn as it changes on disk — so a plan an agent is writing can be watched as
+it grows. Pictures from the web are not fetched until you press *Show remote images*.
 
 ## Workspace heat
 

@@ -57,6 +57,11 @@ export interface OpenFileRequest {
   /** Tab title. Defaults to the basename. */
   title?: string
   readOnly?: boolean
+  /**
+   * Open it in this editor instead of the one the shell would pick — one `editorsOnRequest`
+   * offered. Ignored unless that editor claims the file, so a stale menu still opens something.
+   */
+  viewType?: ViewType
   /** As on `PluginTabRequest`: put it beside this tab rather than in the active group. */
   nearTabId?: TabId
   /**
@@ -122,6 +127,13 @@ export interface PluginTabInfo {
   key?: string
 }
 
+/** An editor that opens a file only when asked, as a file's menu offers it. */
+export interface EditorOffer {
+  viewType: ViewType
+  /** In the editor's own words, from its manifest: `Open Preview`. */
+  label: string
+}
+
 /**
  * Everything the shell provides. Implemented once, in the shell; see `installShellHost`.
  *
@@ -160,6 +172,7 @@ export interface ShellHost {
   // --- tabs ---------------------------------------------------------------
   openPluginTab: (pluginId: PluginId, request: PluginTabRequest) => TabId | null
   openFile: (request: OpenFileRequest) => TabId | null
+  editorsOnRequest: (path: string) => EditorOffer[]
   patchPluginTab: (
     tabId: TabId,
     patch: { title?: string; tooltip?: string; key?: string; state?: Record<string, unknown> }
@@ -298,6 +311,13 @@ export const openPluginTab = (pluginId: PluginId, request: PluginTabRequest): Ta
  * resolved the view type itself, which meant three shell internals in one click handler.
  */
 export const openFile = (request: OpenFileRequest): TabId | null => shell().openFile(request)
+
+/**
+ * The editors that open this file only when asked — a Markdown file's preview — in the words to
+ * offer them in. What a file tree puts in a file's menu; picking one is `openFile({ viewType })`.
+ * Read off the manifests, so nothing is loaded to answer, and empty for most files.
+ */
+export const editorsOnRequest = (path: string): EditorOffer[] => shell().editorsOnRequest(path)
 
 export const patchPluginTab = (
   tabId: TabId,

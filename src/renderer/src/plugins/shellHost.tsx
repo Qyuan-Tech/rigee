@@ -39,6 +39,7 @@ import { setFileDecorations, useFileDecoration } from '../decorations'
 import { useActiveWorkspace } from '../store'
 import { workspaceDir } from '../workspaces'
 import * as api from './api'
+import { editorsOnRequest } from './registry'
 
 /**
  * The icon set, renamed.
@@ -94,6 +95,7 @@ const host: ShellHost = {
 
   openPluginTab: api.openPluginTab,
   openFile: api.openFile,
+  editorsOnRequest,
   patchPluginTab: api.patchPluginTab,
   closePluginTab: api.closePluginTab,
   activateTab: api.activateTab,

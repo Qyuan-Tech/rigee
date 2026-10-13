@@ -1,9 +1,10 @@
 /**
  * Monaco, loaded once and themed once, for whichever plugins need it.
  *
- * Two do: the text editor and the source control diff. They live in different folders and load in
- * different chunks, so the loader has to sit somewhere they can both reach — `plugins/shared/`
- * is that place, and it is not a plugin. Nothing here may be imported by the shell.
+ * Three do: the text editor, the source control diff, and the Markdown preview, which borrows its
+ * tokenizers to colour code blocks. They live in different folders and load in different chunks,
+ * so the loader has to sit somewhere they can all reach — `plugins/shared/` is that place, and it
+ * is not a plugin. Nothing here may be imported by the shell.
  *
  * MONACO MUST NEVER BE A TOP-LEVEL IMPORT. Measured on this project's stack: eager imports cost
  * +1230 ms to first paint, a 4,481 kB entry chunk and 58 MB of renderer output. The `await

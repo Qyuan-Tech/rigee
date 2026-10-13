@@ -1,7 +1,7 @@
 import { allTabs } from './groups'
 import { onEvent, rpc } from './ipc'
 import { leaves } from './paneTree'
-import { resolveViewType, viewsIn } from './plugins/registry'
+import { editorTabTitle, holdsEdits, resolveViewType, viewsIn } from './plugins/registry'
 import { rowOf, useApp } from './store'
 import type { TabId, WorkspaceId } from '@shared/types'
 import type { FileHandlers, FileMove, TextSelection } from '@rigee/plugin-api'
@@ -71,8 +71,10 @@ interface CloseOptions {
  * about any program still running in a terminal it would stop.
  *
  * Only files that would really be gone: a file still open in another tab — the same document in
- * two columns — keeps its changes there, and asking about it would be asking about nothing. Save
- * saves them and closes; Don't Save drops the changes and closes; Cancel closes nothing.
+ * two columns — keeps its changes there, and asking about it would be asking about nothing. A
+ * preview of it does not count either way: it shows the file as it is on disk, so it neither keeps
+ * the changes nor loses them. Save saves them and closes; Don't Save drops the changes and closes;
+ * Cancel closes nothing.
  */
 export async function closeTabsSafely(
   workspaceId: WorkspaceId,
@@ -87,11 +89,17 @@ export async function closeTabsSafely(
   const s = useApp.getState()
   const closing = new Set(tabIds)
   const remaining = Object.values(s.rowsByWorkspace).flatMap((row) => allTabs(row)).filter((t) => !closing.has(t.id))
-  const stillOpen = new Set(remaining.flatMap((t) => (t.kind === 'editor' ? [t.filePath] : [])))
+  const stillOpen = new Set(
+    remaining.flatMap((t) => (t.kind === 'editor' && holdsEdits(t.viewType) ? [t.filePath] : []))
+  )
   const lost = [
     ...new Set(
       allTabs(rowOf(s, workspaceId))
-        .filter((t) => closing.has(t.id) && t.kind === 'editor' && s.dirtyFiles[t.filePath] && !stillOpen.has(t.filePath))
+        .filter(
+          (t) =>
+            closing.has(t.id) && t.kind === 'editor' && holdsEdits(t.viewType) &&
+            s.dirtyFiles[t.filePath] && !stillOpen.has(t.filePath)
+        )
         .map((t) => (t.kind === 'editor' ? t.filePath : ''))
     )
   ]
@@ -157,8 +165,6 @@ export function installUnsavedBridge(): () => void {
 const covers = (path: string, file: string): boolean =>
   file === path || file.startsWith(path + '/') || file.startsWith(path + '\\')
 
-const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
-
 /** Unsaved files at these paths or inside them: what deleting or moving them would lose. */
 export function unsavedFiles(paths: readonly string[]): string[] {
   return dirtyPaths().filter((file) => paths.some((path) => covers(path, file)))
@@ -166,7 +172,9 @@ export function unsavedFiles(paths: readonly string[]): string[] {
 
 /**
  * The file tree renamed or moved these, so every tab showing one follows it, in every workspace.
- * Its title is the new name, and its viewer is picked again: a file renamed to `.pdf` is a PDF.
+ * Its title is the new name, and its viewer is picked again: a file renamed to `.pdf` is a PDF. A
+ * preview stays one: the reader asked to see the document that way, and a new name does not change
+ * that — its tab keeps the prefix that tells it from the file's own.
  *
  * Unsaved files are not moved: the tree refuses, because their changes live in the editor's
  * document for the OLD path, and a tab that followed would show the file without them.
@@ -179,11 +187,8 @@ export function filesMoved(moves: readonly FileMove[]): void {
       const move = moves.find((m) => covers(m.from, tab.filePath))
       if (!move) continue
       const filePath = move.to + tab.filePath.slice(move.from.length)
-      s.updateTab(workspaceId, tab.id, {
-        filePath,
-        title: basename(filePath),
-        viewType: resolveViewType(filePath) ?? undefined
-      })
+      const viewType = holdsEdits(tab.viewType) ? (resolveViewType(filePath) ?? undefined) : tab.viewType
+      s.updateTab(workspaceId, tab.id, { filePath, title: editorTabTitle(filePath, viewType), viewType })
     }
   }
 }

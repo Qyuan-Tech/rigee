@@ -6,6 +6,7 @@ import { tabFactory } from '../plugins/bindings'
 import {
   creatableTabs,
   displayNameOf,
+  holdsEdits,
   iconFor,
   isDocumentViewType,
   isDuplicableViewType,
@@ -194,9 +195,9 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           <TabStatusIcon tab={tab} working={workingPanes} unseen={unseenPanes} />
           <span className="tab__label">{tab.title}</span>
           <button
-            className={`tab__close${tab.kind === 'editor' && dirtyFiles[tab.filePath] ? ' tab__close--dirty' : ''}`}
+            className={`tab__close${unsaved(tab, dirtyFiles) ? ' tab__close--dirty' : ''}`}
             onClick={(e) => { e.stopPropagation(); closeTab(workspace.id, tab.id) }}
-            title={tab.kind === 'editor' && dirtyFiles[tab.filePath] ? 'Unsaved changes — close tab' : 'Close tab'}
+            title={unsaved(tab, dirtyFiles) ? 'Unsaved changes — close tab' : 'Close tab'}
           >
             <CloseIcon size={11} />
             <span className="tab__dirty" aria-hidden="true" />
@@ -273,6 +274,11 @@ async function showTabMenu(workspaceId: WorkspaceId, tabId: TabId, tabs: readonl
   if (!group) return
   if (choice === 'close') void closeTabsSafely(workspaceId, [tabId])
   else if (isCloseCommand(choice)) void closeTabsSafely(workspaceId, tabsToClose(group.tabs, tabId, choice), { sweptFrom: tabId })
+}
+
+/** Whether a tab wears the unsaved dot: the file's own tab, never a preview of it. */
+function unsaved(tab: Tab, dirtyFiles: Record<string, true>): boolean {
+  return tab.kind === 'editor' && holdsEdits(tab.viewType) && dirtyFiles[tab.filePath] === true
 }
 
 function tabTooltip(tab: Tab): string {

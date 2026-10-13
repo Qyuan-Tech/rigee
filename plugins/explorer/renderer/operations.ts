@@ -1,5 +1,6 @@
 import {
   addWorkspaceFolders,
+  editorsOnRequest,
   filesDeleted,
   filesMoved,
   isMac,
@@ -361,6 +362,11 @@ export async function showMenu(tree: Tree, row: Row): Promise<void> {
   const separator: MenuItem = { kind: 'separator' }
 
   const items: MenuItem[] = []
+  // The editors that open a file only when asked — a Markdown file's Open Preview — first, where VS
+  // Code puts them. Which those are is the shell's to say, from the manifests, so the tree knows
+  // nothing about Markdown.
+  const offers = !many && !row.dir ? editorsOnRequest(row.path) : []
+  if (offers.length > 0) items.push(...offers.map((o) => item(o.viewType, o.label)), separator)
   if (!many && row.dir) items.push(item('new-file', 'New File…'), item('new-folder', 'New Folder…'), separator)
   if (!many) {
     items.push(
@@ -381,6 +387,12 @@ export async function showMenu(tree: Tree, row: Row): Promise<void> {
   }
 
   const choice = await popupMenu(items)
+  // An offer is named by its view type, which has a dot in it, so no command below can be mistaken for one.
+  const offer = offers.find((o) => o.viewType === choice)
+  if (offer) {
+    openFile({ path: row.path, viewType: offer.viewType })
+    return
+  }
   const into = folderOf(row)
   switch (choice) {
     case 'new-file': startNew(tree, row.path, false); break

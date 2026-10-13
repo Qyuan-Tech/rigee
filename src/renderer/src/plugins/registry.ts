@@ -13,6 +13,7 @@ import {
   type ViewContribution,
   type ViewType
 } from '@rigee/plugin-api/manifest'
+import type { EditorOffer } from '@rigee/plugin-api'
 
 /**
  * Everything the shell can know about plugins without loading one.
@@ -181,14 +182,59 @@ export function ownerOf(id: ViewType): PluginId | null {
   )
 }
 
-/** Which editor should open this path. Never null: the text editor claims everything. */
+/**
+ * Which editor should open this path. Never null: the text editor claims everything.
+ *
+ * An editor that opens only on request never wins here, however it ranks — it is offered in the
+ * file's menu instead (`editorsOnRequest`), and opened when picked there.
+ */
 export function resolveViewType(absolutePath: string): ViewType | null {
-  return live(editors).find((c) => matchesSelector(c.selector, absolutePath))?.viewType ?? null
+  return live(editors).find((c) => !c.onRequest && matchesSelector(c.selector, absolutePath))?.viewType ?? null
+}
+
+/**
+ * The editor a file opens in when one was `asked` for: that one if it claims the file, and the
+ * usual one if it does not — the menu that offered it may have outlived the plugin.
+ */
+export function viewTypeFor(absolutePath: string, asked?: ViewType): ViewType | null {
+  if (asked && editorsFor(absolutePath).some((c) => c.viewType === asked)) return asked
+  return resolveViewType(absolutePath)
 }
 
 /** Every editor that claims this path, best first. The "Open with" list. */
 export function editorsFor(absolutePath: string): Owned<EditorContribution>[] {
   return live(editors).filter((c) => matchesSelector(c.selector, absolutePath))
+}
+
+/**
+ * The editors that claim this path but open only when asked: what its menu offers. Read
+ * defensively, as a disk plugin's manifest is everywhere: one with no words to be offered in is
+ * left out rather than shown as an empty row.
+ */
+export function editorsOnRequest(absolutePath: string): EditorOffer[] {
+  return editorsFor(absolutePath).flatMap((c) =>
+    typeof c.onRequest?.label === 'string' ? [{ viewType: c.viewType, label: c.onRequest.label }] : []
+  )
+}
+
+/**
+ * A file's tab title in this editor: its name, after the prefix an editor that opens on request
+ * asked for — `Preview README.md` — so its tab and the file's own read apart side by side.
+ */
+export function editorTabTitle(absolutePath: string, viewType: ViewType | null | undefined): string {
+  const name = absolutePath.split(/[\\/]/).filter(Boolean).pop() ?? absolutePath
+  const prefix = viewType ? editorContribution(viewType)?.onRequest?.tabPrefix : undefined
+  return typeof prefix === 'string' && prefix ? `${prefix} ${name}` : name
+}
+
+/**
+ * Whether a tab of this view type is somewhere a file's unsaved changes can be. Every editor but
+ * those that open on request, which show the file as it is on disk: a preview left open beside a
+ * file must not count as its changes still being open — closing the file's own tab asks about
+ * them, and only that tab wears the unsaved dot.
+ */
+export function holdsEdits(viewType: ViewType | undefined): boolean {
+  return !(viewType && editorContribution(viewType)?.onRequest)
 }
 
 /**
@@ -200,7 +246,7 @@ export function editorsFor(absolutePath: string): Owned<EditorContribution>[] {
  * exists, or the fallback becomes a second, invisible dependency on it.
  */
 export function fallbackViewType(absolutePath: string): ViewType | null {
-  const claimants = editorsFor(absolutePath)
+  const claimants = editorsFor(absolutePath).filter((c) => !c.onRequest)
   return claimants[claimants.length - 1]?.viewType ?? null
 }
 

@@ -18,5 +18,6 @@ export const MAIN_HALVES: Readonly<Record<PluginId, () => Promise<{ default: Plu
   browser: () => import('./browser/main'),
   search: () => import('./search/main'),
   explorer: () => import('./explorer/main'),
-  video: () => import('./video/main')
+  video: () => import('./video/main'),
+  markdown: () => import('./markdown/main')
 }
