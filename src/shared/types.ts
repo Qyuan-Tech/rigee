@@ -197,12 +197,12 @@ export type Tab = TerminalTab | EditorTab | CustomTab
 export type GroupId = string
 
 /**
- * One column of the centre pane: its own strip of tabs, its own active tab.
+ * One group of the centre pane: its own strip of tabs, its own active tab.
  *
- * The row of groups is what makes a PDF and a terminal visible at the same time. The arithmetic
- * that maintains it — splitting, closing, dragging a tab across, redistributing the widths — is
- * pure and lives in src/renderer/src/groups.ts; this is only the shape it persists as, which has
- * to be here because main migrates the document and cannot import from the renderer.
+ * Groups side by side and stacked are what make a PDF and a terminal visible at the same time. The
+ * arithmetic that maintains them — splitting, closing, dragging a tab across, redistributing the
+ * space — is pure and lives in src/renderer/src/groups.ts; this is only the shape it persists as,
+ * which has to be here because main migrates the document and cannot import from the renderer.
  */
 export interface TabGroup {
   id: GroupId
@@ -210,6 +210,24 @@ export interface TabGroup {
   /** Which tab this group shows. Null only while the group is empty. */
   activeTabId: TabId | null
 }
+
+/**
+ * Where the groups sit: a terminal tab's `PaneNode`, with groups for leaves.
+ *
+ * Only the arrangement. The groups themselves, and their tabs, stay in a flat list beside it, so
+ * everything that just wants every tab — and most of the shell does — never walks a tree.
+ */
+export type GroupLayout =
+  | { kind: 'group'; id: GroupId }
+  | {
+      kind: 'split'
+      id: string
+      /** row = side by side, column = stacked. */
+      direction: 'row' | 'column'
+      children: GroupLayout[]
+      /** One fraction per child, summing to 1. */
+      sizes: number[]
+    }
 
 // ---------------------------------------------------------------------------
 // Terminals
@@ -346,11 +364,21 @@ export interface PanelLayout {
 
 /** Per-workspace UI state restored on reopen. */
 export interface WorkspaceUiState {
-  /** The centre pane, left to right. Always at least one, even when it holds nothing. */
+  /** The centre pane's groups, in reading order. Always at least one, even when it holds nothing. */
   groups: TabGroup[]
   activeGroupId: GroupId
-  /** One fraction per group, parallel to `groups`, summing to 1. */
+  /**
+   * One fraction per group, parallel to `groups`, summing to 1: the row every document described
+   * before groups could be stacked. Still written — each group's share of the width — so that a
+   * build from before then opens a newer document as a row rather than not at all.
+   */
   groupSizes: number[]
+  /**
+   * Where the groups sit. Absent in a document written before groups could be stacked, which
+   * means the row `groupSizes` describes — so no version bump, for the same reason as
+   * `disabledPlugins`: silence already says the right thing.
+   */
+  groupLayout?: GroupLayout
   layout: PanelLayout
   /**
    * Whatever each plugin wants to remember about this workspace, keyed by plugin id.

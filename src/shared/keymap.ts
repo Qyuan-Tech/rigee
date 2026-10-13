@@ -308,8 +308,14 @@ export const ACTIONS: Record<string, ActionSpec> = {
     label: (p) => `Go to column ${p}`,
     repeats: false
   },
-  /** Rigee: VS Code's Split Editor. */
-  split_group: { scope: 'app', group: 'Tabs', label: () => 'Split into a new column', repeats: false },
+  /** Rigee: VS Code's Split Editor, and Split Editor Down. Bare is right, as Cmd+\ always was. */
+  split_group: {
+    scope: 'app',
+    group: 'Tabs',
+    param: { required: false, valid: oneOf('right', 'down'), hint: 'right | down' },
+    label: (p) => (p === 'down' ? 'Split into a new row' : 'Split into a new column'),
+    repeats: false
+  },
 
   new_split: {
     scope: 'terminal',

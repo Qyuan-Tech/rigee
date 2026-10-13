@@ -9,14 +9,17 @@ import {
   closeTabs as closeTabsInRow,
   focusGroup as focusGroupInRow,
   groupOfTab,
+  layoutOrder,
   moveTab as moveTabInRow,
   moveTabToNewGroup,
   openInGroup,
+  restoreLayout,
   setBoundary,
   singleGroupRow,
   splitGroup as splitGroupInRow,
   type GroupId,
-  type GroupRow
+  type GroupRow,
+  type SplitDirection
 } from './groups'
 import { newLeaf } from './paneTree'
 import { isDuplicableViewType, resolveViewType, viewTypeForLegacyKind } from './plugins/registry'
@@ -56,13 +59,13 @@ interface AppState {
   activeWorkspaceId: WorkspaceId | null
 
   /**
-   * The centre pane of each workspace: a row of editor groups, left to right.
+   * The centre pane of each workspace: its editor groups, and where each one sits.
    *
    * One object per workspace rather than three parallel maps, because the invariant that makes the
-   * row renderable — one fraction per group, summing to one, and an `activeGroupId` that names a
-   * group that exists — spans all three. Every operation in `groups.ts` takes a whole row and
+   * row renderable — a layout naming exactly the groups there are, and an `activeGroupId` that
+   * names one of them — spans all three. Every operation in `groups.ts` takes a whole row and
    * returns a whole row, so there is no moment where a render can see the groups updated and the
-   * sizes not.
+   * layout not.
    */
   rowsByWorkspace: Record<WorkspaceId, GroupRow>
   layout: PanelLayout
@@ -136,19 +139,22 @@ interface AppState {
   // --- editor groups ---
   setRow: (workspaceId: WorkspaceId, row: GroupRow) => void
   focusGroup: (workspaceId: WorkspaceId, groupId: GroupId) => void
-  /** Put `tab` in a new group to the right of `groupId`. The caller decides copy versus move. */
-  splitGroup: (workspaceId: WorkspaceId, groupId: GroupId, tab: Tab) => void
   /**
-   * Split a group's active tab into a new group to its right — the button, and Cmd+\.
-   *
-   * Copies what can be copied and moves what cannot, so both callers get the same answer. Defaults
-   * to the active group.
+   * Put `tab` in a new group to the right of `groupId`, or below it. The caller decides copy
+   * versus move.
    */
-  splitTab: (workspaceId: WorkspaceId, groupId?: GroupId) => void
+  splitGroup: (workspaceId: WorkspaceId, groupId: GroupId, tab: Tab, direction?: SplitDirection) => void
+  /**
+   * Split a group's active tab into a new group to its right or below it — the buttons, and Cmd+\.
+   *
+   * Copies what can be copied and moves what cannot, so every caller gets the same answer. Defaults
+   * to the active group, and to the right.
+   */
+  splitTab: (workspaceId: WorkspaceId, groupId?: GroupId, direction?: SplitDirection) => void
   moveTab: (workspaceId: WorkspaceId, tabId: TabId, toGroupId: GroupId, toIndex: number) => void
-  moveTabToNewGroup: (workspaceId: WorkspaceId, tabId: TabId) => void
+  moveTabToNewGroup: (workspaceId: WorkspaceId, tabId: TabId, direction?: SplitDirection) => void
   /** Absolute, not incremental: Splitter reports the cumulative offset since pointer-down. */
-  setGroupBoundary: (workspaceId: WorkspaceId, index: number, leftFraction: number) => void
+  setGroupBoundary: (workspaceId: WorkspaceId, splitId: string, index: number, fraction: number) => void
 
   setLayout: (patch: Partial<PanelLayout>) => void
   /** Merge into one plugin's state for one workspace. */
@@ -283,15 +289,15 @@ export const useApp = create<AppState>()(
         }
       })),
 
-    splitGroup: (workspaceId, groupId, tab) =>
+    splitGroup: (workspaceId, groupId, tab, direction) =>
       set((s) => ({
         rowsByWorkspace: {
           ...s.rowsByWorkspace,
-          [workspaceId]: splitGroupInRow(rowOf(s, workspaceId), groupId, nextGroupId(), tab)
+          [workspaceId]: splitGroupInRow(rowOf(s, workspaceId), groupId, nextGroupId(), tab, direction)
         }
       })),
 
-    splitTab: (workspaceId, groupId) => {
+    splitTab: (workspaceId, groupId, direction) => {
       const row = rowOf(get(), workspaceId)
       const group = groupById(row, groupId ?? row.activeGroupId)
       const tab = group?.tabs.find((t) => t.id === group.activeTabId)
@@ -299,15 +305,15 @@ export const useApp = create<AppState>()(
 
       /*
        * A copy for anything that can be in two places — a file, a diff — so the gesture reads as
-       * VS Code's "Split Right": the same document, twice, side by side. A MOVE for anything whose
-       * renderer-side resources are keyed by tab id: a terminal's ptys, a browser tab's native
-       * view. Two panes sharing either would be two xterms on one shell, or one native view
-       * snapping between two rectangles.
+       * VS Code's "Split Right" and "Split Down": the same document, twice, side by side or one
+       * above the other. A MOVE for anything whose renderer-side resources are keyed by tab id: a
+       * terminal's ptys, a browser tab's native view. Two panes sharing either would be two xterms
+       * on one shell, or one native view snapping between two rectangles.
        */
       if (!canDuplicate(tab, isDuplicableViewType)) {
         // Moving the only tab out of a group closes that group and opens an identical one beside
         // it — a lot of motion for no change.
-        if (group.tabs.length > 1) get().moveTabToNewGroup(workspaceId, tab.id)
+        if (group.tabs.length > 1) get().moveTabToNewGroup(workspaceId, tab.id, direction)
         return
       }
 
@@ -316,7 +322,7 @@ export const useApp = create<AppState>()(
       // The copy inherits where the reader was: a viewer with per-tab state — the PDF's page and
       // zoom — asks for its origin on first mount, so splitting on page 143 does not reopen at 1.
       rememberDuplicate(copy.id, tab.id)
-      get().splitGroup(workspaceId, group.id, copy)
+      get().splitGroup(workspaceId, group.id, copy, direction)
     },
 
     moveTab: (workspaceId, tabId, toGroupId, toIndex) =>
@@ -327,19 +333,19 @@ export const useApp = create<AppState>()(
         }
       })),
 
-    moveTabToNewGroup: (workspaceId, tabId) =>
+    moveTabToNewGroup: (workspaceId, tabId, direction) =>
       set((s) => ({
         rowsByWorkspace: {
           ...s.rowsByWorkspace,
-          [workspaceId]: moveTabToNewGroup(rowOf(s, workspaceId), tabId, nextGroupId())
+          [workspaceId]: moveTabToNewGroup(rowOf(s, workspaceId), tabId, nextGroupId(), direction)
         }
       })),
 
-    setGroupBoundary: (workspaceId, index, leftFraction) =>
+    setGroupBoundary: (workspaceId, splitId, index, fraction) =>
       set((s) => ({
         rowsByWorkspace: {
           ...s.rowsByWorkspace,
-          [workspaceId]: setBoundary(rowOf(s, workspaceId), index, leftFraction)
+          [workspaceId]: setBoundary(rowOf(s, workspaceId), splitId, index, fraction)
         }
       })),
 
@@ -566,13 +572,14 @@ export function sanitizeGroups(raw: unknown, fallbackGroupId: () => GroupId): Gr
   // The row is never empty: an empty one has nowhere to put the next file the user opens.
   if (groups.length === 0) return singleGroupRow(fallbackGroupId())
 
-  const sizes = Array.isArray(record.groupSizes) ? (record.groupSizes as number[]) : []
+  // Repaired rather than trusted, as the tabs were: the layout names groups by id and gives sizes
+  // as parallel arrays, and nothing stops a hand-edited document from disagreeing with itself.
+  const layout = restoreLayout(record.groupLayout, groups.map((g) => g.id), record.groupSizes)
+  const order = layoutOrder(layout)
   const activeGroupId = typeof record.activeGroupId === 'string' ? record.activeGroupId : ''
   return {
-    groups,
-    // A wrong-length or missing size array is repaired rather than trusted: groups and sizes are
-    // parallel arrays on disk, and nothing stops a hand-edited document from disagreeing.
-    sizes: sizes.length === groups.length ? sizes : groups.map(() => 1 / groups.length),
+    groups: groups.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)),
+    layout,
     activeGroupId: groups.some((g) => g.id === activeGroupId) ? activeGroupId : groups[0]!.id
   }
 }

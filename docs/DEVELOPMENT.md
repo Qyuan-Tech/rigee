@@ -17,15 +17,15 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 430 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, the Range headers a video element sends, the arithmetic of workspace heat, and when a terminal is at work |
+| `pnpm panes:selftest` | 476 checks on the split tree, the editor groups and their layout, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, the Range headers a video element sends, the arithmetic of workspace heat, and when a terminal is at work |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:markdown` | right-clicks a README in the explorer, opens its preview from the menu, and asserts what was drawn — GitHub's anchors, a table, a task list, an alert, front matter, code coloured without losing a tab — and what was not: no script ran, no style, no borrowed class, no bare id. Then pictures: one on disk shown, one on the web fetched only when asked (counted by a server it runs itself), one on another machine's share and one that is a symlink to /dev/zero refused, one written after the document shown at its next change. Links followed without the window navigating; closing a file's unsaved text tab with its preview open still asks; a thousand-column table and a link used 20,000 times stopped before they reach the page; and the file changing, the reader's place kept through redraws and tab switches, and its whole folder deleted and put back. `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
-| `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split button: copy a file, move a terminal |
-| `pnpm smoke:persist` | builds tabs, splits and a two-group row, then reads back what reached disk |
+| `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split buttons: copy a file and move a terminal, beside and below, nest a row in a column, and drag the divider across it |
+| `pnpm smoke:persist` | builds tabs, splits, a two-group row and a group stacked under one, then reads back what reached disk |
 | `pnpm smoke:migrate` | boots against a hand-built v2 document and asserts the upgrade kept everything |
 | `pnpm smoke:terminal` | opens a terminal tab, types into it, waits for the shell to echo |
 | `pnpm smoke:keys` | real keystrokes through the input pipeline: Shift+Enter's bytes, one paste, no leaked keys, splits, tabs, find |
@@ -97,7 +97,7 @@ Three environment variables change what is in the frame, and they compose:
 |---|---|
 | `RIGEE_SHOT_VIEW` | clicks that activity bar item, by title — `Explorer`, `Plugins`, … |
 | `RIGEE_SHOT_COLLAPSED` | shuts both side panels |
-| `RIGEE_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one |
+| `RIGEE_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one; `down` stacks them |
 
 `RIGEE_SHOT` also works with `smoke:pdf`, which leaves a PNG of the viewer it just asserted on.
 
@@ -391,34 +391,45 @@ which is true in dev and false under a packaged `file://` renderer — two diffe
 
 ### Editor groups
 
-The centre of the window is a ROW of groups, left to right, each with its own tab strip, its own
-tab list and its own active tab — so a PDF can sit beside a terminal. The arithmetic is pure and
-lives in `src/renderer/src/groups.ts`; the store holds one `GroupRow` per workspace
-(`rowsByWorkspace`), and it persists as `groups` + `groupSizes` + `activeGroupId`.
+The centre of the window is a set of groups, each with its own tab strip, its own tab list and its
+own active tab — so a PDF can sit beside a terminal, or above it. The arithmetic is pure and lives
+in `src/renderer/src/groups.ts`; the store holds one `GroupRow` per workspace (`rowsByWorkspace`,
+still named for the row it was before groups could be stacked), and it persists as `groups` +
+`groupLayout` + `groupSizes` + `activeGroupId`.
 
-A flat row, not a tree. Groups only ever sit side by side, and nesting would turn every operation
-into a walk for a layout nobody asked for. Terminals keep their tree, because panes inside one
-terminal tab genuinely nest.
+Two halves. `groups` is a flat list of the groups and their tabs, in reading order; `layout` is a
+tree shaped like a terminal tab's split tree, with groups for leaves, and says only where each one
+is drawn. Most of the shell wants the tabs and reads the list without ever walking the tree; only
+splitting, closing a group and dragging a divider touch the layout. A split joins the split around
+the group when that runs the same way — three across is one row of three — and closing a group
+collapses any split left with one child and merges a row left inside a row, so the tree never
+grows wrapper nodes. `groupSizes` is still written, as each group's share of the width, so that a
+build from before stacking opens a newer document as a row; a document without `groupLayout` is
+the row its `groupSizes` describe, which is why the field arrived without a version bump.
 
 Three rules a plugin author has to know:
 
 - **De-duplication is per group.** The same file open in two columns is the entire feature, so
   `openTab` only re-activates an equal tab within the group it is opening into. A plugin tab's
   `key` is what "equal" means, and a copy inherits it.
-- **Some tabs copy, some move.** The split button duplicates anything that can exist twice and
-  MOVES anything whose renderer-side resources are keyed by tab id — a terminal's ptys, a browser
-  tab's native view. A file always copies; a plugin's own tab type says which with `split: 'copy'`
-  in its `tabs` contribution, and the default is `'move'` because a plugin that has not said it
-  survives being in two places probably does not. The button's title tells the user which it will
-  be, so the gesture never lies about moving your terminal away.
+- **Some tabs copy, some move.** The split buttons — right and down — duplicate anything that can
+  exist twice and MOVE anything whose renderer-side resources are keyed by tab id — a terminal's
+  ptys, a browser tab's native view. A file always copies; a plugin's own tab type says which with
+  `split: 'copy'` in its `tabs` contribution, and the default is `'move'` because a plugin that has
+  not said it survives being in two places probably does not. Each button's title tells the user
+  which it will be, so the gesture never lies about moving your terminal away.
 - **A copy gets a NEW tab id**, because those same module-level maps are keyed by it. If the view
   keeps per-tab state worth carrying over — the PDF reader's page and zoom — call the shell API's
   `duplicatedFrom(tabId)` on first mount. It answers once, for a tab that really was split from
   another, so it belongs in a `useState` initialiser rather than in an effect body.
 
-Emptying a group removes it and gives its width back, except for the last one, which stays to hold
-the "Nothing open" state. `pnpm panes:selftest` covers the arithmetic, `pnpm smoke:tabs` covers the
-button and `pnpm smoke:pdf` covers the whole point of it: a PDF still rendering, with ink, beside a
+Emptying a group removes it and gives its space back, except for the last one, which stays to hold
+the "Nothing open" state. A split deeper than the outermost one re-creates the group it wraps —
+React cannot move a component to a new parent — which every pane survives, because switching tabs
+does the same; the outermost split is drawn even around a lone group, so the first split either way
+re-creates nothing. `pnpm panes:selftest` covers the arithmetic, `pnpm smoke:tabs` covers both
+buttons and a real drag of the divider across a column, `pnpm smoke:persist` what reaches the disk,
+and `pnpm smoke:pdf` covers the whole point of it: a PDF still rendering, with ink, beside a
 terminal that got its own pty.
 
 ### Workspace heat

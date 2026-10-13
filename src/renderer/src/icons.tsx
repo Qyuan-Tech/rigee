@@ -277,6 +277,15 @@ export const SplitIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** The same, split the other way: the lower one filling. Shell-only for the same reason. */
+export const SplitDownIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M2 8h12" />
+    <path d="M4.5 10.5h7" opacity="0.65" />
+  </Svg>
+)
+
 /**
  * The icons a plugin manifest may ask for, by name.
  *

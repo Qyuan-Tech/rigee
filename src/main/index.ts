@@ -60,7 +60,7 @@ import {
 } from './plugins/installed'
 import { initTrustStore } from './plugins/trust'
 import { PLUGIN_MANIFESTS } from '@plugins/index'
-import { PERSISTED_STATE_VERSION, type FileStat, type Workspace, type WorkspaceActivity } from '@shared/types'
+import { PERSISTED_STATE_VERSION, type FileStat, type GroupLayout, type Workspace, type WorkspaceActivity } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
@@ -2532,14 +2532,15 @@ async function runShutdownSmoke(): Promise<void> {
 }
 
 /**
- * End-to-end check on the tab strip: its context menu, and the split button beside it.
+ * End-to-end check on the tab strip: its context menu, and the split buttons beside it.
  *
  * The close and row arithmetic is covered by `pnpm panes:selftest`. What only a real window can
  * show is the wiring: that a right-click on ANY tab — terminal, page or file — offers the same
  * menu, that what is picked reaches the store, that a sweep asks before stopping a program still
- * running in a terminal — and that the split button makes a SECOND strip whose contents are
- * governed by what the tab is. Driven through DOM events rather than the store so the components
- * are genuinely in the loop; the menu itself is native, so it is answered through its probe.
+ * running in a terminal — and that the split buttons make a SECOND strip, beside the first or under
+ * it, whose contents are governed by what the tab is. Driven through DOM events rather than the
+ * store so the components are genuinely in the loop; the menu itself is native, so it is answered
+ * through its probe.
  */
 async function runTabsSmoke(): Promise<void> {
   const wc = shellWc()
@@ -2631,7 +2632,7 @@ async function runTabsSmoke(): Promise<void> {
             const first = row().groups[0]
             store.getState().setRow(ws, {
               groups: [{ id: first.id, tabs: [], activeTabId: null }],
-              sizes: [1],
+              layout: { kind: 'group', id: first.id },
               activeGroupId: first.id
             })
             await sleep(300)
@@ -2721,19 +2722,24 @@ async function runTabsSmoke(): Promise<void> {
         trail.push('after close-all on the busy terminal: "' + order() + '"')
         if (order() !== '') return fail('close-all-from-the-busy-terminal-left-tabs')
 
-        // --- the split button -------------------------------------------------
+        // --- the split buttons ------------------------------------------------
         // Found by title rather than by position: the strip's actions grow, and an index would
-        // start pressing "new terminal" the day one is added before it. Two titles, because the
-        // button tells the truth about what it is about to do — "Split right" for a file,
-        // "Move to a new group" for a terminal.
-        const isSplit = (b) => {
+        // start pressing "new terminal" the day one is added before it. Two titles each, because a
+        // button tells the truth about what it is about to do — "Split right" and "Split down" for
+        // a file, "Move to a new group" and "Move to a new group below" for a terminal.
+        const isSplit = (b, down) => {
           const title = (b.title || '').toLowerCase()
-          return title.includes('split') || title.includes('new group')
+          return (title.includes('split') || title.includes('new group')) &&
+            (title.includes('down') || title.includes('below')) === down
         }
-        const splitButton = (i) => {
+        const splitButton = (i, down = false) => {
           const strip = strips()[i]
-          return strip ? ([...strip.querySelectorAll('button')].find(isSplit) || null) : null
+          return strip ? ([...strip.querySelectorAll('button')].find(b => isSplit(b, down)) || null) : null
         }
+        // The layout as text, sizes in percent: R50,50(g g) is two groups side by side.
+        const shapeOf = (n) => n.kind === 'group' ? 'g'
+          : (n.direction === 'row' ? 'R' : 'C') + n.sizes.map(s => Math.round(s * 100)).join(',') +
+            '(' + n.children.map(shapeOf).join(' ') + ')'
         const buttonTitles = (i) => {
           const strip = strips()[i]
           return strip ? [...strip.querySelectorAll('button')].map(b => b.title).join(' | ') : ''
@@ -2765,10 +2771,11 @@ async function runTabsSmoke(): Promise<void> {
         if (left.tabs[0].id === right.tabs[0].id) {
           return fail('copy-reuses-the-source-tab-id', { id: left.tabs[0].id })
         }
-        const sum = row().sizes.reduce((a, b) => a + b, 0)
-        trail.push('sizes after split: ' + row().sizes.join(','))
-        if (row().sizes.length !== 2 || Math.abs(sum - 1) > 0.001) {
-          return fail('sizes-do-not-fill-the-row', { sizes: row().sizes })
+        const across = row().layout
+        trail.push('layout after split: ' + shapeOf(across))
+        const sum = across.kind === 'split' ? across.sizes.reduce((a, b) => a + b, 0) : 0
+        if (across.kind !== 'split' || across.direction !== 'row' || across.sizes.length !== 2 || Math.abs(sum - 1) > 0.001) {
+          return fail('sizes-do-not-fill-the-row', { layout: across })
         }
 
         // A terminal cannot be copied — its ptys are keyed by <tabId>:<leafId>, so two tabs
@@ -2810,12 +2817,84 @@ async function runTabsSmoke(): Promise<void> {
         if (!closer) return fail('no-close-button-in-the-second-strip')
         closer.click()
         await sleep(600)
-        trail.push('after closing the last tab of group 1: ' + row().groups.length + ' group(s), sizes ' + row().sizes.join(','))
+        trail.push('after closing the last tab of group 1: ' + row().groups.length + ' group(s), ' + shapeOf(row().layout))
         if (row().groups.length !== 1) return fail('emptied-group-survived')
         if (strips().length !== 1) return fail('emptied-group-still-has-a-strip')
-        if (Math.abs(row().sizes[0] - 1) > 0.001) {
-          return fail('survivor-did-not-take-the-width-back', { sizes: row().sizes })
+        if (row().layout.kind !== 'group') {
+          return fail('survivor-did-not-take-the-width-back', { layout: row().layout })
         }
+
+        // Down: the same two answers, with the new group under the old one instead of beside it.
+        // Asserted on screen as well as in the store — a column the store believes in and the
+        // page lays out as a row would pass every check on the layout alone.
+        if (!(await reset())) return fail('could-not-clear-the-row')
+        store.getState().openTab(ws, editor('d1'))
+        await sleep(400)
+        if (!splitButton(0, true)) return fail('no-split-down-button', { titles: buttonTitles(0) })
+        splitButton(0, true).click()
+        await sleep(600)
+        trail.push('after splitting a file down: ' + shapeOf(row().layout))
+        if (shapeOf(row().layout) !== 'C50,50(g g)') return fail('split-down-made-no-column', { layout: row().layout })
+        const [upper, lower] = row().groups
+        if (upper.tabs[0].filePath !== lower.tabs[0].filePath || upper.tabs[0].id === lower.tabs[0].id) {
+          return fail('split-down-did-not-copy-the-file', { shape: order() })
+        }
+        if (row().activeGroupId !== lower.id) return fail('the-lower-group-did-not-take-the-focus')
+        const [above, below] = strips().map(s => s.getBoundingClientRect())
+        trail.push('strips at y=' + Math.round(above.top) + ' and y=' + Math.round(below.top))
+        if (!(below.top >= above.bottom && Math.abs(below.left - above.left) < 2)) {
+          return fail('the-lower-group-is-not-below', { above, below })
+        }
+        if (!document.querySelector('.groups--column > [role="separator"][aria-orientation="horizontal"]')) {
+          return fail('no-divider-across-the-column')
+        }
+
+        // Right, from the lower group, nests a row inside the column, under the upper group.
+        splitButton(1).click()
+        await sleep(600)
+        trail.push('after splitting the lower group right: ' + shapeOf(row().layout))
+        if (shapeOf(row().layout) !== 'C50,50(g R50,50(g g))') return fail('right-in-a-column-did-not-nest-a-row')
+        const boxes = strips().map(s => s.getBoundingClientRect())
+        if (boxes.length !== 3 || !(boxes[2].left >= boxes[1].right && Math.abs(boxes[2].top - boxes[1].top) < 2 &&
+            boxes[1].top >= boxes[0].bottom)) {
+          return fail('the-nested-row-is-not-laid-out-as-one', { boxes })
+        }
+
+        // A terminal moves down rather than being copied, and keeps its shell.
+        if (!(await reset())) return fail('could-not-clear-the-row')
+        store.getState().openTab(ws, editor('m2'))
+        const sinking = newTerminalTab()
+        store.getState().openTab(ws, sinking)
+        let sinkingHandle = null
+        for (let i = 0; i < 80; i++) {
+          await sleep(250)
+          sinkingHandle = getTerminal(paneKey(sinking.id, sinking.activeLeafId))
+          if (sinkingHandle && sinkingHandle.paneId) break
+        }
+        if (!sinkingHandle || !sinkingHandle.paneId) return fail('second-terminal-never-got-a-pty')
+        const sinkingPty = sinkingHandle.paneId
+        if (!splitButton(0, true)) return fail('no-split-down-button-with-a-terminal-active', { titles: buttonTitles(0) })
+        splitButton(0, true).click()
+        await sleep(800)
+        trail.push('after moving a terminal down: ' + shapeOf(row().layout) + ' ' + row().groups.map(g => g.tabs.map(t => t.id).join('/')).join(' + '))
+        if (shapeOf(row().layout) !== 'C50,50(g g)') return fail('terminal-move-down-made-no-column')
+        if (row().groups[0].tabs.some(t => t.id === sinking.id) || !row().groups[1].tabs.some(t => t.id === sinking.id)) {
+          return fail('terminal-did-not-move-down', { shape: order() })
+        }
+        const sunk = getTerminal(paneKey(sinking.id, sinking.activeLeafId))
+        if (!sunk || sunk.paneId !== sinkingPty) {
+          return fail('the-move-down-respawned-the-shell', { before: sinkingPty, after: sunk ? sunk.paneId : null })
+        }
+
+        // Closing the lower group's last tab gives the upper group the whole column back. Once its
+        // shell has settled, so the close is not a question about a program still starting.
+        if (!(await idle(sinking))) return fail('moved-terminal-never-settled-at-a-prompt')
+        const sinker = tabEls(1)[0] && tabEls(1)[0].querySelector('.tab__close')
+        if (!sinker) return fail('no-close-button-in-the-lower-strip')
+        sinker.click()
+        await sleep(600)
+        trail.push('after closing the lower group: ' + shapeOf(row().layout))
+        if (row().layout.kind !== 'group' || strips().length !== 1) return fail('the-column-did-not-collapse')
 
         window.__rigee.menus.answer = null
         return JSON.stringify({ ok: true, trail, active })
@@ -2823,7 +2902,52 @@ async function runTabsSmoke(): Promise<void> {
       true
     )) as string
     console.log('[smoke:tabs]', result)
-    app.exit(JSON.parse(result).ok ? 0 : 1)
+    if (!JSON.parse(result).ok) { app.exit(1); return }
+
+    /*
+     * The divider across a column, dragged for real. A splitter only follows a pointer it has
+     * captured, and capture only holds while a button is really down — so a drag dispatched from
+     * inside the page moves nothing. This one goes through Chromium's input pipeline, as the mouse
+     * does, and the boundary must follow it by the column's height, not the row's width.
+     */
+    const before = (await wc.executeJavaScript(
+      `(async () => {
+        const { store } = window.__rigee
+        const ws = store.getState().activeWorkspaceId
+        store.getState().splitTab(ws, undefined, 'down')
+        await new Promise(r => setTimeout(r, 600))
+        const divider = document.querySelector('.groups--column > [role="separator"]')
+        if (!divider) return null
+        const r = divider.getBoundingClientRect()
+        return {
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2),
+          height: divider.parentElement.getBoundingClientRect().height,
+          sizes: store.getState().rowsByWorkspace[ws].layout.sizes
+        }
+      })()`,
+      true
+    )) as { x: number; y: number; height: number; sizes: number[] } | null
+    if (!before) {
+      console.log('[smoke:tabs] drag: no divider across the column after splitting down')
+      app.exit(1)
+      return
+    }
+    wc.sendInputEvent({ type: 'mouseDown', x: before.x, y: before.y, button: 'left', clickCount: 1 })
+    for (const dy of [30, 60, 90, 120]) {
+      wc.sendInputEvent({ type: 'mouseMove', x: before.x, y: before.y + dy, modifiers: ['leftbuttondown'] })
+      await new Promise((r) => setTimeout(r, 30))
+    }
+    wc.sendInputEvent({ type: 'mouseUp', x: before.x, y: before.y + 120, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 300))
+    const after = (await wc.executeJavaScript(
+      `(() => { const s = window.__rigee.store.getState(); return s.rowsByWorkspace[s.activeWorkspaceId].layout.sizes })()`,
+      true
+    )) as number[] | undefined
+    const want = 0.5 + 120 / before.height
+    const dragOk = !!after && Math.abs((after[0] ?? 0) - want) < 0.01
+    console.log('[smoke:tabs] drag', JSON.stringify({ ok: dragOk, before: before.sizes, after, want, height: before.height }))
+    app.exit(dragOk ? 0 : 1)
   } catch (err) {
     console.error('[smoke:tabs] threw:', err)
     app.exit(1)
@@ -4728,13 +4852,14 @@ async function runRunningSmoke(): Promise<void> {
 
 /**
  * End-to-end check that what is on screen survives a restart: build a terminal with splits, a
- * browser tab and a SECOND editor group, let the debounce fire, then read the document main
- * actually wrote to disk.
+ * browser tab, a SECOND editor group and a third under it, let the debounce fire, then read the
+ * document main actually wrote to disk.
  *
- * The row is asserted as a whole rather than tab by tab. `groups` and `groupSizes` are parallel
- * arrays on disk, and a document whose sizes are the wrong length or whose `activeGroupId` names a
- * group that is not there loads without complaint and then renders a centre pane that does not
- * fill the window, or one with no focused column at all.
+ * The row is asserted as a whole rather than tab by tab. `groups`, `groupSizes` and `groupLayout`
+ * describe the same groups three ways on disk, and a document whose sizes are the wrong length or
+ * whose `activeGroupId` names a group that is not there loads without complaint and then renders a
+ * centre pane that does not fill the window, or one with no focused group at all — while one whose
+ * layout names other groups than `groups` does quietly comes back as a plain row.
  */
 async function runPersistSmoke(): Promise<void> {
   const wc = shellWc()
@@ -4779,16 +4904,23 @@ async function runPersistSmoke(): Promise<void> {
           id: 'persist-second-group-tab', kind: 'editor', title: 'beside.ts', pinned: false,
           filePath: '/persist-beside.ts', repoId: null, readOnly: true
         })
+        // And a third under the second, so the layout written has a column in it as well.
+        store.getState().splitGroup(scratch.id, row().activeGroupId, {
+          id: 'persist-stacked-group-tab', kind: 'editor', title: 'below.ts', pinned: false,
+          filePath: '/persist-below.ts', repoId: null, readOnly: true
+        }, 'down')
 
         // Longer than the save debounce.
         await sleep(1500)
         const t = row().groups.flatMap(g => g.tabs).find(x => x.id === tab.id)
         const count = (n) => n.kind === 'leaf' ? 1 : n.children.reduce((a, c) => a + count(c), 0)
+        const shape = (n) => n.kind === 'group' ? 'g' : (n.direction === 'row' ? 'R' : 'C') + '(' + n.children.map(shape).join(' ') + ')'
         return JSON.stringify({
           ok: true,
           terminalTabId: tab.id,
           leaves: t ? count(t.root) : 0,
           groupsInMemory: row().groups.length,
+          layoutInMemory: shape(row().layout),
           activeGroupId: row().activeGroupId
         })
       })()`,
@@ -4799,6 +4931,7 @@ async function runPersistSmoke(): Promise<void> {
       terminalTabId?: string
       leaves?: number
       groupsInMemory?: number
+      layoutInMemory?: string
       activeGroupId?: string
     }
     if (!info.ok) { console.log('[smoke:persist]', built); app.exit(1); return }
@@ -4812,6 +4945,7 @@ async function runPersistSmoke(): Promise<void> {
         {
           groups?: Array<{ id?: string; tabs?: Array<Record<string, unknown>>; activeTabId?: string | null }>
           groupSizes?: number[]
+          groupLayout?: GroupLayout
           activeGroupId?: string
         }
       >
@@ -4820,6 +4954,9 @@ async function runPersistSmoke(): Promise<void> {
     const groups = row?.groups ?? []
     const tabs = groups.flatMap((g) => g.tabs ?? [])
     const sizes = row?.groupSizes ?? []
+    const shapeOf = (n: GroupLayout): string =>
+      n.kind === 'group' ? 'g' : `${n.direction === 'row' ? 'R' : 'C'}(${n.children.map(shapeOf).join(' ')})`
+    const idsOf = (n: GroupLayout): string[] => (n.kind === 'group' ? [n.id] : n.children.flatMap(idsOf))
     const term = tabs.find((t) => t.id === info.terminalTabId)
     // A plugin tab on disk: the shell persisted the envelope, the plugin's own state rode along
     // inside it. Reading the url back out of `state` is the check that both halves survived.
@@ -4843,6 +4980,8 @@ async function runPersistSmoke(): Promise<void> {
       groupsOnDisk: groups.length,
       groupsInMemory: info.groupsInMemory,
       sizesOnDisk: sizes,
+      layoutOnDisk: row?.groupLayout ? shapeOf(row.groupLayout) : null,
+      layoutInMemory: info.layoutInMemory,
       activeGroupOnDisk: row?.activeGroupId ?? null
     }
     const ok =
@@ -4854,8 +4993,14 @@ async function runPersistSmoke(): Promise<void> {
       // A version that is merely reported is a version nobody notices going backwards: the
       // migration in main only runs for documents whose number says they need it.
       doc.version === PERSISTED_STATE_VERSION &&
-      report.groupsOnDisk === 2 &&
+      report.groupsOnDisk === 3 &&
       report.groupsOnDisk === info.groupsInMemory &&
+      // The third group sits under the second, and the document says so, naming every group in
+      // the order `groups` lists them — the two are written separately and read back as one.
+      report.layoutOnDisk === 'R(g C(g g))' &&
+      report.layoutOnDisk === info.layoutInMemory &&
+      idsOf(row!.groupLayout!).join(',') === groups.map((g) => g.id).join(',') &&
+      // Still a row's worth of sizes beside it, for a build that cannot read the layout.
       sizes.length === groups.length &&
       Math.abs(sizes.reduce((a, b) => a + b, 0) - 1) < 0.001 &&
       groups.every((g) => (g.tabs ?? []).length > 0) &&
@@ -5188,7 +5333,7 @@ async function runMigrateSmoke(): Promise<void> {
           const row = st().rowsByWorkspace[want.workspace]
           if (!row) return fail('workspace-not-restored', { workspace: want.workspace })
           trail.push(want.workspace + ': ' + row.groups.length + ' group(s) [' +
-            row.groups.map(g => g.id).join(' ') + '] sizes ' + row.sizes.join(','))
+            row.groups.map(g => g.id).join(' ') + '] layout ' + JSON.stringify(row.layout))
 
           if (row.groups.length !== 1) {
             return fail('not-one-group-per-workspace', { workspace: want.workspace })
@@ -5206,8 +5351,10 @@ async function runMigrateSmoke(): Promise<void> {
               { workspace: want.workspace, got: group.activeTabId, want: want.activeTabId })
           }
           if (row.activeGroupId !== group.id) return fail('active-group-names-nothing')
-          if (row.sizes.length !== 1 || Math.abs(row.sizes[0] - 1) > 0.001) {
-            return fail('migrated-row-does-not-fill-the-width', { sizes: row.sizes })
+          // A migrated record has no layout of its own, so it is the row its sizes describe: one
+          // group, filling the width.
+          if (row.layout.kind !== 'group' || row.layout.id !== group.id) {
+            return fail('migrated-row-does-not-fill-the-width', { layout: row.layout })
           }
 
           const dirs = st().pluginStateByWorkspace[want.workspace]?.['${EXPLORER_PLUGIN_ID}']?.expandedDirs
@@ -5338,8 +5485,9 @@ async function captureShot(): Promise<void> {
     }
     // Editor groups are reviewed by looking at them — a row is either obviously two columns or it
     // is not — and every number this file asserts about them would be identical if the second
-    // group were rendered one pixel wide behind the first.
+    // group were rendered one pixel wide behind the first. `down` stacks them instead.
     if (process.env.RIGEE_SHOT_SPLIT) {
+      const direction = process.env.RIGEE_SHOT_SPLIT === 'down' ? 'down' : 'right'
       const shape = (await wc.executeJavaScript(
         `(async () => {
           const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -5353,9 +5501,11 @@ async function captureShot(): Promise<void> {
             store.getState().openTab(ws, newTerminalTab())
             await sleep(1200)
           }
-          store.getState().splitGroup(ws, row().activeGroupId, newTerminalTab())
+          store.getState().splitGroup(ws, row().activeGroupId, newTerminalTab(), '${direction}')
           await sleep(1800)
-          return row().groups.map(g => g.tabs.length).join('+') + ' @ ' + row().sizes.join(',')
+          const layout = row().layout
+          return row().groups.map(g => g.tabs.length).join('+') + ' @ ' +
+            (layout.kind === 'split' ? layout.direction + ' ' + layout.sizes.join(',') : 'one group')
         })()`,
         true
       )) as string

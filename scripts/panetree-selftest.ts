@@ -62,12 +62,17 @@ import {
   closeTabs as closeTabsInRow,
   focusGroup,
   groupOfTab,
+  layoutOrder,
   moveTab,
   moveTabToNewGroup,
   openInGroup,
   resizeAt,
+  restoreLayout,
+  setBoundary,
   singleGroupRow,
-  splitGroup
+  splitGroup,
+  widthShares,
+  type GroupRow
 } from '../src/renderer/src/groups.ts'
 import {
   addFoldersToWorkspaceFile,
@@ -117,7 +122,7 @@ import {
   terminalPanes,
   wantsCheck
 } from '../src/renderer/src/paneWork.ts'
-import type { PaneNode, Tab, WorkspaceActivity } from '../src/shared/types.ts'
+import type { GroupLayout, PaneNode, Tab, WorkspaceActivity } from '../src/shared/types.ts'
 
 let failures = 0
 let checks = 0
@@ -869,26 +874,55 @@ console.log('\neditor groups')
   const sameTarget = (a: Tab, b: Tab): boolean =>
     a.kind === 'editor' && b.kind === 'editor' && a.filePath === b.filePath
 
-  const sums = (row: { sizes: number[] }): number =>
-    Math.round(row.sizes.reduce((a, b) => a + b, 0) * 1000) / 1000
+  /** Compact layout, by group id: `R(g1 C(g2 g3))`. */
+  const layoutShape = (node: GroupLayout): string =>
+    node.kind === 'group' ? node.id : `${node.direction === 'row' ? 'R' : 'C'}(${node.children.map(layoutShape).join(' ')})`
+  const pct = (sizes: number[]): string => sizes.map((s) => Math.round(s * 100)).join(',')
+  /** The outermost split's sizes; a lone group has all of it. */
+  const sizesOf = (node: GroupLayout): number[] => (node.kind === 'split' ? node.sizes : [1])
+  const topId = (row: GroupRow): string => (row.layout.kind === 'split' ? row.layout.id : '')
+  /** The first stacked split, wherever it is. */
+  const columnOf = (node: GroupLayout): Extract<GroupLayout, { kind: 'split' }> | null =>
+    node.kind === 'group' ? null : node.direction === 'column' ? node : (node.children.map(columnOf).find(Boolean) ?? null)
+  /**
+   * Everything the module promises about a row, in one check: the layout's groups are exactly the
+   * list, in its order, one of them active; no split of one, and none inside one running the same
+   * way; and each split's sizes, one per child, fill it.
+   */
+  const sound = (row: GroupRow): boolean => {
+    const splitOk = (node: GroupLayout): boolean =>
+      node.kind === 'group' ||
+      (node.children.length >= 2 &&
+        node.sizes.length === node.children.length &&
+        node.sizes.every((s) => s > 0) &&
+        Math.abs(sum(node.sizes) - 1) < 1e-9 &&
+        node.children.every((c) => c.kind === 'group' || c.direction !== node.direction) &&
+        node.children.every(splitOk))
+    return (
+      layoutOrder(row.layout).join(',') === row.groups.map((g) => g.id).join(',') &&
+      row.groups.some((g) => g.id === row.activeGroupId) &&
+      splitOk(row.layout)
+    )
+  }
 
   // One group to start with, holding everything the workspace had before groups existed.
   const one = singleGroupRow('g1', [editor('a'), editor('b')])
   eq('a fresh row has one group', one.groups.length, 1)
   eq('and it is active', one.activeGroupId, 'g1')
   eq('its last tab is showing', one.groups[0].activeTabId, 'b')
-  eq('it fills the row', sums(one), 1)
+  check('it fills the row', sound(one))
 
   // Split: the new group takes half of the SOURCE's width, not an equal share of the row.
   const two = splitGroup(one, 'g1', 'g2', editor('b-copy'))
   eq('split adds a group', two.groups.length, 2)
   eq('the new group is active', two.activeGroupId, 'g2')
-  eq('halves are equal', two.sizes.map((s) => Math.round(s * 100)).join(','), '50,50')
+  eq('beside the old one', layoutShape(two.layout), 'R(g1 g2)')
+  eq('halves are equal', pct(sizesOf(two.layout)), '50,50')
   const three = splitGroup(two, 'g1', 'g3', editor('c'))
   eq('splitting the left group again', three.groups.map((g) => g.id).join(','), 'g1,g3,g2')
-  eq('takes width from the left group only',
-    three.sizes.map((s) => Math.round(s * 100)).join(','), '25,25,50')
-  eq('and the row still fills', sums(three), 1)
+  eq('joins the row rather than nesting in it', layoutShape(three.layout), 'R(g1 g3 g2)')
+  eq('takes width from the left group only', pct(sizesOf(three.layout)), '25,25,50')
+  check('and the row still fills', sound(three))
 
   // Per-group de-duplication: the same file in two groups is the whole point of the feature.
   // A real caller mints a fresh id; what makes the two tabs "the same file" is the path.
@@ -903,7 +937,8 @@ console.log('\neditor groups')
   // Closing the last tab in a group takes the group with it, and gives back its width.
   const closed = closeTabsInRow(two, ['b-copy'])
   eq('emptying a group removes it', closed.groups.length, 1)
-  eq('the survivor takes the whole row', sums(closed), 1)
+  eq('the survivor takes the whole row', layoutShape(closed.layout), 'g1')
+  check('which is sound', sound(closed))
   eq('and becomes active', closed.activeGroupId, 'g1')
 
   // ...but never the last one: an empty row has nowhere to put the next file you open.
@@ -920,7 +955,7 @@ console.log('\neditor groups')
 
   const drained = moveTab(two, 'b-copy', 'g1', 0)
   eq('draining a group closes it', drained.groups.length, 1)
-  eq('and the row still fills', sums(drained), 1)
+  check('and the row still fills', sound(drained))
 
   eq('dragging within a group reorders',
     moveTab(one, 'b', 'g1', 0).groups[0].tabs.map((t) => t.id).join(','), 'b,a')
@@ -940,13 +975,98 @@ console.log('\neditor groups')
   eq('focusing an unknown group is a no-op', focusGroup(three, 'nope'), three)
 
   // Resizing moves only the two groups either side of the handle.
-  const resized = resizeAt(three, 0, 0.1)
-  eq('the pair either side of the handle move',
-    resized.sizes.map((s) => Math.round(s * 100)).join(','), '35,15,50')
-  eq('and the row still fills', sums(resized), 1)
+  const resized = resizeAt(three, topId(three), 0, 0.1)
+  eq('the pair either side of the handle move', pct(sizesOf(resized.layout)), '35,15,50')
+  check('and the row still fills', sound(resized))
   eq('a group cannot be squeezed away',
-    resizeAt(three, 0, -1).sizes[0] > 0.05, true)
-  eq('an out-of-range handle is a no-op', resizeAt(three, 5, 0.1), three)
+    sizesOf(resizeAt(three, topId(three), 0, -1).layout)[0] > 0.05, true)
+  eq('an out-of-range handle is a no-op', resizeAt(three, topId(three), 5, 0.1), three)
+  eq('so is a split that is not there', resizeAt(three, 'nope', 0, 0.1), three)
+
+  // Split down: the same arithmetic the other way. A lone group becomes a column of two.
+  const stacked = splitGroup(one, 'g1', 'g2', editor('b-copy'), 'down')
+  eq('splitting down stacks the new group under the old', layoutShape(stacked.layout), 'C(g1 g2)')
+  eq('the new group is active', stacked.activeGroupId, 'g2')
+  eq('and takes half the height', pct(sizesOf(stacked.layout)), '50,50')
+  check('the column is sound', sound(stacked))
+
+  // Down from a group in a row puts a column in that group's place, and leaves the row alone.
+  const tee = splitGroup(two, 'g1', 'g3', editor('c'), 'down')
+  eq('down from a group in a row nests a column there', layoutShape(tee.layout), 'R(C(g1 g3) g2)')
+  eq('the row keeps its widths', pct(sizesOf(tee.layout)), '50,50')
+  eq('reading order goes down a column before going on across',
+    tee.groups.map((g) => g.id).join(','), 'g1,g3,g2')
+  check('and it is sound', sound(tee))
+  // Down again from inside that column joins it, rather than nesting a column in a column.
+  const taller = splitGroup(tee, 'g1', 'g4', editor('d'), 'down')
+  eq('down again joins the column', layoutShape(taller.layout), 'R(C(g1 g4 g3) g2)')
+  eq('taking height from the split group only', pct(columnOf(taller.layout)!.sizes), '25,25,50')
+  check('still sound', sound(taller))
+  // Right from inside the column nests a row there.
+  const grid = splitGroup(tee, 'g3', 'g5', editor('e'))
+  eq('right from a stacked group nests a row in the column', layoutShape(grid.layout), 'R(C(g1 R(g3 g5)) g2)')
+  check('sound again', sound(grid))
+
+  // Closing the lower of two stacked groups gives the upper one the column's whole slot.
+  const unstacked = closeGroup(tee, 'g3')
+  eq('closing a stacked group collapses its column', layoutShape(unstacked.layout), 'R(g1 g2)')
+  eq('the survivor keeps the column\'s width', pct(sizesOf(unstacked.layout)), '50,50')
+  eq('and the focus goes up to it', unstacked.activeGroupId, 'g1')
+  check('sound after closing', sound(unstacked))
+  eq('closing the upper one sends the focus down', closeGroup(focusGroup(tee, 'g1'), 'g1').activeGroupId, 'g3')
+  eq('closing one without the focus leaves it be', closeGroup(tee, 'g2').activeGroupId, 'g3')
+  // The column around a nested row collapsing leaves a row inside a row, which is merged.
+  const merged = closeGroup(grid, 'g1')
+  eq('a row left inside a row merges into it', layoutShape(merged.layout), 'R(g3 g5 g2)')
+  eq('sharing out the slot it had', pct(sizesOf(merged.layout)), '25,25,50')
+  check('sound after merging', sound(merged))
+  eq('emptying a stacked group closes it', layoutShape(closeTabsInRow(tee, ['c']).layout), 'R(g1 g2)')
+  eq('so does dragging its last tab away', layoutShape(moveTab(tee, 'c', 'g2', 0).layout), 'R(g1 g2)')
+
+  // A tab that cannot be copied moves down into a group of its own.
+  const pulledDown = moveTabToNewGroup(one, 'a', 'g9', 'down')
+  eq('a tab moved down gets a group below', layoutShape(pulledDown.layout), 'C(g1 g9)')
+  eq('and leaves its old one', pulledDown.groups[0].tabs.map((t) => t.id).join(','), 'b')
+
+  // A divider in a column moves by the column's own fractions.
+  const dragged = setBoundary(tee, columnOf(tee.layout)!.id, 0, 0.7)
+  eq('a column divider moves its own pair', pct(columnOf(dragged.layout)!.sizes), '70,30')
+  eq('and nothing in the row', pct(sizesOf(dragged.layout)), '50,50')
+  eq('but never squeezes a group away',
+    columnOf(setBoundary(tee, columnOf(tee.layout)!.id, 0, 1).layout)!.sizes[1] > 0.05, true)
+
+  // What reaches disk for a build that reads only a row: each group's share of the width.
+  eq('a row writes its own sizes', pct(widthShares(three)), '25,25,50')
+  eq('stacked groups share their column\'s width', pct(widthShares(tee)), '33,33,33')
+  eq('a lone group writes all of it', pct(widthShares(one)), '100')
+
+  // And what comes back from disk is trusted only as far as it can be checked.
+  const grp = (id: string): GroupLayout => ({ kind: 'group', id })
+  const saved: GroupLayout = {
+    kind: 'split', id: 'x', direction: 'row', sizes: [0.5, 0.5],
+    children: [{ kind: 'split', id: 'y', direction: 'column', sizes: [0.6, 0.4], children: [grp('g1'), grp('g3')] }, grp('g2')]
+  }
+  const restored = restoreLayout(saved, ['g1', 'g3', 'g2'], [1 / 3, 1 / 3, 1 / 3])
+  eq('a saved layout comes back as it was', layoutShape(restored), 'R(C(g1 g3) g2)')
+  eq('sizes and all', pct(columnOf(restored)!.sizes), '60,40')
+  eq('a group that did not survive the read comes out of it',
+    layoutShape(restoreLayout(saved, ['g1', 'g2'], [])), 'R(g1 g2)')
+  eq('one that it leaves out gives way to a row of them all',
+    layoutShape(restoreLayout(saved, ['g1', 'g3', 'g2', 'g4'], [])), 'R(g1 g3 g2 g4)')
+  eq('a group named twice keeps its first place',
+    layoutShape(restoreLayout({ kind: 'split', id: 'z', direction: 'column', sizes: [0.5, 0.5],
+      children: [grp('g2'), { kind: 'split', id: 'w', direction: 'row', sizes: [0.5, 0.5], children: [grp('g1'), grp('g2')] }] },
+    ['g1', 'g2'], [])), 'C(g2 g1)')
+  eq('a row written inside a row is read as one',
+    layoutShape(restoreLayout({ kind: 'split', id: 'v', direction: 'row', sizes: [0.5, 0.5],
+      children: [grp('g1'), { kind: 'split', id: 'u', direction: 'row', sizes: [0.5, 0.5], children: [grp('g2'), grp('g3')] }] },
+    ['g1', 'g2', 'g3'], [])), 'R(g1 g2 g3)')
+  eq('a document from before stacking is the row its sizes describe',
+    pct(sizesOf(restoreLayout(undefined, ['g1', 'g2'], [0.3, 0.7]))), '30,70')
+  eq('sizes of the wrong length are evened out', pct(sizesOf(restoreLayout(undefined, ['g1', 'g2'], [1]))), '50,50')
+  eq('one group is just the group', layoutShape(restoreLayout(undefined, ['g1'], [1])), 'g1')
+  eq('nonsense is a row as well',
+    layoutShape(restoreLayout({ kind: 'split', direction: 'diagonal', children: 'no' }, ['g1', 'g2'], [])), 'R(g1 g2)')
 }
 
 console.log('\nworkspace heat')

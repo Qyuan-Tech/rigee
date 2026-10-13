@@ -247,7 +247,7 @@ export function runAppAction(action: string, fromTerminal: string | null = null)
       return true
     }
     case 'split_group':
-      s.splitTab(ws)
+      s.splitTab(ws, undefined, param === 'down' ? 'down' : 'right')
       return true
   }
   return false

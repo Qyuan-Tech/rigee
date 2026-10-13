@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
-import { canDuplicate, groupById, groupOfTab } from '../groups'
-import { CloseIcon, FileIcon, ICONS, SplitIcon, TerminalIcon } from '../icons'
+import { canDuplicate, groupById, groupOfTab, type SplitDirection } from '../groups'
+import { CloseIcon, FileIcon, ICONS, SplitDownIcon, SplitIcon, TerminalIcon } from '../icons'
 import { ensurePlugin } from '../plugins/activate'
 import { tabFactory } from '../plugins/bindings'
 import {
@@ -105,9 +105,15 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
     if (workspace) openTerminalTab(workspace.id, { groupId })
   }, [groupId, workspace])
 
-  const split = useCallback(() => {
-    if (workspace) splitTab(workspace.id, groupId)
-  }, [groupId, splitTab, workspace])
+  const split = useCallback(
+    (direction: SplitDirection) => {
+      if (workspace) splitTab(workspace.id, groupId, direction)
+    },
+    [groupId, splitTab, workspace]
+  )
+  // The truth per kind, because the two behaviours look different on screen and a button that
+  // says "split" while moving your terminal away is a small betrayal.
+  const moves = activeTab !== null && !canDuplicate(activeTab, isDuplicableViewType)
 
   /**
    * Open a fresh tab of a plugin-owned type.
@@ -230,17 +236,19 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
         })}
         <button
           className="icon-button"
-          onClick={split}
+          onClick={() => split('right')}
           disabled={!activeTab}
-          // The truth per kind, because the two behaviours look different on screen and a button
-          // that says "split" while moving your terminal away is a small betrayal.
-          title={
-            activeTab && !canDuplicate(activeTab, isDuplicableViewType)
-              ? 'Move to a new group'
-              : 'Split right'
-          }
+          title={moves ? 'Move to a new group' : 'Split right'}
         >
           <SplitIcon size={14} />
+        </button>
+        <button
+          className="icon-button"
+          onClick={() => split('down')}
+          disabled={!activeTab}
+          title={moves ? 'Move to a new group below' : 'Split down'}
+        >
+          <SplitDownIcon size={14} />
         </button>
       </div>
     </div>

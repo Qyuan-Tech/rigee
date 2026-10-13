@@ -1,5 +1,5 @@
 /**
- * Pure arithmetic for a row of editor groups.
+ * Pure arithmetic for the centre pane's editor groups.
  *
  * Extracted for the same reason `paneTree.ts` and `tabs.ts` were: every failure mode in here is a
  * quiet one. A split that forgets to renormalise leaves a row that does not fill the window; a
@@ -8,18 +8,23 @@
  * running process with it. None of that throws, and all of it is tedious to reproduce by hand once
  * three groups and a drag are in play.
  *
- * Deliberately a flat ROW rather than `paneTree`'s nested tree. Groups only ever sit side by side,
- * and a tree would buy nesting nobody asked for at the cost of every operation here becoming a
- * walk. Terminals keep the tree, because panes inside one terminal tab genuinely nest.
+ * Two halves, kept apart on purpose. `groups` is a flat list — the tabs, and which one each group
+ * shows — and `layout` is a tree like a terminal tab's split tree that only says where each group
+ * is drawn: side by side, stacked, or any nesting of the two. Everything that wants the tabs, which
+ * is most of the shell, reads the list and never walks the tree; only splitting, closing a group
+ * and dragging a divider touch the layout.
  *
- * INVARIANT, maintained by every function that returns a row: `sizes.length === groups.length`,
- * every size is positive, and they sum to 1. `activeGroupId` names a group that exists, and there
- * is always at least one group — an empty one shows the shell's "Nothing open" state, which is
- * where a file goes when you click it.
+ * INVARIANT, maintained by every function that returns a row: the layout's groups are exactly
+ * `groups`, in the same order — reading order, which is what goto_group counts in. Every split has
+ * two children or more, none of them a split running the same way as itself, and one positive size
+ * per child summing to 1. `activeGroupId` names a group that exists, and there is always at least
+ * one group — an empty one shows the shell's "Nothing open" state, which is where a file goes when
+ * you click it.
  */
 
+import { nextNodeId } from './paneTree'
 import { nextActiveTab } from './tabs'
-import type { Tab, TabId } from '@shared/types'
+import type { GroupLayout, Tab, TabId } from '@shared/types'
 
 export type GroupId = string
 
@@ -30,12 +35,20 @@ export interface TabGroup {
   activeTabId: TabId | null
 }
 
+/**
+ * The centre pane of one workspace. Still called a row — as are `rowsByWorkspace` and `rowOf` —
+ * after what it was before groups could be stacked.
+ */
 export interface GroupRow {
+  /** Every group, in reading order: left to right, and top to bottom where they are stacked. */
   groups: TabGroup[]
-  /** One fraction per group, left to right, summing to 1. */
-  sizes: number[]
+  /** Where each group is drawn. Its groups are exactly `groups`, in the same order. */
+  layout: GroupLayout
   activeGroupId: GroupId
 }
+
+/** Where a split puts the new group: VS Code's Split Right and Split Down. */
+export type SplitDirection = 'right' | 'down'
 
 /** The smallest fraction a group may be squeezed to, so a group can never become unclickable. */
 const MIN_SIZE = 0.08
@@ -45,7 +58,7 @@ export function newGroup(id: GroupId, tabs: Tab[] = []): TabGroup {
 }
 
 export function singleGroupRow(id: GroupId, tabs: Tab[] = []): GroupRow {
-  return { groups: [newGroup(id, tabs)], sizes: [1], activeGroupId: id }
+  return { groups: [newGroup(id, tabs)], layout: { kind: 'group', id }, activeGroupId: id }
 }
 
 export const groupById = (row: GroupRow, id: GroupId): TabGroup | undefined =>
@@ -59,6 +72,11 @@ export const groupOfTab = (row: GroupRow, tabId: TabId): TabGroup | undefined =>
   row.groups.find((g) => g.tabs.some((t) => t.id === tabId))
 
 export const allTabs = (row: GroupRow): Tab[] => row.groups.flatMap((g) => g.tabs)
+
+/** The groups in the order the layout visits them, which is reading order. */
+export function layoutOrder(layout: GroupLayout): GroupId[] {
+  return layout.kind === 'group' ? [layout.id] : layout.children.flatMap(layoutOrder)
+}
 
 /**
  * Renormalise a set of fractions.
@@ -74,47 +92,128 @@ function normalise(sizes: number[]): number[] {
 }
 
 /**
- * Put a new group immediately to the right of `groupId`, holding `tab`.
+ * Put a new group holding `tab` immediately to the right of `groupId`, or below it.
  *
- * The new group takes half of the source group's width rather than an equal share of the row:
+ * The new group takes half of the source group's share rather than an equal share of its row:
  * splitting the left group should not shuffle the right one, which is what an equal redistribution
  * would do and what makes VS Code's split feel like it moves the wrong things.
  */
-export function splitGroup(row: GroupRow, groupId: GroupId, newId: GroupId, tab: Tab): GroupRow {
-  const index = row.groups.findIndex((g) => g.id === groupId)
-  if (index < 0) return row
-
-  const groups = [...row.groups]
-  const sizes = [...row.sizes]
-  groups.splice(index + 1, 0, newGroup(newId, [tab]))
-  const half = (sizes[index] ?? 1) / 2
-  sizes[index] = half
-  sizes.splice(index + 1, 0, half)
-
-  return { groups, sizes: normalise(sizes), activeGroupId: newId }
+export function splitGroup(
+  row: GroupRow,
+  groupId: GroupId,
+  newId: GroupId,
+  tab: Tab,
+  direction: SplitDirection = 'right'
+): GroupRow {
+  if (!groupById(row, groupId)) return row
+  const layout = splitLayout(row.layout, groupId, newId, direction === 'right' ? 'row' : 'column')
+  return { groups: inLayoutOrder([...row.groups, newGroup(newId, [tab])], layout), layout, activeGroupId: newId }
 }
 
 /**
- * Remove a group, giving its width back to the others in proportion.
+ * The layout with `newId` put after `groupId`, taking half of its share.
+ *
+ * Joins the split the group is already in when that runs the same way, rather than nesting one
+ * inside it: three groups across are one row of three, not a row inside a row, and only then does
+ * every divider sit between the two groups it looks as if it sits between.
+ */
+function splitLayout(node: GroupLayout, groupId: GroupId, newId: GroupId, direction: 'row' | 'column'): GroupLayout {
+  const created: GroupLayout = { kind: 'group', id: newId }
+  if (node.kind === 'group') {
+    if (node.id !== groupId) return node
+    return { kind: 'split', id: nextNodeId(), direction, children: [node, created], sizes: [0.5, 0.5] }
+  }
+
+  const index = node.children.findIndex((c) => c.kind === 'group' && c.id === groupId)
+  if (index >= 0 && node.direction === direction) {
+    const children = [...node.children]
+    const sizes = [...node.sizes]
+    children.splice(index + 1, 0, created)
+    const half = (sizes[index] ?? 1) / 2
+    sizes[index] = half
+    sizes.splice(index + 1, 0, half)
+    return { ...node, children, sizes: normalise(sizes) }
+  }
+  return { ...node, children: node.children.map((c) => splitLayout(c, groupId, newId, direction)) }
+}
+
+/**
+ * Remove a group, giving its space back to the groups beside it, in proportion.
  *
  * The last group is never removed — an empty row has nowhere to put the next file the user opens,
  * so an empty group survives and shows the "Nothing open" state instead.
  */
 export function closeGroup(row: GroupRow, groupId: GroupId): GroupRow {
-  const index = row.groups.findIndex((g) => g.id === groupId)
-  if (index < 0 || row.groups.length === 1) return row
+  if (!groupById(row, groupId) || row.groups.length === 1) return row
 
-  const groups = row.groups.filter((_, i) => i !== index)
-  const sizes = row.sizes.filter((_, i) => i !== index)
-  // Selection lands on the neighbour to the right, falling back to the left — the same rule
-  // `nextActiveTab` applies within a strip, for the same reason: it is where the eye already is.
-  const survivor = groups[Math.min(index, groups.length - 1)]!
+  const layout = pruneLayout(row.layout, (id) => id !== groupId)!
+  // Selection lands on the neighbour after it, to the right or below, falling back to the one
+  // before — the same rule `nextActiveTab` applies within a strip, for the same reason: it is where
+  // the eye already is.
+  const survivor = neighbourOf(row.layout, groupId) ?? layoutOrder(layout)[0]!
 
   return {
-    groups,
-    sizes: normalise(sizes),
-    activeGroupId: row.activeGroupId === groupId ? survivor.id : row.activeGroupId
+    groups: row.groups.filter((g) => g.id !== groupId),
+    layout,
+    activeGroupId: row.activeGroupId === groupId ? survivor : row.activeGroupId
   }
+}
+
+/**
+ * The layout with only the groups `keep` accepts, or null when that is none of them.
+ *
+ * A split left with one child is replaced by it, and a split left inside one running the same way
+ * is merged into it, its children sharing out its slot: closing the lower of two stacked groups
+ * beside a third must leave one row of two, not a row with another row in it.
+ */
+function pruneLayout(node: GroupLayout, keep: (id: GroupId) => boolean): GroupLayout | null {
+  if (node.kind === 'group') return keep(node.id) ? node : null
+
+  const children: GroupLayout[] = []
+  const sizes: number[] = []
+  node.children.forEach((child, i) => {
+    const kept = pruneLayout(child, keep)
+    if (!kept) return
+    const share = node.sizes[i] ?? 1 / node.children.length
+    if (kept.kind === 'split' && kept.direction === node.direction) {
+      kept.children.forEach((c, j) => {
+        children.push(c)
+        sizes.push(share * (kept.sizes[j] ?? 1 / kept.children.length))
+      })
+    } else {
+      children.push(kept)
+      sizes.push(share)
+    }
+  })
+
+  if (children.length === 0) return null
+  // A split of one is not a split.
+  if (children.length === 1) return children[0]!
+  return { ...node, children, sizes: normalise(sizes) }
+}
+
+/** The group after `groupId` in its split — the first of it, if that is a split — else the last before. */
+function neighbourOf(node: GroupLayout, groupId: GroupId): GroupId | null {
+  if (node.kind === 'group') return null
+  const index = node.children.findIndex((c) => c.kind === 'group' && c.id === groupId)
+  if (index < 0) {
+    for (const child of node.children) {
+      const found = neighbourOf(child, groupId)
+      if (found) return found
+    }
+    return null
+  }
+  const after = node.children[index + 1]
+  if (after) return layoutOrder(after)[0] ?? null
+  const before = node.children[index - 1]
+  const order = before ? layoutOrder(before) : []
+  return order[order.length - 1] ?? null
+}
+
+/** `groups` in the order `layout` visits them, which is the order a row keeps them in. */
+function inLayoutOrder(groups: TabGroup[], layout: GroupLayout): TabGroup[] {
+  const byId = new Map(groups.map((g) => [g.id, g]))
+  return layoutOrder(layout).flatMap((id) => byId.get(id) ?? [])
 }
 
 /**
@@ -217,8 +316,13 @@ export function moveTab(
   return next
 }
 
-/** Drag a tab out past the right-hand edge: it gets a group of its own. */
-export function moveTabToNewGroup(row: GroupRow, tabId: TabId, newId: GroupId): GroupRow {
+/** Move a tab out into a group of its own, to the right of the one it is in or below it. */
+export function moveTabToNewGroup(
+  row: GroupRow,
+  tabId: TabId,
+  newId: GroupId,
+  direction: SplitDirection = 'right'
+): GroupRow {
   const from = groupOfTab(row, tabId)
   const tab = from?.tabs.find((t) => t.id === tabId)
   if (!from || !tab) return row
@@ -226,7 +330,7 @@ export function moveTabToNewGroup(row: GroupRow, tabId: TabId, newId: GroupId): 
   // identical one, which looks to the user like the drag did nothing except renumber things.
   if (from.tabs.length === 1) return row
 
-  const split = splitGroup(row, from.id, newId, tab)
+  const split = splitGroup(row, from.id, newId, tab, direction)
   const sourceIndex = split.groups.findIndex((g) => g.id === from.id)
   return {
     ...split,
@@ -252,20 +356,14 @@ export function activateTab(row: GroupRow, tabId: TabId): GroupRow {
 }
 
 /**
- * Resize the boundary between group `index` and the one after it by a fraction of the row.
+ * Resize the boundary between child `index` of split `splitId` and the one after it, as a fraction
+ * of that split.
  *
- * Only the two groups either side move; everything further out keeps its width, which is what a
- * splitter is expected to do and what stops a drag on the left from shuffling the right-hand edge.
+ * Only the two either side move; everything further out keeps its size, which is what a splitter
+ * is expected to do and what stops a drag on the left from shuffling the right-hand edge.
  */
-export function setBoundary(row: GroupRow, index: number, leftFraction: number): GroupRow {
-  if (index < 0 || index >= row.sizes.length - 1) return row
-  const pair = row.sizes[index]! + row.sizes[index + 1]!
-  const left = Math.max(MIN_SIZE, Math.min(pair - MIN_SIZE, leftFraction))
-
-  const sizes = [...row.sizes]
-  sizes[index] = left
-  sizes[index + 1] = pair - left
-  return { ...row, sizes: normalise(sizes) }
+export function setBoundary(row: GroupRow, splitId: string, index: number, fraction: number): GroupRow {
+  return moveBoundary(row, splitId, index, () => fraction)
 }
 
 /**
@@ -277,17 +375,99 @@ export function setBoundary(row: GroupRow, index: number, leftFraction: number):
  * divider would accelerate away from the cursor. A keyboard nudge, if one is ever added, wants
  * this one.
  */
-export function resizeAt(row: GroupRow, index: number, delta: number): GroupRow {
-  if (index < 0 || index >= row.sizes.length - 1) return row
-  const left = row.sizes[index]!
-  const right = row.sizes[index + 1]!
-  const pair = left + right
-  const nextLeft = Math.max(MIN_SIZE, Math.min(pair - MIN_SIZE, left + delta))
+export function resizeAt(row: GroupRow, splitId: string, index: number, delta: number): GroupRow {
+  return moveBoundary(row, splitId, index, (before) => before + delta)
+}
 
-  const sizes = [...row.sizes]
-  sizes[index] = nextLeft
-  sizes[index + 1] = pair - nextLeft
-  return { ...row, sizes: normalise(sizes) }
+/** One boundary moved to wherever `place` puts it, given where it is; the same row when it is not there. */
+function moveBoundary(row: GroupRow, splitId: string, index: number, place: (before: number) => number): GroupRow {
+  const walk = (node: GroupLayout): GroupLayout => {
+    if (node.kind === 'group') return node
+    if (node.id !== splitId) {
+      const children = node.children.map(walk)
+      return children.every((c, i) => c === node.children[i]) ? node : { ...node, children }
+    }
+    if (index < 0 || index >= node.sizes.length - 1) return node
+    const pair = node.sizes[index]! + node.sizes[index + 1]!
+    const before = Math.max(MIN_SIZE, Math.min(pair - MIN_SIZE, place(node.sizes[index]!)))
+
+    const sizes = [...node.sizes]
+    sizes[index] = before
+    sizes[index + 1] = pair - before
+    return { ...node, sizes: normalise(sizes) }
+  }
+  const layout = walk(row.layout)
+  return layout === row.layout ? row : { ...row, layout }
+}
+
+/**
+ * Each group's share of the width, in reading order: what `groupSizes` holds on disk.
+ *
+ * For a build from before groups could be stacked, which reads a row and nothing else. A row comes
+ * back exactly; stacked groups come back side by side, in proportion to how wide each one was.
+ */
+export function widthShares(row: GroupRow): number[] {
+  const widths = new Map<GroupId, number>()
+  const walk = (node: GroupLayout, width: number): void => {
+    if (node.kind === 'group') {
+      widths.set(node.id, width)
+      return
+    }
+    node.children.forEach((child, i) => walk(child, node.direction === 'row' ? width * (node.sizes[i] ?? 0) : width))
+  }
+  walk(row.layout, 1)
+  return normalise(row.groups.map((g) => widths.get(g.id) ?? 0))
+}
+
+/**
+ * A layout read back from disk, made to fit the groups that survived the read.
+ *
+ * Trusted only as far as it can be checked. A group that is gone — dropped for having no tabs —
+ * comes out of it as if it had been closed, and a group named twice keeps its first place. A layout
+ * that cannot be read, or that leaves a group out, gives way to a row of every group sized by
+ * `sizes`, which is also what every document written before groups could be stacked describes.
+ */
+export function restoreLayout(raw: unknown, ids: readonly GroupId[], sizes: unknown): GroupLayout {
+  const known = new Set(ids)
+  const placed = new Set<GroupId>()
+  const parsed = parseLayout(raw)
+  const pruned =
+    parsed &&
+    pruneLayout(parsed, (id) => {
+      if (!known.has(id) || placed.has(id)) return false
+      placed.add(id)
+      return true
+    })
+  if (pruned && placed.size === known.size) return pruned
+
+  if (ids.length === 1) return { kind: 'group', id: ids[0]! }
+  const fractions = Array.isArray(sizes) && sizes.length === ids.length ? sizes.map(Number) : ids.map(() => 1)
+  return {
+    kind: 'split',
+    id: nextNodeId(),
+    direction: 'row',
+    children: ids.map((id) => ({ kind: 'group', id })),
+    sizes: normalise(fractions)
+  }
+}
+
+/**
+ * A layout as written to disk, or null if any part of it is not one.
+ *
+ * Split ids are minted afresh. They only ever have to be unique among the splits on screen, and two
+ * from a hand-edited document might not be.
+ */
+function parseLayout(raw: unknown): GroupLayout | null {
+  if (!raw || typeof raw !== 'object') return null
+  const node = raw as Record<string, unknown>
+  if (node.kind === 'group') return typeof node.id === 'string' ? { kind: 'group', id: node.id } : null
+  if (node.kind !== 'split' || (node.direction !== 'row' && node.direction !== 'column')) return null
+  if (!Array.isArray(node.children) || node.children.length === 0) return null
+
+  const children = node.children.map(parseLayout)
+  if (children.some((c) => c === null)) return null
+  const sizes = Array.isArray(node.sizes) && node.sizes.length === children.length ? node.sizes.map(Number) : children.map(() => 1)
+  return { kind: 'split', id: nextNodeId(), direction: node.direction, children: children as GroupLayout[], sizes }
 }
 
 /**

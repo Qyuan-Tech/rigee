@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useRef } from 'react'
+import { groupById, type GroupRow } from '../groups'
 import { isMac } from '../ipc'
 import { formatTrigger, triggersFor } from '@shared/keymap'
 import { useKeymap } from '../shortcuts'
@@ -7,14 +8,16 @@ import { PluginEditorPane, PluginTabPane } from './PluginHost'
 import { Splitter } from './Splitter'
 import { TabStrip } from './TabStrip'
 import { TerminalPane } from './TerminalPane'
-import type { TabGroup } from '@shared/types'
+import type { GroupId, GroupLayout, TabGroup } from '@shared/types'
+
+type SplitNode = Extract<GroupLayout, { kind: 'split' }>
 
 /**
- * The centre of the window: a row of editor groups, left to right.
+ * The centre of the window: the editor groups, side by side, stacked, or both.
  *
  * One group is the ordinary case and looks exactly like the single pane this replaced. Two is the
- * point of the feature — a PDF open beside a terminal talking to an agent — and the row generalises
- * to as many as the window can hold.
+ * point of the feature — a PDF open beside a terminal talking to an agent — and the layout
+ * generalises to as many as the window can hold, nested as deep as the splits go.
  *
  * Each group renders only its own active tab, keyed by tab id, which is what keeps a tab id mounted
  * in exactly one place. That matters more than it looks: ptys, native browser views and PDF reading
@@ -23,10 +26,24 @@ import type { TabGroup } from '@shared/types'
  */
 export function CenterPane(): React.ReactElement {
   const row = useRow()
+  const { layout } = row
+  // A lone group is drawn as a split of one, so the first split, either way, keeps it where React
+  // has it — still mounted — rather than re-creating everything in it a level down. A split deeper
+  // in does re-create the group it wraps, which every pane survives: switching tabs does the same.
+  const top: SplitNode =
+    layout.kind === 'split' ? layout : { kind: 'split', id: '', direction: 'row', children: [layout], sizes: [1] }
+  return <Split row={row} node={top} />
+}
+
+/**
+ * One split: its children side by side or one above the other, with a divider between each two.
+ * The outermost is `.groups` itself, filling the centre; one inside another takes its share.
+ */
+function Split({ row, node, size }: { row: GroupRow; node: SplitNode; size?: number }): React.ReactElement {
   const workspaceId = useApp((s) => s.activeWorkspaceId)
   const setGroupBoundary = useApp((s) => s.setGroupBoundary)
-  const focusGroup = useApp((s) => s.focusGroup)
-  const rowEl = useRef<HTMLDivElement>(null)
+  const el = useRef<HTMLDivElement>(null)
+  const across = node.direction === 'row'
 
   /**
    * Splitter reports the CUMULATIVE pixel offset since pointer-down, plus the value it captured
@@ -34,38 +51,56 @@ export function CenterPane(): React.ReactElement {
    * same movement on every pointermove and the divider would accelerate away from the cursor.
    */
   const onDrag = useCallback(
-    (index: number) => (dx: number, startFraction: number) => {
-      const width = rowEl.current?.getBoundingClientRect().width ?? 0
-      if (!workspaceId || width === 0) return
-      setGroupBoundary(workspaceId, index, startFraction + dx / width)
+    (index: number) => (delta: number, startFraction: number) => {
+      const box = el.current?.getBoundingClientRect()
+      const extent = (across ? box?.width : box?.height) ?? 0
+      if (!workspaceId || extent === 0) return
+      setGroupBoundary(workspaceId, node.id, index, startFraction + delta / extent)
     },
-    [setGroupBoundary, workspaceId]
+    [across, node.id, setGroupBoundary, workspaceId]
   )
 
   return (
-    <div className="groups" ref={rowEl}>
-      {row.groups.map((group, i) => (
-        <Fragment key={group.id}>
-          <div
-            className={`group${group.id === row.activeGroupId ? ' group--active' : ''}`}
-            // For goto_group, which hands the column the keyboard as well as the highlight.
-            data-group-id={group.id}
-            style={{ flexGrow: row.sizes[i] ?? 1, flexBasis: 0 }}
-            // Capture, so clicking anywhere in the group — the editor, the terminal, a PDF page —
-            // says "this is the column I am working in", and the next file from the explorer lands
-            // here. A browser tab is the known gap: its page is a native view composited over the
-            // document, so clicks inside it never reach the DOM and that group is reachable only
-            // through its own tab strip.
-            onMouseDownCapture={() => { if (workspaceId) focusGroup(workspaceId, group.id) }}
-          >
-            <TabStrip groupId={group.id} />
-            <GroupBody group={group} solo={row.groups.length === 1} />
-          </div>
-          {i < row.groups.length - 1 && (
-            <Splitter orientation="vertical" onDrag={onDrag(i)} value={row.sizes[i] ?? 0} />
+    <div
+      ref={el}
+      className={`groups groups--${node.direction}`}
+      style={size === undefined ? undefined : { flexGrow: size, flexBasis: 0 }}
+    >
+      {node.children.map((child, i) => (
+        <Fragment key={child.id}>
+          {child.kind === 'split'
+            ? <Split row={row} node={child} size={node.sizes[i] ?? 1} />
+            : <Group row={row} groupId={child.id} size={node.sizes[i] ?? 1} />}
+          {i < node.children.length - 1 && (
+            <Splitter orientation={across ? 'vertical' : 'horizontal'} onDrag={onDrag(i)} value={node.sizes[i] ?? 0} />
           )}
         </Fragment>
       ))}
+    </div>
+  )
+}
+
+function Group({ row, groupId, size }: { row: GroupRow; groupId: GroupId; size: number }): React.ReactElement | null {
+  const workspaceId = useApp((s) => s.activeWorkspaceId)
+  const focusGroup = useApp((s) => s.focusGroup)
+  const group = groupById(row, groupId)
+  if (!group) return null
+
+  return (
+    <div
+      className={`group${group.id === row.activeGroupId ? ' group--active' : ''}`}
+      // For goto_group, which hands the group the keyboard as well as the highlight.
+      data-group-id={group.id}
+      style={{ flexGrow: size, flexBasis: 0 }}
+      // Capture, so clicking anywhere in the group — the editor, the terminal, a PDF page — says
+      // "this is the group I am working in", and the next file from the explorer lands here. A
+      // browser tab is the known gap: its page is a native view composited over the document, so
+      // clicks inside it never reach the DOM and that group is reachable only through its own tab
+      // strip.
+      onMouseDownCapture={() => { if (workspaceId) focusGroup(workspaceId, group.id) }}
+    >
+      <TabStrip groupId={group.id} />
+      <GroupBody group={group} solo={row.groups.length === 1} />
     </div>
   )
 }

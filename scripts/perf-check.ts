@@ -39,8 +39,12 @@ const ASSETS = join(OUT, 'assets')
  * And to 332 kB for terminals at work, measured at 329,137 B: the counts on a workspace's row, the
  * spinner and dot on a tab and the outline on a pane are drawn whenever a terminal starts or stops,
  * and the watch behind them has to see a terminal's output from its first frame.
+ *
+ * And to 337 kB for editor groups that stack, measured at 335,435 B against 331,890 B before: the
+ * layout tree saying where each group is drawn is read back with the workspace and laid out on the
+ * first frame, so neither it nor its repair of a document from disk can wait for a chunk.
  */
-const ENTRY_BUDGET_BYTES = 332_000
+const ENTRY_BUDGET_BYTES = 337_000
 
 let failures = 0
 let checks = 0

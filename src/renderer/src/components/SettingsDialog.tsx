@@ -587,7 +587,7 @@ const EXTRA_ROWS: readonly string[] = [
   ...Object.entries(ACTIONS)
     .filter(([name, spec]) => !spec.param && name !== 'ignore')
     .map(([name]) => name),
-  'close_tab:other', 'close_tab:right',
+  'close_tab:other', 'close_tab:right', 'split_group:down',
   'new_split:right', 'new_split:down', 'new_split:left', 'new_split:up', 'new_split:auto',
   'goto_split:previous', 'goto_split:next',
   'goto_split:up', 'goto_split:down', 'goto_split:left', 'goto_split:right',

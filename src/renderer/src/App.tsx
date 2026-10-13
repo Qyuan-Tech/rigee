@@ -12,7 +12,7 @@ import { installActivityTracking } from './activity'
 import { installPaneWatch } from './paneWatch'
 import { freshActivity, sanitizeActivity } from './heat'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
-import { allTabs } from './groups'
+import { allTabs, widthShares } from './groups'
 import { setDisabledPlugins, setDiskPlugins } from './plugins/registry'
 import {
   nextGroupId,
@@ -82,7 +82,7 @@ export function App(): React.ReactElement {
 
       for (const [wsId, ui] of Object.entries(state.ui)) {
         // The row on disk may predate the current shape; repair it rather than render a broken
-        // one. Written in ONE setState per workspace: the groups and their widths are a single
+        // one. Written in ONE setState per workspace: the groups and their layout are a single
         // invariant, and a render landing between two writes would see a row it cannot lay out.
         useApp.setState((s) => ({
           rowsByWorkspace: { ...s.rowsByWorkspace, [wsId]: sanitizeGroups(ui, nextGroupId) },
@@ -308,9 +308,10 @@ function usePersistence(): void {
       ui[ws.id] = {
         groups: row.groups,
         activeGroupId: row.activeGroupId,
-        // Genuinely per workspace, unlike `layout` — which is one global written into every
+        // Both genuinely per workspace, unlike `layout` — which is one global written into every
         // record and only ever read back from the active one.
-        groupSizes: row.sizes,
+        groupSizes: widthShares(row),
+        groupLayout: row.layout,
         layout: s.layout,
         /*
          * Written only when there IS a record, never defaulted to {}.

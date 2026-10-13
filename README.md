@@ -94,6 +94,7 @@ an app launched from Finder inherits almost none of it.
 | Split panes — Cmd+D beside, Shift+Cmd+D below (Ctrl+Shift+O / E elsewhere), draggable dividers | works |
 | A split opens in the directory its pane had `cd`'d into (macOS and Linux) | works |
 | Tab menu — Close, Close Others, Close to the Right, Close All, on every kind of tab | works |
+| Editor groups — split the centre right or down from the buttons beside the tabs (Cmd+\ for right), nested as deep as you like, with draggable dividers; a file is copied into the new group, a terminal or page moved | works |
 | Keyboard shortcuts — Ghostty's defaults, every one rebindable, Ghostty config lines accepted | works |
 | Scratch workspace — terminals without setting anything up | works |
 | Source control — status, diff, stage, unstage, discard, commit, amend | works |

@@ -501,9 +501,9 @@ textarea:focus {
 /* ===================================================================== */
 /* Editor groups                                                          */
 /*                                                                        */
-/* The centre pane is a row of columns, each with its own tab strip. One   */
-/* column is the ordinary case; two is the point — a PDF beside a          */
-/* terminal.                                                              */
+/* The centre pane is a set of groups, each with its own tab strip, side   */
+/* by side or stacked. One group is the ordinary case; two is the point —  */
+/* a PDF beside a terminal. A split inside a split is a .groups as well.   */
 /* ===================================================================== */
 
 .groups {
@@ -511,6 +511,10 @@ textarea:focus {
   display: flex;
   min-width: 0;
   min-height: 0;
+}
+
+.groups--column {
+  flex-direction: column;
 }
 
 .group {
@@ -527,7 +531,7 @@ textarea:focus {
 }
 
 /*
- * Which column is active is shown in the TAB STRIP, never over the pane body.
+ * Which group is active is shown in the TAB STRIP, never over the pane body.
  *
  * Anything drawn over the body is invisible exactly when it matters: a browser tab is a native
  * WebContentsView composited on top of the whole page, so a focus ring around that group simply is
