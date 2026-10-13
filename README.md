@@ -38,7 +38,9 @@ running your own shell.
   *Workspace*, above the repos — because that folder is the workspace's own.
   The list is ordered by [heat](#workspace-heat): the workspaces you have been busiest in come
   first, orange when hot and amber when warm, and the ones you have not touched in a while fade
-  out below a *Cold* divider, with a checklist for removing them.
+  out below a *Cold* divider, with a checklist for removing them. Each row also counts the
+  [terminals at work](#terminals-at-work) in it — an agent or a build printing — and, in green, the
+  ones that have finished since you last looked; click a count to go to that terminal.
 - **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a diff, or a
   Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
@@ -107,6 +109,8 @@ an app launched from Finder inherits almost none of it.
 | A saved workspace's explorer starts with that folder, marked out from the repos below it | works |
 | Workspace heat — the list ordered by how much each workspace has been used lately, hot and warm ones coloured, with how long since anything happened in each | works |
 | Cold workspaces — nothing in them for ten days of use — faded under their own divider, with a checklist to remove them | works |
+| Terminals at work — a spinning count on the workspace's row, a light along it, and a spinner on the tab, while an agent or a build is printing | works |
+| Finished unseen — a green count on the workspace, a dot on the tab and an outline on the split pane until you click into it; the count takes you there | works |
 | A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
 | Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split beside the terminal on screen | works |
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
@@ -269,6 +273,24 @@ the pointer leaves. Cold workspaces are never removed for you. *N cold* in the h
 on the divider, opens a checklist of them, all ticked; untick any you want to keep, and *Remove*
 does for the rest what a workspace's own remove button does — its tabs close, asking first about
 unsaved files, and its folders and `.code-workspace` file stay where they are.
+
+## Terminals at work
+
+The same list says what is still running and what has finished without you. While a terminal in a
+workspace is at work, its row shows a spinning count — how many are — with a light running along
+the row, and the terminal's tab shows a spinner in place of its icon. When one stops and you were
+not looking at it, the row shows a green count of those, the tab a green dot, and the pane — a
+split, say — a green outline. Clicking a count takes you to the first terminal it counts; clicking
+into a pane, or opening its tab, is looking at it, and its marks go.
+
+**At work means printing**, not merely having a program in the terminal. An agent at work prints
+all the time — its spinner, its elapsed seconds — and falls silent when it is done or wants an
+answer, while its process lives on; so does vim's, or an idle ssh session's. So a terminal counts
+as at work once a program in front of its shell has printed for two seconds without a pause of six,
+and as finished once a six-second pause follows: an agent waiting for you — permission prompts
+included — a build done, a shell back at its prompt. What your own typing echoes back does not
+count, and neither does a command that is over in under two seconds. A program that runs without
+printing anything is not counted.
 
 ## Where Rigee keeps your data
 

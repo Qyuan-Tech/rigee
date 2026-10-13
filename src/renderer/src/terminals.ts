@@ -1,5 +1,6 @@
 import { loadXterm } from './lazy'
 import { noteOutput } from './activity'
+import { notePaneFocus, notePaneOutput } from './paneWatch'
 import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
@@ -229,7 +230,11 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
       }
     }
     trackModifyOtherKeys(handle)
-    term.textarea?.addEventListener('focus', () => { lastFocusedKey = key })
+    term.textarea?.addEventListener('focus', () => {
+      lastFocusedKey = key
+      notePaneFocus(handle)
+    })
+    term.textarea?.addEventListener('blur', () => notePaneFocus(null))
     term.onSelectionChange(() => rememberSelection(term.getSelection()))
     handles.set(key, handle)
     creating.delete(key)
@@ -517,6 +522,26 @@ export function stopAskingToSave(tabId: string): void {
 
 export const focusedTerminalKey = (): string | null => lastFocusedKey
 
+/**
+ * Go to a terminal pane wherever it is — its workspace, its tab, the pane, the keyboard in it — the
+ * way following a badge in the side bar should. Having the keyboard is what marks it seen.
+ */
+export function revealPane(workspaceId: string, paneId: string): void {
+  const s = useApp.getState()
+  for (const tab of allTabs(rowOf(s, workspaceId))) {
+    if (tab.kind !== 'terminal') continue
+    const leaf = leaves(tab.root).find((l) => l.paneId === paneId)
+    if (!leaf) continue
+    if (s.activeWorkspaceId !== workspaceId) s.setActiveWorkspace(workspaceId)
+    s.setActiveTab(workspaceId, tab.id)
+    if (tab.activeLeafId !== leaf.id) s.updateTab(workspaceId, tab.id, { activeLeafId: leaf.id })
+    // A pane taking the keyboard when it renders as the active one covers the rest; a pane that
+    // already was the active one has nothing to re-render for, so it is handed the keyboard here.
+    getTerminal(paneKey(tab.id, leaf.id))?.term.focus()
+    return
+  }
+}
+
 // --- screen ------------------------------------------------------------------
 
 /**
@@ -626,8 +651,10 @@ export function ensureTerminalTransport(workspaceId: string): void {
     workspaceId,
     window.rigee.onTerminalData(workspaceId, (paneId, data) => {
       writeToPane(paneId, data)
-      // Whichever workspace is on screen: an agent printing in another is what keeps that one warm.
+      // Whichever workspace is on screen: an agent printing in another is what keeps that one warm,
+      // and what its badge in the side bar counts as at work.
       noteOutput(workspaceId, data.length)
+      notePaneOutput(paneId)
     })
   )
   void rpc['terminal:requestPort']({ workspaceId })

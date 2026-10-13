@@ -1,6 +1,7 @@
 /**
  * Unit tests for the pure logic on both sides of the process boundary: the terminal split tree,
- * key chords, the tab strip, .code-workspace parsing and workspace heat.
+ * key chords, the tab strip, .code-workspace parsing, workspace heat, and whether a terminal is at
+ * work.
  *
  *   pnpm panes:selftest
  *
@@ -10,7 +11,8 @@
  * size arithmetic drift. A bulk tab close that sweeps up the wrong tabs is worse than invisible:
  * it takes a running process or a page with it. And a workspace name that climbs out of its folder
  * writes a file somewhere nobody asked for. Heat that ages on the calendar comes back from a holiday
- * offering to remove every workspace the user has.
+ * offering to remove every workspace the user has; a terminal whose own keystrokes count as work
+ * says an agent is busy every time somebody types to it.
  */
 
 import {
@@ -101,6 +103,20 @@ import {
   temperatureOf,
   type Warmth
 } from '../src/renderer/src/heat.ts'
+import {
+  QUIET_MS,
+  WORK_MIN_MS,
+  describePanes,
+  freshWatch,
+  hasFinished,
+  isLive,
+  notWork,
+  printingLikeWork,
+  sawInput,
+  sawOutput,
+  terminalPanes,
+  wantsCheck
+} from '../src/renderer/src/paneWork.ts'
 import type { PaneNode, Tab, WorkspaceActivity } from '../src/shared/types.ts'
 
 let failures = 0
@@ -1065,6 +1081,64 @@ console.log('\nworkspace heat')
   eq('a time that is not one is dropped', cleaned?.usedAt, undefined)
   eq('one that is, kept', cleaned?.outputAt, 7)
   eq('no start falls back to the oldest day', sanitizeActivity({ days: [{ day: '2026-10-02', used: 1, output: 0 }] })?.since, '2026-10-02')
+}
+
+console.log('\nterminals at work')
+
+{
+  const w = freshWatch()
+  sawOutput(w, 0)
+  sawOutput(w, WORK_MIN_MS - 1)
+  eq('printing for under two seconds is a command, not work', printingLikeWork(w, WORK_MIN_MS - 1), false)
+  sawOutput(w, WORK_MIN_MS)
+  eq('two seconds of it is work', printingLikeWork(w, WORK_MIN_MS), true)
+  eq('…and is asked about', wantsCheck(w, WORK_MIN_MS), true)
+  notWork(w, WORK_MIN_MS)
+  eq('its own shell printing is not asked about again at once', wantsCheck(w, WORK_MIN_MS + 500), false)
+  sawOutput(w, WORK_MIN_MS + 3_000)
+  eq('…but is a while later, if it keeps on', wantsCheck(w, WORK_MIN_MS + 3_000), true)
+  w.working = true
+  eq('a pane called working is not asked about', wantsCheck(w, WORK_MIN_MS + 3_100), false)
+  const last = WORK_MIN_MS + 3_000
+  eq('a pause short of QUIET is not the end of it', hasFinished(w, last + QUIET_MS - 1), false)
+  eq('a pause of QUIET is', hasFinished(w, last + QUIET_MS), true)
+  eq('it is live until that is noticed', isLive(w, last + QUIET_MS), true)
+  w.working = false
+  eq('and not after', isLive(w, last + QUIET_MS), false)
+  sawOutput(w, last + QUIET_MS + 10)
+  eq('printing after a pause starts a new run', w.since, last + QUIET_MS + 10)
+  eq('which is not work yet', printingLikeWork(w, last + QUIET_MS + 100), false)
+}
+
+{
+  // Somebody typing, every 100 ms for three seconds, each key echoed 30 ms later.
+  const w = freshWatch()
+  for (let t = 0; t <= 3_000; t += 100) {
+    sawInput(w, t)
+    sawOutput(w, t + 30)
+  }
+  eq('typing and its echo is not work', printingLikeWork(w, 3_030), false)
+  eq('…and does not count as printing at all', w.lastOutput, -Infinity)
+  // Enter at 3 s, and the program prints until 6 s.
+  for (let t = 3_100; t <= 6_000; t += 100) sawOutput(w, t)
+  eq('what it prints once the keys stop is', printingLikeWork(w, 6_000), true)
+}
+
+{
+  const leaf = (id: string, paneId: string | null): PaneNode => ({ kind: 'leaf', id, paneId })
+  const split: PaneNode = {
+    kind: 'split', id: 's', direction: 'row', sizes: [1 / 3, 1 / 3, 1 / 3],
+    children: [leaf('a', 'p1'), leaf('b', null), leaf('c', 'p2')]
+  }
+  const terminal = (id: string, root: PaneNode): Tab =>
+    ({ id, kind: 'terminal', title: 'terminal', pinned: false, root, activeLeafId: 'a' }) as Tab
+  const file: Tab = { id: 'f', kind: 'editor', title: 'f', pinned: false, filePath: '/f', repoId: null, readOnly: false }
+  const row = splitGroup(singleGroupRow('g1', [terminal('t1', split), file]), 'g1', 'g2', terminal('t2', leaf('x', 'p3')))
+  eq('every pane with a shell, tab by tab from the left, and none without',
+    terminalPanes(row).map((p) => `${p.tabId}/${p.leafId}/${p.paneId}`).join(' '), 't1/a/p1 t1/c/p2 t2/x/p3')
+  eq('a count, and what it counts, each program once',
+    describePanes(2, 'at work', ['claude', 'npm', 'claude', '']), '2 terminals at work — claude, npm')
+  eq('one, with nothing to name', describePanes(1, 'finished since you last looked', ['']), '1 terminal finished since you last looked')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

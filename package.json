@@ -58,7 +58,8 @@
     "smoke:editing": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=editing electron .",
     "smoke:workspacefiles": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=workspacefiles electron .",
     "smoke:video": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=video electron .",
-    "smoke:heat": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=heat electron ."
+    "smoke:heat": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=heat electron .",
+    "smoke:running": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=running electron ."
   },
   "dependencies": {
     "@parcel/watcher": "2.6.0",

@@ -31,6 +31,7 @@ import {
   type TerminalTab,
   type KeyBindings,
   type PaneNode,
+  type PtyPaneId,
   type Workspace,
   type WorkspaceActivity,
   type WorkspaceId
@@ -82,6 +83,21 @@ interface AppState {
    * and persisted as `WorkspaceUiState.activity`.
    */
   activityByWorkspace: Record<WorkspaceId, WorkspaceActivity>
+
+  /**
+   * Terminal panes at work — printing like an agent or a build (paneWork.ts) — by pty pane id, each
+   * with the name of the program in front of its shell, or '' where main could not say.
+   */
+  workingPanes: Record<PtyPaneId, string>
+  /**
+   * Terminal panes that have finished since the user last looked at them, the same way. Cleared
+   * when the keyboard goes into the pane, or it starts work again.
+   *
+   * Both here, though they come from terminal output, because they change only when a pane starts,
+   * stops or is looked at — a handful of writes a minute, not one per frame — and the side bar, the
+   * tab strip and the pane all draw them. paneWatch.ts is the only writer.
+   */
+  unseenPanes: Record<PtyPaneId, string>
 
   keybindings: KeyBindings
   /** Preferences other than key bindings: the settings dialog's General page. */
@@ -142,6 +158,12 @@ interface AppState {
     patch: Record<string, unknown>
   ) => void
   setActivity: (workspaceId: WorkspaceId, activity: WorkspaceActivity) => void
+  /** At work running `program`, or not at work (null). */
+  setPaneWorking: (paneId: PtyPaneId, program: string | null) => void
+  /** Finished unseen, having run `program`, or seen (null). */
+  setPaneUnseen: (paneId: PtyPaneId, program: string | null) => void
+  /** Its shell has gone. */
+  forgetPane: (paneId: PtyPaneId) => void
   setKeybindings: (keybindings: KeyBindings) => void
   setSettings: (settings: AppSettings) => void
   setSettingsOpen: (open: boolean) => void
@@ -157,6 +179,8 @@ export const useApp = create<AppState>()(
     layout: { ...DEFAULT_PANEL_LAYOUT },
     pluginStateByWorkspace: {},
     activityByWorkspace: {},
+    workingPanes: {},
+    unseenPanes: {},
     keybindings: { ...DEFAULT_KEYBINDINGS },
     settings: {},
     settingsOpen: false,
@@ -338,12 +362,31 @@ export const useApp = create<AppState>()(
     setActivity: (workspaceId, activity) =>
       set((s) => ({ activityByWorkspace: { ...s.activityByWorkspace, [workspaceId]: activity } })),
 
+    setPaneWorking: (paneId, program) => set((s) => ({ workingPanes: withEntry(s.workingPanes, paneId, program) })),
+    setPaneUnseen: (paneId, program) => set((s) => ({ unseenPanes: withEntry(s.unseenPanes, paneId, program) })),
+    forgetPane: (paneId) =>
+      set((s) => ({
+        workingPanes: withEntry(s.workingPanes, paneId, null),
+        unseenPanes: withEntry(s.unseenPanes, paneId, null)
+      })),
+
     setKeybindings: (keybindings) => set({ keybindings }),
     setSettings: (settings) => set({ settings }),
     setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
     setWorkspaceError: (workspaceError) => set({ workspaceError })
   }))
 )
+
+/** `map` with `key` set to `value`, or without it for null — the same object when nothing changes. */
+function withEntry(map: Record<string, string>, key: string, value: string | null): Record<string, string> {
+  if (value === null) {
+    if (!(key in map)) return map
+    const next = { ...map }
+    delete next[key]
+    return next
+  }
+  return map[key] === value ? map : { ...map, [key]: value }
+}
 
 function sameTarget(a: Tab, b: Tab): boolean {
   if (a.kind !== b.kind) return false

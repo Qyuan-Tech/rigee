@@ -137,6 +137,39 @@ if (process.env.RIGEE_SMOKE) {
     )
     process.env.SHELL = printer
   }
+  // The running mode needs a real shell with job control — a program in front of it is what main
+  // reports as running — and nothing from anybody's rc files; and two programs to run in it: an
+  // agent that works for four seconds and then waits for an answer, alive and silent, and a build
+  // that prints for three and exits.
+  if (process.env.RIGEE_SMOKE === 'running') {
+    // Asked `-ilc <command>` — the PATH probe at startup — it runs the command and goes, as any shell
+    // would. An interactive shell there would wait on the probe's stdin, and ignores the SIGTERM its
+    // timeout sends, so startup would wait for ever.
+    const shell = join(dir, 'shell.sh')
+    writeFileSync(
+      shell,
+      '#!/bin/sh\n' +
+        'case "$1" in -*c*) shift; exec /bin/sh -c "$1" ;; esac\n' +
+        "export PS1='$ ' HISTFILE=/dev/null\n" +
+        'unset ENV\n' +
+        'exec /bin/sh -i\n',
+      { mode: 0o755 }
+    )
+    writeFileSync(
+      join(dir, 'agent.sh'),
+      'i=0\n' +
+        'while [ "$i" -lt 40 ]; do printf \'\\r| working on it (%d)\' "$i"; sleep 0.1; i=$((i + 1)); done\n' +
+        "printf '\\nWaiting for your answer: '\n" +
+        'read answer\n'
+    )
+    writeFileSync(
+      join(dir, 'build.sh'),
+      'i=0\n' +
+        'while [ "$i" -lt 30 ]; do echo "compiling $i of 30"; sleep 0.1; i=$((i + 1)); done\n' +
+        'echo built\n'
+    )
+    process.env.SHELL = shell
+  }
 }
 
 /**
@@ -277,6 +310,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
     else if (process.env.RIGEE_SMOKE === 'video') void runVideoSmoke()
     else if (process.env.RIGEE_SMOKE === 'heat') void runHeatSmoke()
+    else if (process.env.RIGEE_SMOKE === 'running') void runRunningSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -3413,6 +3447,243 @@ async function runHeatSmoke(): Promise<void> {
     finish(true, 'heat')
   } catch (err) {
     console.error('[smoke:heat] threw:', err)
+    finish(false, 'threw')
+  }
+}
+
+/**
+ * End-to-end check of terminals at work: an agent and a build running in a workspace nobody is
+ * looking at, counted on its row with a light along it; both counted again as finished unseen once
+ * they stop — the agent alive and silent, the build gone — and the count followed to the terminal,
+ * which clears it; a tab's dot and a split pane's mark doing the same; and neither somebody typing
+ * nor a quick command counted as work. Real programs under a real shell with job control, real
+ * keystrokes, real clicks.
+ *
+ * `RIGEE_SHOT_DIR` leaves PNGs of the counts and of a finished split pane.
+ */
+async function runRunningSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = app.getPath('userData')
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:running]', JSON.stringify({ ok, stage, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const shoot = async (name: string): Promise<void> => {
+    const to = process.env.RIGEE_SHOT_DIR
+    if (!to) return
+    writeFileSync(join(to, `${name}.png`), (await wc.capturePage()).toPNG())
+    trail.push(`photographed ${name}`)
+  }
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const folders = Object.fromEntries(['busy', 'quiet'].map((name) => {
+    const path = join(dir, 'running', name)
+    mkdirSync(path, { recursive: true })
+    return [name, path]
+  }))
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store, getTerminal, paneKey, newTerminalTab } = window.__rigee
+    const until = async (test, ms = 10000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }
+    const folders = ${JSON.stringify(folders)}
+    const run = (workspaceId, paneId, script) =>
+      window.rigee.writeTerminal(workspaceId, paneId, 'sh ' + ${JSON.stringify(dir)} + '/' + script + '\\r')
+    const row = (label) => [...document.querySelectorAll('.workspace-list .row')].find(r => r.querySelector('.row__label')?.textContent === label)
+    const badge = (label, kind) => row(label)?.querySelector('.job-badge--' + kind)
+    const counts = (label) => ({ working: badge(label, 'working')?.textContent ?? null, finished: badge(label, 'finished')?.textContent ?? null,
+      light: !!row(label)?.classList.contains('row--working') })
+    const s = () => store.getState()`
+  /** The middle of the first element matching `selector` that is on screen, as a pointer reaches it. */
+  const centre = (selector: string, index = 0): Promise<{ x: number; y: number } | null> => js(`(() => {
+    const el = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.offsetParent !== null)[${index}]
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
+  })()`)
+  const click = async (selector: string, index = 0): Promise<boolean> => {
+    const at = await centre(selector, index)
+    if (!at) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: at.x, y: at.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: at.x, y: at.y, button: 'left', clickCount: 1 })
+    return true
+  }
+
+  try {
+    // --- two terminals in a workspace, then away from it -----------------------------------------
+    const opened = await js<{ ok: boolean; stage?: string; t1?: string; t2?: string; p1?: string; p2?: string }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => s().ready, 15000))) return { ok: false, stage: 'never-ready' }
+      const workspace = (id, name) => ({ id, name, createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: folders[name], name, isGitRepo: false, repoRoot: null }] })
+      s().setWorkspaces([...s().workspaces, workspace('ws-busy', 'busy'), workspace('ws-quiet', 'quiet')])
+      s().setActiveWorkspace('ws-busy')
+      const open = async () => {
+        const tab = newTerminalTab()
+        s().openTab('ws-busy', tab)
+        return { tab, paneId: await until(() => getTerminal(paneKey(tab.id, tab.activeLeafId))?.paneId, 15000) }
+      }
+      const one = await open()
+      const two = await open()
+      if (!one.paneId || !two.paneId) return { ok: false, stage: 'terminals-never-started' }
+      s().setActiveWorkspace('ws-quiet')
+      await sleep(500)
+      return { ok: true, t1: one.tab.id, t2: two.tab.id, p1: one.paneId, p2: two.paneId }
+    })()`)
+    if (!opened.ok) return finish(false, opened.stage ?? 'open')
+    const { t1, t2, p1, p2 } = opened as Required<typeof opened>
+    trail.push(`busy has ${p1} in ${t1} and ${p2} in ${t2}; quiet is on screen`)
+
+    // --- at work, with nobody looking ------------------------------------------------------------
+    const working = await js<{ ok: boolean; counts: unknown; programs?: unknown }>(`(async () => {
+      ${helpers}
+      run('ws-busy', ${JSON.stringify(p1)}, 'agent.sh')
+      run('ws-busy', ${JSON.stringify(p2)}, 'build.sh')
+      const ok = !!(await until(() => ${JSON.stringify(p1)} in s().workingPanes && ${JSON.stringify(p2)} in s().workingPanes, 9000))
+      await sleep(300)
+      return { ok, counts: counts('busy'), programs: s().workingPanes }
+    })()`)
+    trail.push(`at work: ${JSON.stringify(working.counts)}, running ${JSON.stringify(working.programs)}`)
+    if (!working.ok) return finish(false, 'work-in-the-background-not-noticed', working)
+    if (JSON.stringify(working.counts) !== JSON.stringify({ working: '2', finished: null, light: true })) {
+      return finish(false, 'busy-row-does-not-say-two-at-work', working.counts)
+    }
+    // The light along the row is mid-run in the photograph, wherever its animation happens to be —
+    // in a hidden window, at its first frame, which is off the row's left end.
+    await js(`document.head.insertAdjacentHTML('beforeend', '<style id="smoke-still">.row--working::after { animation-delay: -0.9s !important; animation-play-state: paused !important }</style>')`)
+    await shoot('running-working')
+    await js(`document.getElementById('smoke-still')?.remove()`)
+
+    // --- finished, unseen: the agent waiting, the build gone ------------------------------------
+    const done = await js<{ ok: boolean; counts: unknown; unseen?: Record<string, string>; title?: string }>(`(async () => {
+      ${helpers}
+      const ok = !!(await until(() => ${JSON.stringify(p1)} in s().unseenPanes && ${JSON.stringify(p2)} in s().unseenPanes, 16000))
+      await sleep(300)
+      return { ok, counts: counts('busy'), unseen: s().unseenPanes, title: badge('busy', 'finished')?.title }
+    })()`)
+    trail.push(`finished: ${JSON.stringify(done.counts)}, "${done.title}"`)
+    if (!done.ok) return finish(false, 'finishing-unseen-not-noticed', done)
+    if (JSON.stringify(done.counts) !== JSON.stringify({ working: null, finished: '2', light: false })) {
+      return finish(false, 'busy-row-does-not-say-two-finished', done.counts)
+    }
+    if (!done.unseen?.[p1] || !done.title?.includes(done.unseen[p1]!)) return finish(false, 'finished-count-does-not-name-the-program', done)
+    await shoot('running-finished')
+
+    // --- the count followed, then the tab with the dot ----------------------------------------
+    if (!(await click('.job-badge--finished'))) return finish(false, 'no-finished-badge')
+    const followed = await js<{ active: string; tab: string | null; unseen: string[]; counts: unknown; dots: string[] }>(`(async () => {
+      ${helpers}
+      await until(() => !(${JSON.stringify(p1)} in s().unseenPanes), 5000)
+      await sleep(300)
+      const r = s().rowsByWorkspace['ws-busy']
+      const g = r.groups.find(x => x.id === r.activeGroupId)
+      return { active: s().activeWorkspaceId, tab: g?.activeTabId ?? null, unseen: Object.keys(s().unseenPanes), counts: counts('busy'),
+        dots: [...document.querySelectorAll('.tab')].filter(t => t.querySelector('.tab__finished')).map(t => t.querySelector('.tab__label').textContent) }
+    })()`)
+    trail.push(`the count went to ${followed.active}, tab ${followed.tab}; still unseen ${JSON.stringify(followed.unseen)}, a dot on ${followed.dots.length} tab(s)`)
+    if (followed.active !== 'ws-busy' || followed.tab !== t1) return finish(false, 'the-count-did-not-go-to-the-terminal', followed)
+    if (followed.unseen.join() !== p2) return finish(false, 'going-there-did-not-clear-it', followed)
+    if (JSON.stringify(followed.counts) !== JSON.stringify({ working: null, finished: '1', light: false })) return finish(false, 'count-not-down-to-one', followed)
+    if (followed.dots.length !== 1) return finish(false, 'no-dot-on-the-other-tab', followed)
+    if (!(await click('.tab', 1))) return finish(false, 'no-second-tab')
+    const cleared = await js<{ unseen: string[]; counts: unknown; dots: number }>(`(async () => {
+      ${helpers}
+      await until(() => !(${JSON.stringify(p2)} in s().unseenPanes), 5000)
+      await sleep(200)
+      return { unseen: Object.keys(s().unseenPanes), counts: counts('busy'), dots: document.querySelectorAll('.tab__finished').length }
+    })()`)
+    trail.push(`its tab opened: unseen ${JSON.stringify(cleared.unseen)}, ${cleared.dots} dot(s)`)
+    if (cleared.unseen.length || cleared.dots || JSON.stringify(cleared.counts) !== JSON.stringify({ working: null, finished: null, light: false })) {
+      return finish(false, 'opening-the-tab-did-not-clear-it', cleared)
+    }
+
+    // --- somebody typing is not work --------------------------------------------------------------
+    for (let i = 0; i < 30; i++) {
+      keystroke(wc, 'x', [], 'x')
+      await sleep(100)
+    }
+    const typed = await js<{ working: boolean; unseen: boolean }>(`(async () => {
+      ${helpers}
+      await sleep(1500)
+      return { working: ${JSON.stringify(p2)} in s().workingPanes, unseen: ${JSON.stringify(p2)} in s().unseenPanes }
+    })()`)
+    keystroke(wc, 'u', ['control'])
+    trail.push(`three seconds of typing: working ${typed.working}`)
+    if (typed.working || typed.unseen) return finish(false, 'typing-counted-as-work', typed)
+
+    // --- a split pane, finished beside the one being typed in ------------------------------------
+    const split = await js<{ ok: boolean; stage?: string; p3?: string }>(`(async () => {
+      ${helpers}
+      const tab = s().rowsByWorkspace['ws-busy'].groups.flatMap(g => g.tabs).find(t => t.id === ${JSON.stringify(t2)})
+      const leaf = { kind: 'leaf', id: 'leaf-split', paneId: null }
+      s().updateTab('ws-busy', tab.id, { root: { kind: 'split', id: 'split-1', direction: 'row', children: [tab.root, leaf], sizes: [0.5, 0.5] }, activeLeafId: leaf.id })
+      const p3 = await until(() => getTerminal(paneKey(tab.id, leaf.id))?.paneId, 15000)
+      return p3 ? { ok: true, p3 } : { ok: false, stage: 'split-never-started' }
+    })()`)
+    if (!split.ok) return finish(false, split.stage ?? 'split')
+    const p3 = split.p3!
+    if (!(await click('.term__pane', 0))) return finish(false, 'no-left-pane')
+    await sleep(300)
+    const marked = await js<{ ok: boolean; marked: string; counts: unknown; dots: number }>(`(async () => {
+      ${helpers}
+      run('ws-busy', ${JSON.stringify(p3)}, 'build.sh')
+      const ok = !!(await until(() => ${JSON.stringify(p3)} in s().unseenPanes, 16000))
+      await sleep(300)
+      const panes = [...document.querySelectorAll('.term__pane')].filter(e => e.offsetParent !== null)
+      return { ok, marked: panes.map(p => p.classList.contains('term__pane--finished')).join(),
+        counts: counts('busy'), dots: document.querySelectorAll('.tab__finished').length }
+    })()`)
+    trail.push(`the split pane beside the keyboard finished: outlined ${marked.marked}, ${JSON.stringify(marked.counts)}`)
+    if (!marked.ok) return finish(false, 'split-pane-finishing-not-noticed', marked)
+    if (marked.marked !== 'false,true' || marked.dots !== 1) return finish(false, 'finished-split-pane-not-marked', marked)
+    if (JSON.stringify(marked.counts) !== JSON.stringify({ working: null, finished: '1', light: false })) return finish(false, 'split-pane-not-counted', marked)
+    await shoot('running-pane')
+    if (!(await click('.term__pane', 1))) return finish(false, 'no-right-pane')
+    const seen = await js<{ unseen: boolean; marked: boolean; counts: unknown }>(`(async () => {
+      ${helpers}
+      await until(() => !(${JSON.stringify(p3)} in s().unseenPanes), 5000)
+      await sleep(200)
+      return { unseen: ${JSON.stringify(p3)} in s().unseenPanes, marked: !!document.querySelector('.term__pane--finished'), counts: counts('busy') }
+    })()`)
+    trail.push(`clicked into it: unseen ${seen.unseen}, marked ${seen.marked}`)
+    if (seen.unseen || seen.marked || JSON.stringify(seen.counts) !== JSON.stringify({ working: null, finished: null, light: false })) {
+      return finish(false, 'clicking-the-pane-did-not-clear-it', seen)
+    }
+
+    // --- a quick command is not work ----------------------------------------------------------------
+    const quick = await js<{ working: boolean; unseen: boolean }>(`(async () => {
+      ${helpers}
+      window.rigee.writeTerminal('ws-busy', ${JSON.stringify(p2)}, 'echo hello\\r')
+      let working = false
+      for (let i = 0; i < 30; i++) { working ||= ${JSON.stringify(p2)} in s().workingPanes; await sleep(100) }
+      return { working, unseen: ${JSON.stringify(p2)} in s().unseenPanes }
+    })()`)
+    trail.push(`echo hello: working ${quick.working}, finished ${quick.unseen}`)
+    if (quick.working || quick.unseen) return finish(false, 'a-quick-command-counted-as-work', quick)
+
+    // --- a terminal closed while at work takes its count with it -----------------------------------
+    const closed = await js<{ ok: boolean; counts: unknown; working: boolean; unseen: boolean }>(`(async () => {
+      ${helpers}
+      window.rigee.writeTerminal('ws-busy', ${JSON.stringify(p1)}, '\\r')
+      await sleep(300)
+      run('ws-busy', ${JSON.stringify(p1)}, 'agent.sh')
+      if (!(await until(() => ${JSON.stringify(p1)} in s().workingPanes, 9000))) return { ok: false }
+      s().closeTab('ws-busy', ${JSON.stringify(t1)})
+      const gone = !!(await until(() => !(${JSON.stringify(p1)} in s().workingPanes), 5000))
+      await sleep(200)
+      return { ok: gone, counts: counts('busy'), working: ${JSON.stringify(p1)} in s().workingPanes, unseen: ${JSON.stringify(p1)} in s().unseenPanes }
+    })()`)
+    trail.push(`closed while at work: ${JSON.stringify(closed.counts)}`)
+    if (!closed.ok || closed.unseen) return finish(false, 'a-closed-terminal-left-its-count-behind', closed)
+    if (JSON.stringify(closed.counts) !== JSON.stringify({ working: null, finished: null, light: false })) return finish(false, 'counts-left-after-closing', closed)
+
+    finish(true, 'running')
+  } catch (err) {
+    console.error('[smoke:running] threw:', err)
     finish(false, 'threw')
   }
 }

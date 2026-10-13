@@ -17,7 +17,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 412 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, the Range headers a video element sends, and the arithmetic of workspace heat |
+| `pnpm panes:selftest` | 430 checks on the split tree, the group row, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one without disturbing the rest of it, the Range headers a video element sends, the arithmetic of workspace heat, and when a terminal is at work |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
@@ -33,6 +33,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:diskplugin` | installs `examples/hello-plugin`, refuses it, approves it, loads it, tampers with it |
 | `pnpm smoke:workspacefiles` | sets the workspace files folder in Settings, saves a workspace by name into it, and checks main refuses what it must; then where terminals start, saved and not, the question an unsaved workspace's terminal asks — Not Now, Save, Don't remind me again — a workspace's right-click menu adding a folder to its file with the comments intact, a folder's Open in Terminal Tab and Split, the explorer showing files created and deleted from outside, with Refresh for what the watcher ignores, and a saved workspace's tree headed by the folder its file is in — once, even when the file lists it, and saying so when it has gone |
 | `pnpm smoke:heat` | boots on workspaces from before heat and asserts none comes up cold; then the list ordered and coloured by heat, held still under the pointer and re-sorted once it leaves, a switch and a minute of typing each counted once, a terminal printing in a workspace nobody is looking at counted and a prompt not, the cold ones removed through their checklist, and what reached the disk. `RIGEE_SHOT_DIR` leaves PNGs of the list, its cold run and the checklist |
+| `pnpm smoke:running` | an agent and a build at work in a workspace nobody is looking at, counted on its row; both counted as finished unseen once they stop, the agent alive and silent and the build gone; the count followed to its terminal, a tab's dot and a split pane's outline cleared by looking; and neither somebody typing nor a quick command counted. Real programs under a real shell with job control. `RIGEE_SHOT_DIR` leaves PNGs of the counts and of a finished pane |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -432,6 +433,30 @@ files: `heat.ts` is the arithmetic and is pure, so `panes:selftest` holds it to 
   why *N cold* is in the header, and why `smoke:heat` scrolls a row into view before clicking it —
   a point below the fold is on the explorer, and a click there switches nothing.
 
+### Terminals at work
+
+The workspace list counts each workspace's terminals at work and those finished since the user
+last looked; the tab strip and the pane mark the same. `paneWork.ts` is the pure part — when
+printing is work and when it has stopped — and `paneWatch.ts` feeds it and writes the result.
+
+- **Work is printing, not a process.** An agent's process outlives its work: it sits waiting for an
+  answer with nothing on screen changing. Counting processes would call every workspace with
+  Claude Code open busy for good, and its "finished" — the moment the user needs — would never
+  come. A pane is working once it has printed for `WORK_MIN_MS` without a pause of `QUIET_MS`, and
+  finished once such a pause follows. Output within `ECHO_MS` of a keystroke in that pane is the
+  keystroke's echo and is left out, or typing to an agent would make it look busy.
+- **Main is asked once, not polled.** When a pane first prints like work, `terminal:running` says
+  whether a program is in front of its shell (on macOS that is a `ps`); a shell printing for itself
+  is asked about again `RECHECK_MS` later. Nothing is asked on a timer, and the renderer's clock
+  runs only while some pane is printing or at work, so idle shells cost nothing.
+- **The store gets transitions only.** Output is noted per frame in module maps; `workingPanes` and
+  `unseenPanes` change when a pane starts, stops, is looked at, or exits — a handful of writes a
+  minute — which is what keeps it within the store's rule about high-churn state.
+- **Seen means the keyboard went in.** A pane is marked unseen when it finishes unless it has the
+  keyboard and the window is in front; it is cleared when its xterm takes focus, which a click, a
+  tab shown, a count followed and the window coming back all produce. The focused terminal is held
+  as the handle, not its pane id: a new pane takes the keyboard before its shell has an id.
+
 ## Things that will bite you
 
 Each of these cost real debugging time. They are commented at the site too; this is the index.
@@ -488,6 +513,13 @@ nobody in any case: `electron-builder.yml` excludes `**/*.map`, so all 18 MB wer
 then discarded at packaging time. `electron-vite dev` still serves unminified sources with full
 maps, which is where renderer debugging happens. Main keeps its sourcemap; it is 66 kB and free.
 The workflow also sets `NODE_OPTIONS=--max-old-space-size=4096` as margin, not as the fix.
+
+**A `SHELL` that ignores `-c` hangs startup for good.** The PATH recovery runs `$SHELL -ilc …`
+before the renderer can finish booting, and waits for it. A wrapper script that always `exec`s an
+interactive shell — the obvious way to give a smoke mode a clean one — leaves that shell reading the
+probe's stdin, and an interactive shell ignores the SIGTERM the probe's timeout sends, so
+`app:getPlatformInfo` never answers and the store is never ready. `smoke:running`'s `shell.sh` runs
+the command when it is given `-c` and goes.
 
 **`ELECTRON_RUN_AS_NODE` turns the app into a Node REPL.** Electron reads it before a line of our
 code runs: with it set, the app binary *is* a Node interpreter, and given no script it drops into

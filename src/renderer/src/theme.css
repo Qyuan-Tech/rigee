@@ -74,6 +74,9 @@
   --heat-warm: #c98a52;
   --heat-hot: #f5a55c;
 
+  /* --- a terminal finished while the user was elsewhere: the terminal green, solid, wanting a look --- */
+  --finished: #7fce97;
+
   /* --- metrics --- */
   --titlebar-h: 40px;
   --tabstrip-h: 38px;
@@ -834,6 +837,7 @@ textarea:focus {
 }
 
 .tab__icon {
+  position: relative;
   display: grid;
   place-items: center;
   color: var(--kind, var(--fg-faint));
@@ -1937,4 +1941,107 @@ textarea:focus {
   justify-content: flex-end;
   gap: 6px;
   margin-top: 10px;
+}
+
+/* ===================================================================== */
+/* Terminals at work                                                      */
+/* ===================================================================== */
+
+/* A pane printing like work (see paneWork.ts), wherever it is counted: a ring turning. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+
+/* A workspace's counts: its terminals at work, and those finished since the user last looked. Each
+   is a button, to the first terminal it counts. */
+.job-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  transition: filter var(--t-fast);
+}
+
+.job-badge:hover {
+  filter: brightness(1.18);
+}
+
+.job-badge--working {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* Solid where the working count is not: this one is waiting for the user, and should look it. */
+.job-badge--finished {
+  color: #1a1c25;
+  background: var(--finished);
+}
+
+/* The row itself while anything in it is at work: a light running along its foot. */
+.row--working::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+  background-size: 50% 100%;
+  pointer-events: none;
+  animation: sweep 1.8s ease-in-out infinite;
+}
+
+/* From wholly off the left to wholly off the right of a light half as wide as the row. */
+@keyframes sweep {
+  from {
+    background-position: -100% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+/* On a terminal's tab the spinner stands in for its icon, and a pane finished unseen is a dot on it. */
+.tab__finished {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--finished);
+  box-shadow: 0 0 0 1.5px var(--bg-panel);
+}
+
+/* And the pane: outlined in green where the focused one is in the accent, until the keyboard goes
+   into it. Later in the sheet than --active, which a pane in a tab not showing can be as well. */
+.term__pane--finished {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--finished) 55%, transparent), inset 2px 0 0 var(--finished);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .row--working::after {
+    animation: none;
+  }
 }

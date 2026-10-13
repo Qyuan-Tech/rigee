@@ -27,6 +27,8 @@ import {
   type Temperature,
   type Warmth
 } from '../heat'
+import { describePanes, terminalPanes } from '../paneWork'
+import { revealPane } from '../terminals'
 import { SaveAsForm } from './LazySaveWorkspace'
 import {
   SCRATCH_WORKSPACE_ID,
@@ -56,6 +58,8 @@ setTimeout(() => { void loadColdReview() }, 3000)
  * Ordered and coloured by heat (heat.ts): Scratch first, where it always was, then the workspaces
  * most in use lately, their icons amber when warm and orange when hot; then, faded and below a
  * divider, the cold ones — nothing in them for ten days of use — with a way to clear them out.
+ * Each row also counts its terminals at work and those finished since the user last looked
+ * (paneWork.ts), and each count goes to the terminal it counts.
  */
 export function Sidebar({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
   return <WorkspaceList onCollapse={onCollapse} />
@@ -73,6 +77,13 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const error = useApp((s) => s.workspaceError)
   const setError = useApp((s) => s.setWorkspaceError)
   const activity = useApp((s) => s.activityByWorkspace)
+  // Which terminal panes each workspace has, as one string: the list draws again when that changes,
+  // and not with every tab switched or divider dragged, which change the rows but not this.
+  const paneList = useApp((s) =>
+    s.workspaces.map((w) => terminalPanes(rowOf(s, w.id)).map((p) => p.paneId).join(',')).join(';')
+  )
+  const workingPanes = useApp((s) => s.workingPanes)
+  const unseenPanes = useApp((s) => s.unseenPanes)
   const now = useNow(30_000)
   const [menuOpen, setMenuOpen] = useState(false)
   /**
@@ -265,6 +276,10 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const scratch = byId.get(SCRATCH_WORKSPACE_ID)
   // Counted from the rows themselves: one clicked while the order is held warms up where it is.
   const stillCold = ranking.cold.filter((id) => warmth.get(id)?.temperature === 'cold').length
+  const panes = useMemo(() => {
+    const lists = paneList.split(';')
+    return new Map(workspaces.map((w, i) => [w.id, lists[i] ? lists[i].split(',') : []]))
+  }, [paneList, workspaces])
 
   const renderRow = (w: Workspace | undefined): React.ReactNode =>
     w && (
@@ -273,6 +288,10 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         workspace={w}
         warmth={warmth.get(w.id)!}
         activity={activity[w.id]}
+        working={(panes.get(w.id) ?? []).filter((id) => id in workingPanes)}
+        finished={(panes.get(w.id) ?? []).filter((id) => id in unseenPanes)}
+        workingPanes={workingPanes}
+        unseenPanes={unseenPanes}
         now={now}
         selected={w.id === activeId}
         onSelect={() => { setActive(w.id); persistWorkspaces() }}
@@ -442,12 +461,17 @@ function OpenMenu({
 /**
  * One workspace in the list. Its icon carries its heat; on the right, how long since anything
  * happened in it — the reason for the colour, in a form that needs no legend — which gives way to
- * the remove button on hover.
+ * the remove button on hover. Before that, how many of its terminals are at work, with a light
+ * running along the row while any is, and how many have finished unseen.
  */
 function WorkspaceRow({
   workspace: w,
   warmth,
   activity,
+  working,
+  finished,
+  workingPanes,
+  unseenPanes,
   now,
   selected,
   onSelect,
@@ -457,6 +481,12 @@ function WorkspaceRow({
   workspace: Workspace
   warmth: Warmth
   activity: WorkspaceActivity | undefined
+  /** Its terminal panes at work, and finished unseen, by pty pane id. */
+  working: string[]
+  finished: string[]
+  /** What each is running, for the counts' tooltips. */
+  workingPanes: Record<string, string>
+  unseenPanes: Record<string, string>
   now: number
   selected: boolean
   onSelect: () => void
@@ -468,7 +498,7 @@ function WorkspaceRow({
   const temperature = scratch && warmth.temperature === 'cold' ? 'cool' : warmth.temperature
   return (
     <div
-      className={`row row--clickable heat--${temperature}${selected ? ' row--selected' : ''}`}
+      className={`row row--clickable heat--${temperature}${selected ? ' row--selected' : ''}${working.length > 0 ? ' row--working' : ''}`}
       title={describe(w, temperature, activity, now)}
       onClick={onSelect}
       onContextMenu={(e) => {
@@ -480,6 +510,31 @@ function WorkspaceRow({
         {scratch ? <TerminalIcon size={13} /> : <FolderIcon size={13} />}
       </span>
       <span className="row__label">{w.name}</span>
+      {working.length > 0 && (
+        <button
+          className="job-badge job-badge--working"
+          title={`${describePanes(working.length, 'at work', working.map((id) => workingPanes[id] ?? ''))}. Click to go to it.`}
+          onClick={(e) => {
+            e.stopPropagation()
+            revealPane(w.id, working[0]!)
+          }}
+        >
+          <span className="spinner" />
+          {working.length}
+        </button>
+      )}
+      {finished.length > 0 && (
+        <button
+          className="job-badge job-badge--finished"
+          title={`${describePanes(finished.length, 'finished since you last looked', finished.map((id) => unseenPanes[id] ?? ''))}. Click to go to it.`}
+          onClick={(e) => {
+            e.stopPropagation()
+            revealPane(w.id, finished[0]!)
+          }}
+        >
+          {finished.length}
+        </button>
+      )}
       <span className={scratch ? 'row__meta' : 'row__meta row__meta--hide-on-hover'}>
         {warmth.lastActive ? shortAgo(warmth.lastActive, now) : ''}
       </span>

@@ -13,6 +13,7 @@ import {
 } from '../plugins/registry'
 import { popupMenu } from '../contextMenu'
 import { closeTabsSafely } from '../editing'
+import { leaves } from '../paneTree'
 import { nextTabId, rowOf, useActiveWorkspace, useApp, useRow } from '../store'
 import { isCloseCommand, isFileTab, tabsToClose } from '../tabs'
 import { openTerminalTab } from '../terminals'
@@ -46,6 +47,31 @@ function TabIcon({ tab }: { tab: Tab }): React.ReactElement {
 }
 
 /**
+ * A tab's icon, or for a terminal with a pane at work a spinner in its place; and a dot on it for a
+ * pane that has finished since the user last looked — which tab to open, once the side bar has said
+ * which workspace (see paneWatch.ts).
+ */
+function TabStatusIcon({
+  tab,
+  working,
+  unseen
+}: {
+  tab: Tab
+  working: Record<string, string>
+  unseen: Record<string, string>
+}): React.ReactElement {
+  const panes = tab.kind === 'terminal' ? leaves(tab.root).flatMap((l) => (l.paneId ? [l.paneId] : [])) : []
+  const busy = panes.some((id) => id in working)
+  const finished = panes.some((id) => id in unseen)
+  return (
+    <span className="tab__icon">
+      {busy ? <span className="spinner" title="At work" /> : <TabIcon tab={tab} />}
+      {finished && <span className="tab__finished" title="Finished since you last looked" />}
+    </span>
+  )
+}
+
+/**
  * The strip belonging to ONE editor group.
  *
  * Everything it does is scoped to that group: which tabs it shows, which one is active, where a new
@@ -65,6 +91,8 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
   // Every close from the strip goes through the check for unsaved changes.
   const closeTab = (workspaceId: string, tabId: TabId): void => { void closeTabsSafely(workspaceId, [tabId]) }
   const dirtyFiles = useApp((s) => s.dirtyFiles)
+  const workingPanes = useApp((s) => s.workingPanes)
+  const unseenPanes = useApp((s) => s.unseenPanes)
   const openTab = useApp((s) => s.openTab)
   const moveTab = useApp((s) => s.moveTab)
   const splitTab = useApp((s) => s.splitTab)
@@ -163,7 +191,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           }}
           title={tabTooltip(tab)}
         >
-          <span className="tab__icon"><TabIcon tab={tab} /></span>
+          <TabStatusIcon tab={tab} working={workingPanes} unseen={unseenPanes} />
           <span className="tab__label">{tab.title}</span>
           <button
             className={`tab__close${tab.kind === 'editor' && dirtyFiles[tab.filePath] ? ' tab__close--dirty' : ''}`}

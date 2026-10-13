@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { groupOfTab } from '../groups'
 import { isMac, onEvent, platform, rpc } from '../ipc'
 import { formatChord, resolvePrefixKey } from '../keys'
+import { notePaneInput } from '../paneWatch'
 import {
   actionSpec,
   decodeText,
@@ -840,6 +841,9 @@ function LeafView({
   const key = paneKey(tab.id, leaf.id)
   const active = tab.activeLeafId === leaf.id
   const spawning = useRef(false)
+  // Finished since the user last had the keyboard in here: outlined until they do (see paneWatch.ts).
+  // An outline and not a label, which would sit on whatever the program has drawn there.
+  const finished = useApp((s) => (leaf.paneId ? s.unseenPanes[leaf.paneId] : undefined))
   /*
    * Read at focus time rather than depended on, because the effect below re-parents the xterm
    * element and rebinds its input: re-running it every time the user clicks into another column
@@ -926,7 +930,10 @@ function LeafView({
       // Rebind rather than stack: this effect re-runs once the pane id is assigned.
       handle.input?.dispose()
       handle.input = handle.term.onData((data) => {
-        if (handle.paneId) window.rigee.writeTerminal(workspaceId, handle.paneId, data)
+        if (!handle.paneId) return
+        window.rigee.writeTerminal(workspaceId, handle.paneId, data)
+        // What comes back in the next moment is this key's echo, not the pane at work.
+        notePaneInput(handle.paneId)
       })
 
       // Only the active pane of the active group. A terminal that arrives in another column —
@@ -984,7 +991,7 @@ function LeafView({
 
   return (
     <div
-      className={`term__pane${active ? ' term__pane--active' : ''}`}
+      className={`term__pane${active ? ' term__pane--active' : ''}${finished !== undefined ? ' term__pane--finished' : ''}`}
       onMouseDown={() => onFocus(leaf.id)}
       onContextMenu={(e) => {
         e.preventDefault()

@@ -9,6 +9,7 @@ import { isMac, rpc } from './ipc'
 import { useShortcuts } from './shortcuts'
 import { installUnsavedBridge } from './editing'
 import { installActivityTracking } from './activity'
+import { installPaneWatch } from './paneWatch'
 import { freshActivity, sanitizeActivity } from './heat'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
 import { allTabs } from './groups'
@@ -114,6 +115,7 @@ export function App(): React.ReactElement {
   useShortcuts()
   useEffect(installUnsavedBridge, [])
   useEffect(installActivityTracking, [])
+  useEffect(installPaneWatch, [])
   usePersistence()
   useScratchTerminal()
 

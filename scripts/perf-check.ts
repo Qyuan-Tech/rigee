@@ -35,8 +35,12 @@ const ASSETS = join(OUT, 'assets')
  * and coloured by it from the first frame, and its clock has to be counting from the first
  * keystroke, so that much cannot wait for a chunk. Its checklist of cold workspaces, which can, is
  * fetched on demand.
+ *
+ * And to 332 kB for terminals at work, measured at 329,137 B: the counts on a workspace's row, the
+ * spinner and dot on a tab and the outline on a pane are drawn whenever a terminal starts or stops,
+ * and the watch behind them has to see a terminal's output from its first frame.
  */
-const ENTRY_BUDGET_BYTES = 327_000
+const ENTRY_BUDGET_BYTES = 332_000
 
 let failures = 0
 let checks = 0
