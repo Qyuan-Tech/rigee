@@ -25,9 +25,7 @@ env:
 # happening anyway.
 #
 # The version numbers disagree because each action's major track moves independently and the
-# node24 cutover landed at a different point on each: v5 for checkout, setup-node and cache, but
-# v6 for upload-artifact and v7 for download-artifact. Bumping everything to "v5" would have
-# fixed three of the five and left the other two on Node 20.
+# node24 cutover landed at a different point on each, so there is no single major to align them on.
 #
 # All of them require Actions Runner >= 2.327.1. That is automatic on GitHub-hosted runners but
 # not on self-hosted ones — if this workflow ever moves back to a company runner label, check the
@@ -63,6 +61,50 @@ jobs:
 
       - name: Build renderer, main and preload
         run: pnpm exec electron-vite build
+
+      # Tag builds attach their installers straight onto this draft and the release job publishes
+      # it, so nothing passes through Actions artifact storage. That storage is metered against the
+      # org's quota even though this repository is public, and it accrues in GB-hours that deleting
+      # artifacts does not give back: one tag's ~1.4 GB of installers, held for a 7-day retention,
+      # is ~240 GB-hours, two thirds of a month on the free plan's 500 MB. v0.0.1-alpha.4 built,
+      # packaged and booted on all three platforms and then died at upload-artifact with "Artifact
+      # storage quota has been hit". Release assets have no quota.
+      #
+      # Opened here, once, before the matrix fans out: a draft is not bound to its tag until it is
+      # published, so three legs each creating it would leave three drafts. Reused if it exists, so
+      # a re-run can finish what an earlier attempt started, including a release it published.
+      - name: Open a draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG='${{ github.ref_name }}'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; the builds will upload over it"
+            exit 0
+          fi
+          NOTES=$(mktemp)
+          cat > "$NOTES" <<'EOT'
+          Builds are ad-hoc signed, not notarised, so the first launch needs one extra step:
+
+          - **macOS** — right-click the app and choose *Open*, or
+            `xattr -dr com.apple.quarantine /Applications/rigee.app`
+          - **Windows** — SmartScreen: *More info → Run anyway*
+          - **Linux** — `chmod +x` the AppImage
+          EOT
+          PRERELEASE=""
+          case "$TAG" in *-*) PRERELEASE="--prerelease";; esac
+          # --verify-tag because a draft does not check its tag: publishing one whose tag is gone
+          # would quietly cut a new tag from the default branch.
+          gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file "$NOTES" \
+            --generate-notes \
+            $PRERELEASE
 
   build:
     needs: check
@@ -120,8 +162,8 @@ jobs:
       - run: pnpm exec electron-vite build
 
       - name: Package ${{ matrix.name }}
-        # --publish never: artifacts are collected and attached by the release job below, so a
-        # partial matrix cannot leave a half-populated release behind.
+        # --publish never: the installers go onto the draft release, which only the release job
+        # below publishes, so a partial matrix cannot leave a half-populated release behind.
         run: pnpm exec electron-builder ${{ matrix.targets }} --publish never
 
       # A packaged app that throws during module evaluation shows no window and logs nothing, so
@@ -170,87 +212,48 @@ jobs:
               ;;
           esac
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: installers-${{ matrix.name }}
-          retention-days: 7
-          if-no-files-found: error
-          path: |
-            release/*/*.dmg
-            release/*/*.zip
-            release/*/*.exe
-            release/*/*.AppImage
-            release/*/*.deb
-            release/*/latest*.yml
+      # Onto the draft opened by `check`, not upload-artifact: see there for why. Tags only, since a
+      # manual dispatch has no release to attach to. --clobber so a re-run leg replaces whatever its
+      # first attempt managed to upload.
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(
+            release/*/*.dmg release/*/*.zip release/*/*.exe
+            release/*/*.AppImage release/*/*.deb release/*/latest*.yml
+          )
+          [ "${#FILES[@]}" -gt 0 ] || { echo "no installers under release/" >&2; exit 1; }
+          printf 'attaching %d files:\n' "${#FILES[@]}"
+          printf '  %s\n' "${FILES[@]}"
+          gh release upload '${{ github.ref_name }}' "${FILES[@]}" --clobber
 
+  # By now every leg has attached its installers to the draft. If any leg failed, this is skipped
+  # and the release stays a draft, which only people with write access can see: re-run the failed
+  # jobs to finish it, or `gh release delete <tag>` to abandon the tag.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: installers-*
-          merge-multiple: true
-          path: artifacts
-
-      - run: ls -lhR artifacts
-
       # `gh` is preinstalled on every runner, so the release needs no third-party action either.
       #
-      # GH_REPO is not optional here. This job deliberately skips actions/checkout — it only needs
-      # the artifacts, not the source — and without a checkout `gh` has no git remote to infer the
-      # repository from, so every subcommand dies with "fatal: not a git repository". Setting it
-      # is cheaper than cloning the repo just to tell gh its own name.
+      # GH_REPO is not optional here. This job deliberately skips actions/checkout — it only talks
+      # to the API — and without a checkout `gh` has no git remote to infer the repository from,
+      # so every subcommand dies with "fatal: not a git repository". Setting it is cheaper than
+      # cloning the repo just to tell gh its own name.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          NOTES=$(mktemp)
-          cat > "$NOTES" <<'EOT'
-          Builds are ad-hoc signed, not notarised, so the first launch needs one extra step:
-
-          - **macOS** — right-click the app and choose *Open*, or
-            `xattr -dr com.apple.quarantine /Applications/rigee.app`
-          - **Windows** — SmartScreen: *More info → Run anyway*
-          - **Linux** — `chmod +x` the AppImage
-          EOT
           TAG='${{ github.ref_name }}'
-
-          # Collect the files by walking, NOT with `artifacts/*`.
-          #
-          # merge-multiple drops each artifact's own contents into this directory, but it does not
-          # flatten what is inside them, and what is inside them is a version directory: the
-          # upload globs are `release/*/*.dmg`, so the root upload-artifact strips is `release`,
-          # the `*` being a wildcard rather than a literal. `artifacts/*` therefore matched one
-          # directory and handed it to gh, which failed with
-          #
-          #     read artifacts/0.0.1-alpha.1: is a directory
-          #
-          # Walking for regular files gives the right answer whatever the nesting turns out to be.
-          ASSETS=()
-          while IFS= read -r f; do ASSETS+=("$f"); done < <(find artifacts -type f | sort)
-          [ "${#ASSETS[@]}" -gt 0 ] || { echo "no artifacts to publish" >&2; exit 1; }
-          printf 'publishing %d assets:\n' "${#ASSETS[@]}"
-          printf '  %s\n' "${ASSETS[@]}"
-
-          # Idempotent, because `gh release create` is not: it refuses outright with "a release
-          # with the same tag name already exists", so a job that got this far and then failed —
-          # or a tag push that raced a manual dispatch of the same ref — could never be re-run.
-          # Uploading over an existing release is the recovery path, and --clobber makes a partial
-          # set of assets from the first attempt replaceable rather than a conflict.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists; uploading assets over it"
-            gh release upload "$TAG" "${ASSETS[@]}" --clobber
-          else
-            PRERELEASE=""
-            case "$TAG" in *-*) PRERELEASE="--prerelease";; esac
-            gh release create "$TAG" \
-              --title "$TAG" \
-              --notes-file "$NOTES" \
-              --generate-notes \
-              $PRERELEASE \
-              "${ASSETS[@]}"
-          fi
+          echo "publishing $TAG with:"
+          gh release view "$TAG" --json assets --jq '.assets[] | "  \(.name)"'
+          gh release edit "$TAG" --draft=false
