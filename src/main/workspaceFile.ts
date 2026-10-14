@@ -92,16 +92,21 @@ export function parseWorkspaceFile(text: string, filePath: string): ParsedWorksp
   const seen = new Set<string>()
   const folders: WorkspaceFileFolder[] = []
   for (const raw of rawFolders) {
-    const p = (raw as { path?: unknown })?.path
-    if (typeof p !== 'string' || p === '') continue
-    const abs = isAbsolute(p) ? resolve(p) : resolve(join(base, p))
-    if (seen.has(abs)) continue
+    const abs = entryPath(raw, base)
+    if (abs === null || seen.has(abs)) continue
     seen.add(abs)
     const name = (raw as { name?: unknown })?.name
     folders.push(typeof name === 'string' && name ? { path: abs, name } : { path: abs })
   }
 
   return { name: label.replace(/\.code-workspace$/i, ''), folders }
+}
+
+/** The folder one entry of the `folders` array names, absolute; null for an entry with no usable path. */
+function entryPath(raw: unknown, base: string): string | null {
+  const p = (raw as { path?: unknown })?.path
+  if (typeof p !== 'string' || p === '') return null
+  return isAbsolute(p) ? resolve(p) : resolve(join(base, p))
 }
 
 /**
@@ -221,8 +226,8 @@ function spliceFolders(text: string, entries: readonly WorkspaceFileFolder[]): s
   const body = entries.map((e) => renderEntry(e, layout, own, eol)).join(`,${sep}`)
 
   // After any comment sharing the line, so a note about the last folder stays beside it.
-  if (array.trailingComma !== null) {
-    const at = ownLine ? lineEnd(text, array.trailingComma + 1) : array.trailingComma + 1
+  if (last.comma !== null) {
+    const at = ownLine ? lineEnd(text, last.comma + 1) : last.comma + 1
     return text.slice(0, at) + sep + body + ',' + text.slice(at)
   }
   const at = ownLine ? lineEnd(text, last.end) : last.end
@@ -242,6 +247,127 @@ function renderEntry(
   if (layout.lines !== null) return JSON.stringify(entry, null, layout.lines).split('\n').join(eol + indent)
   const pairs = Object.entries(entry).map(([k, v]) => `${JSON.stringify(k)}:${layout.spaced ? ' ' : ''}${JSON.stringify(v)}`)
   return layout.spaced ? `{ ${pairs.join(', ')} }` : `{${pairs.join(',')}}`
+}
+
+/**
+ * Take folders out of the text of a workspace file, leaving everything else in it as it was: the
+ * other half of `addFoldersToWorkspaceFile`, and not parse-and-rewrite for the same reasons.
+ *
+ * Every entry naming one of `paths`, however it spells it, is cut out of the text — with the lines
+ * it has to itself, when it has them, so a comment beside it goes too while a comment on a line of
+ * its own stays. The commas left are the file's own, and a file that writes a trailing comma still
+ * does. Folders the file does not name are ignored; with nothing to take out the text comes back as
+ * it went in, which is how the caller knows there is nothing to write.
+ *
+ * Throws what `parseWorkspaceFile` throws for a file that is not a workspace file. What it returns is
+ * checked as adding's is, and rewritten whole in the same way when the cut defeats the check.
+ */
+export function removeFoldersFromWorkspaceFile(
+  text: string,
+  filePath: string,
+  paths: readonly string[]
+): string {
+  const listed = parseWorkspaceFile(text, filePath).folders.map((f) => f.path)
+  const doomed = new Set(paths.map((p) => resolve(p)))
+  const kept = listed.filter((p) => !doomed.has(p))
+  if (kept.length === listed.length) return text
+
+  const base = dirname(resolve(filePath))
+  const goes = (entry: unknown): boolean => {
+    const abs = entryPath(entry, base)
+    return abs !== null && doomed.has(abs)
+  }
+  const listsTheRest = (out: string): boolean => {
+    try {
+      const got = parseWorkspaceFile(out, filePath).folders
+      return got.length === kept.length && got.every((f, i) => f.path === kept[i])
+    } catch {
+      return false
+    }
+  }
+  const cut = cutFolders(text, goes)
+  if (cut !== null && listsTheRest(cut)) return cut
+
+  const doc = JSON.parse(stripJsonComments(text)) as { folders: unknown[] }
+  doc.folders = doc.folders.filter((entry) => !goes(entry))
+  return `${JSON.stringify(doc, null, /^\t/m.test(text) ? '\t' : 2)}\n`
+}
+
+/**
+ * The entries `goes` picks cut out of the text of the `folders` array, or null when it cannot be
+ * found.
+ *
+ * An entry with lines to itself takes them whole, line break and any comment beside it included;
+ * when the last entries go from a list with no trailing comma, the entry left last loses its comma.
+ * Entries sharing a line go with the comma after them, or at the end of the list with the comma
+ * before them, a run of neighbours at a time. A list left with nothing between its brackets but
+ * space closes up, as an empty one is written.
+ */
+function cutFolders(text: string, goes: (entry: unknown) => boolean): string | null {
+  const array = findFoldersArray(text)
+  if (!array) return null
+  const { items } = array
+  const going = items.map((item) => {
+    try {
+      return goes(JSON.parse(stripJsonComments(text.slice(item.start, item.end))))
+    } catch {
+      return false
+    }
+  })
+
+  const cuts: Array<[from: number, to: number]> = []
+  for (let i = 0; i < items.length; i++) {
+    if (!going[i]) continue
+    let j = i
+    while (going[j + 1]) j++
+    const first = items[i]!
+    const last = items[j]!
+    const before = items[i - 1]
+    const after = items[j + 1]
+    const lines = items.slice(i, j + 1).map((item) => linesOf(text, item))
+    if (lines.every((l): l is [number, number] => l !== null)) {
+      // Each on its own, so a comment on a line between two of them stays.
+      cuts.push(...lines)
+      if (!after && last.comma === null && before?.comma != null) cuts.push([before.comma, before.comma + 1])
+    } else if (after) {
+      cuts.push([first.start, after.start])
+    } else if (before) {
+      cuts.push([before.end, last.end])
+    } else {
+      cuts.push([first.start, last.comma === null ? last.end : last.comma + 1])
+    }
+    i = j
+  }
+
+  cuts.sort((a, b) => a[0] - b[0])
+  let out = ''
+  let at = 0
+  for (const [from, to] of cuts) {
+    out += text.slice(at, from)
+    at = to
+  }
+  out += text.slice(at)
+  if (going.every(Boolean)) {
+    // Every cut was inside the brackets: the opening one has not moved, the closing one has moved
+    // back by all of them.
+    const close = array.close - cuts.reduce((n, [from, to]) => n + to - from, 0)
+    if (out.slice(array.open + 1, close).trim() === '') out = out.slice(0, array.open + 1) + out.slice(close)
+  }
+  return out
+}
+
+/**
+ * The lines an entry has to itself, from the start of its first to past the line break of its last:
+ * nothing but space before it on the first, and nothing after it — and after its comma, which must
+ * be on the same line — but space and comments on the last. Null when it shares a line.
+ */
+function linesOf(text: string, item: FoldersArray['items'][number]): [number, number] | null {
+  const from = lineStart(text, item.start)
+  if (!/^[ \t]*$/.test(text.slice(from, item.start))) return null
+  if (item.comma !== null && text.slice(item.end, item.comma).includes('\n')) return null
+  const to = lineEnd(text, item.comma === null ? item.end : item.comma + 1)
+  const eol = text.startsWith('\r\n', to) ? 2 : text[to] === '\n' ? 1 : 0
+  return eol > 0 ? [from, to + eol] : null
 }
 
 function lineStart(text: string, at: number): number {
@@ -278,10 +404,11 @@ interface FoldersArray {
   /** Offsets of the array's brackets. */
   open: number
   close: number
-  /** Where each entry's text starts and ends. */
-  items: Array<{ start: number; end: number }>
-  /** The comma after the last entry, in a file that writes one. */
-  trailingComma: number | null
+  /**
+   * Where each entry's text starts and ends, and the comma after it: every entry has one but the
+   * last, which has one too in a file that writes a trailing comma.
+   */
+  items: Array<{ start: number; end: number; comma: number | null }>
 }
 
 /**
@@ -303,14 +430,12 @@ function findFoldersArray(text: string): FoldersArray | null {
 
     const items: FoldersArray['items'] = []
     let item: FoldersArray['items'][number] | null = null
-    let comma: number | null = null
     let nested = 0
     let m = k + 3
     for (; m < tokens.length; m++) {
       const u = tokens[m]!
       if (nested === 0 && u.punct === ',') {
-        if (item) items.push(item)
-        comma = item ? u.start : null
+        if (item) items.push({ ...item, comma: u.start })
         item = null
         continue
       }
@@ -318,11 +443,11 @@ function findFoldersArray(text: string): FoldersArray | null {
       if (u.punct === '{' || u.punct === '[') nested++
       else if (u.punct === '}' || u.punct === ']') nested--
       if (item) item.end = u.end
-      else { item = { start: u.start, end: u.end }; comma = null }
+      else item = { start: u.start, end: u.end, comma: null }
     }
     if (m >= tokens.length) return null
     if (item) items.push(item)
-    found = { open: tokens[k + 2]!.start, close: tokens[m]!.start, items, trailingComma: item ? null : comma }
+    found = { open: tokens[k + 2]!.start, close: tokens[m]!.start, items }
     // The array's own brackets were consumed above, so the depth outside it is unchanged.
     k = m
   }

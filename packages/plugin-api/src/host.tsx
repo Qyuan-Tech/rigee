@@ -159,6 +159,12 @@ export interface ShellHost {
    */
   workspaceDir: (workspace: Workspace) => string | null
   addWorkspaceFolders: (paths: string[]) => Promise<void>
+  /**
+   * Take some of the active workspace's `folders` out of it, and out of its `.code-workspace` file
+   * when it has one. Only the workspace changes: the folders stay on disk, and so do the tabs of
+   * files in them. Paths it does not list are ignored.
+   */
+  removeWorkspaceFolders: (paths: string[]) => Promise<void>
 
   // --- terminals ----------------------------------------------------------
   /**
@@ -287,6 +293,8 @@ export const useActiveWorkspace = (): Workspace | null => shell().useActiveWorks
 export const workspaceDir = (workspace: Workspace): string | null => shell().workspaceDir(workspace)
 export const addWorkspaceFolders = (paths: string[]): Promise<void> =>
   shell().addWorkspaceFolders(paths)
+export const removeWorkspaceFolders = (paths: string[]): Promise<void> =>
+  shell().removeWorkspaceFolders(paths)
 
 export const openTerminal = (request: { cwd: string; where?: 'tab' | 'split' }): TabId | null =>
   shell().openTerminal(request)

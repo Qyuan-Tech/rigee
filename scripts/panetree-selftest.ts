@@ -77,6 +77,7 @@ import {
 import {
   addFoldersToWorkspaceFile,
   parseWorkspaceFile,
+  removeFoldersFromWorkspaceFile,
   resolveWorkspaceFilesDir,
   serializeWorkspaceFile
 } from '../src/main/workspaceFile.ts'
@@ -457,6 +458,82 @@ console.log('\nadding folders to a .code-workspace file')
   eq('at the root, the root', workspaceFileDir('/my.code-workspace'), '/')
   eq('on Windows', workspaceFileDir('C:\\ws\\my\\my.code-workspace'), 'C:\\ws\\my')
   eq('at a drive\'s root, the root and not just the drive', workspaceFileDir('C:\\my.code-workspace'), 'C:\\')
+}
+
+console.log('\nremoving folders from a .code-workspace file')
+{
+  const file = '/projects/group/g.code-workspace'
+  const paths = (text: string): string => parseWorkspaceFile(text, file).folders.map((f) => f.path).join(',')
+  const remove = (text: string, ...folders: string[]): string => removeFoldersFromWorkspaceFile(text, file, folders)
+
+  // What Save Workspace As… writes: what is left is what it would have written for the rest.
+  const ours = serializeWorkspaceFile([{ path: '/projects/group/api' }, { path: '/projects/group/web' }], file)
+  eq('the last folder out leaves the file Save would have written',
+    remove(ours, '/projects/group/web'), serializeWorkspaceFile([{ path: '/projects/group/api' }], file))
+  eq('and so does the first', remove(ours, '/projects/group/api'), serializeWorkspaceFile([{ path: '/projects/group/web' }], file))
+  eq('and the two, the list closing up as an empty one is written',
+    remove(ours, '/projects/group/api', '/projects/group/web'), serializeWorkspaceFile([], file))
+  eq('a folder the file does not name changes nothing', remove(ours, '/projects/group/other'), ours)
+
+  // VS Code writes tabs, and people add comments and settings.
+  const vscode = [
+    '{',
+    '\t// the api, checked out from gerrit',
+    '\t"folders": [',
+    '\t\t{',
+    '\t\t\t"path": "api"',
+    '\t\t}, // keep first',
+    '\t\t// on a line of its own',
+    '\t\t{',
+    '\t\t\t"path": "/elsewhere/web",',
+    '\t\t\t"name": "Web"',
+    '\t\t}',
+    '\t],',
+    '\t"settings": { "editor.tabSize": 2 }',
+    '}'
+  ]
+  const without = (...drop: number[]): string => vscode.filter((_, i) => !drop.includes(i)).join('\n')
+  eq('the last out of a hand-edited file: its lines go, the comma before it, and nothing else',
+    remove(vscode.join('\n'), '/elsewhere/web'), without(7, 8, 9, 10).replace('}, // keep first', '} // keep first'))
+  eq('the first out: its lines go, the comment beside it with them, the one on a line of its own staying',
+    remove(vscode.join('\n'), '/projects/group/api'), without(3, 4, 5))
+  eq('both out, the list does not close up over a comment', remove(vscode.join('\n'), '/projects/group/api', '/elsewhere/web'),
+    without(3, 4, 5, 7, 8, 9, 10))
+
+  eq('a folder however the file spells it, and every time it does',
+    remove('{"folders":[{"path":"./api"},{"path":"web"},{"path":"api/"}]}', '/projects/group/api'), '{"folders":[{"path":"web"}]}')
+  const line = '{"folders":[{"path":"a"}, {"path":"b"}, {"path":"c"}],"settings":{}}'
+  eq('from a list on one line, one from the middle', remove(line, '/projects/group/b'), '{"folders":[{"path":"a"}, {"path":"c"}],"settings":{}}')
+  eq('the last, with the comma before it', remove(line, '/projects/group/c'), '{"folders":[{"path":"a"}, {"path":"b"}],"settings":{}}')
+  eq('the first two, with the comma after them', remove(line, '/projects/group/a', '/projects/group/b'), '{"folders":[{"path":"c"}],"settings":{}}')
+  eq('the first and the last', remove(line, '/projects/group/a', '/projects/group/c'), '{"folders":[{"path":"b"}],"settings":{}}')
+  eq('all of them', remove(line, '/projects/group/a', '/projects/group/b', '/projects/group/c'), '{"folders":[],"settings":{}}')
+
+  const trailing = '{\n  "folders": [\n    { "path": "api" },\n    { "path": "/x/b" },\n  ],\n}\n'
+  eq('a trailing comma stays where the file writes them', remove(trailing, '/x/b'), '{\n  "folders": [\n    { "path": "api" },\n  ],\n}\n')
+  eq('and from the front', remove(trailing, '/projects/group/api'), '{\n  "folders": [\n    { "path": "/x/b" },\n  ],\n}\n')
+  eq('and with nothing left, the list closes up', remove(trailing, '/projects/group/api', '/x/b'), '{\n  "folders": [],\n}\n')
+  const commaFirst = '{\n  "folders": [\n    { "path": "api" }\n    , { "path": "web" }\n  ]\n}\n'
+  eq('a comma at the head of the line goes with the entry after it', remove(commaFirst, '/projects/group/web'),
+    '{\n  "folders": [\n    { "path": "api" }\n  ]\n}\n')
+  eq('and the entry before it goes without it', remove(commaFirst, '/projects/group/api'),
+    '{\n  "folders": [\n    { "path": "web" }\n  ]\n}\n')
+
+  const crlf = remove('{\r\n  "folders": [\r\n    {\r\n      "path": "api"\r\n    },\r\n    {\r\n      "path": "/x/b"\r\n    }\r\n  ]\r\n}\r\n', '/x/b')
+  eq('a CRLF file loses its lines whole', crlf, '{\r\n  "folders": [\r\n    {\r\n      "path": "api"\r\n    }\r\n  ]\r\n}\r\n')
+
+  const nested = remove('{"settings":{"folders":["not these"]},"folders":[{"path":"api"},{"path":"/x/b"}]}', '/projects/group/api')
+  eq('only the top-level list is touched', nested, '{"settings":{"folders":["not these"]},"folders":[{"path":"/x/b"}]}')
+  const twice = remove('{"folders":[{"path":"old"}],"folders":[{"path":"api"},{"path":"/x/b"}]}', '/projects/group/api')
+  eq('of a key written twice, the one JSON.parse reads', twice, '{"folders":[{"path":"old"}],"folders":[{"path":"/x/b"}]}')
+  eq('a folder only the other names is not a folder of the workspace',
+    remove('{"folders":[{"path":"old"}],"folders":[{"path":"api"}]}', '/projects/group/old'), '{"folders":[{"path":"old"}],"folders":[{"path":"api"}]}')
+  eq('a // inside a string is not mistaken for a comment',
+    paths(remove('{"folders":[{"path":"/srv//x","name":"a // b"},{"path":"/x/b"}]}', '/x/b')), '/srv/x')
+
+  let threw = ''
+  try { remove('{"settings":{}}', '/x/b') } catch (e) { threw = (e as Error).message }
+  check('a file that is not a workspace file is refused, not repaired', threw.includes('folders'), threw)
 }
 
 console.log('\nbyte ranges, as a video element asks for them')

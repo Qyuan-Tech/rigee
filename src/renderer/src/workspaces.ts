@@ -10,13 +10,13 @@ import {
 import { workspaceFileDir } from '@shared/workspaceFiles'
 
 /**
- * The workspace model's own operations: opening folders as a workspace, adding folders to one,
- * saving one as a `.code-workspace` file — and where its terminals start.
+ * The workspace model's own operations: opening folders as a workspace, adding folders to one and
+ * taking them out, saving one as a `.code-workspace` file — and where its terminals start.
  *
  * In one place because there are several ways in. The side bar's + menu, the menu a workspace
- * opens when right-clicked, a folder dropped on the explorer and the prompt a new terminal shows
- * all do these things, and the rules — Scratch never takes a folder, a saved workspace's file
- * keeps up with its folders — are the same whichever way the user came.
+ * opens when right-clicked, a folder dropped on the explorer or right-clicked there, and the prompt
+ * a new terminal shows all do these things, and the rules — Scratch never takes a folder, a saved
+ * workspace's file keeps up with its folders — are the same whichever way the user came.
  */
 
 /** Write the workspace list now. */
@@ -93,12 +93,43 @@ export async function addFolders(workspaceId: WorkspaceId, paths: readonly strin
       folders: added.map((f) => ({ path: f.path, name: f.name }))
     })
   } catch (e) {
-    // Main's reasons name the file, so this does not.
-    useApp.getState().setWorkspaceError(
-      `Added to “${now.name}”, but its workspace file could not be updated: ${reason(e).replace(/\.?$/, '.')} ` +
-        'Save Workspace As… writes it again.'
-    )
+    fileLeftBehind(`Added to “${now.name}”`, e)
   }
+}
+
+/**
+ * Take folders out of a workspace — and out of its `.code-workspace` file, when it has one: the other
+ * half of `addFolders`. Only the workspace changes. The folders stay on disk, and the tabs of files
+ * in them and the terminals started in them stay open, as in VS Code.
+ *
+ * As with adding, the folders leave the workspace even if the file cannot let them go, and the side
+ * bar says so.
+ */
+export async function removeFolders(workspaceId: WorkspaceId, paths: readonly string[]): Promise<void> {
+  const s = useApp.getState()
+  const ws = s.workspaces.find((w) => w.id === workspaceId)
+  const removed = ws?.folders.filter((f) => paths.includes(f.path)) ?? []
+  if (!ws || removed.length === 0) return
+  s.setWorkspaces(
+    s.workspaces.map((w) => (w.id === workspaceId ? { ...w, folders: w.folders.filter((f) => !paths.includes(f.path)) } : w))
+  )
+  persistWorkspaces()
+
+  if (!ws.filePath) return
+  try {
+    await rpc['workspace:removeFoldersFromFile']({ file: ws.filePath, paths: removed.map((f) => f.path) })
+  } catch (e) {
+    fileLeftBehind(`Removed from “${ws.name}”`, e)
+  }
+}
+
+/** Say under the workspace list that the folders changed and the workspace's file did not. */
+function fileLeftBehind(done: string, e: unknown): void {
+  // Main's reasons name the file, so this does not.
+  useApp.getState().setWorkspaceError(
+    `${done}, but its workspace file could not be updated: ${reason(e).replace(/\.?$/, '.')} ` +
+      'Save Workspace As… writes it again.'
+  )
 }
 
 /**

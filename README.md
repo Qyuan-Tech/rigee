@@ -33,7 +33,8 @@ running your own shell.
 - **Left** — workspaces and a file tree. A workspace is a named set of folders, like a VS Code
   multi-root workspace. Choose a workspace files folder in Settings and *Save Workspace As…* asks
   only for a name, filing it as `<folder>/<name>/<name>.code-workspace`. Right-click a workspace to
-  add a folder to it or save it; a folder added to a saved workspace is written into its file too.
+  add a folder to it or save it, or a folder at the top of its file tree to take that folder out of
+  it; a saved workspace's file keeps up either way.
   A saved workspace's file tree starts with the folder its file is in — tinted and tagged
   *Workspace*, above the repos — because that folder is the workspace's own. The tree does to
   files what VS Code's does: new, rename, cut, copy, paste, delete, drag in from Finder or around
@@ -108,7 +109,8 @@ an app launched from Finder inherits almost none of it.
 | Markdown preview — right-click a `.md` for *Open Preview*: GitHub-flavoured, code coloured, redrawn as the file changes on disk, pictures from the web only when asked | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
 | Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
-| A folder added to a saved workspace goes into its `.code-workspace` file, comments and settings kept | works |
+| Right-click a folder at the top of the explorer — Remove Folder from Workspace, leaving it on disk | works |
+| A folder added to a saved workspace goes into its `.code-workspace` file, and one removed comes out of it, comments and settings kept | works |
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
 | A saved workspace's explorer starts with that folder, marked out from the repos below it | works |
 | Workspace heat — the list ordered by how much each workspace has been used lately, hot and warm ones coloured, with how long since anything happened in each | works |
@@ -271,7 +273,11 @@ Every delete asks first. Rename and New File put a box in the tree, which says a
 name is taken; a name like `src/lib/new.ts` makes the folders on the way. Pasting into the folder a
 file came from duplicates it — `a.ts` becomes `a copy.ts`, then `a copy 2.ts`. With several rows
 selected, the menu and the keys act on all of them. The workspace's own folders cannot be cut,
-renamed or deleted from the tree: that is a change to the workspace, not to a file.
+renamed or deleted from the tree: that is a change to the workspace, not to a file. Their menu
+offers *Remove Folder from Workspace* instead, which takes the folder out of the workspace — and out
+of its `.code-workspace` file, if it has one — and leaves it on disk, its tabs still open. The folder
+a saved workspace's file is in heads the tree for as long as the file is there, so it has no such
+item.
 
 Drag files in from Finder or Explorer to copy them into the folder under the pointer, which lights
 up with everything shown inside it; a name already there is asked about. Drag rows around the tree

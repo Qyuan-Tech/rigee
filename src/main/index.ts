@@ -30,6 +30,7 @@ import { PtyManager } from './pty/manager'
 import {
   addFoldersToWorkspaceFile,
   parseWorkspaceFile,
+  removeFoldersFromWorkspaceFile,
   resolveWorkspaceFilesDir,
   serializeWorkspaceFile
 } from './workspaceFile'
@@ -982,6 +983,8 @@ async function runFileOpsSmoke(): Promise<void> {
     if (folder[0] !== 'New File…' || folder[1] !== 'New Folder…') return finish(false, 'folder-menu-does-not-start-with-new', folder)
     if (!has(top, 'New File…') || !has(top, 'Paste') || !has(top, 'Copy Path')) return finish(false, 'workspace-folder-menu-lacks-its-items', top)
     if (['Cut', 'Rename…', 'Delete', 'Copy Relative Path'].some((label) => has(top, label))) return finish(false, 'workspace-folder-can-be-cut-renamed-or-deleted', top)
+    if (!has(top, 'Remove Folder from Workspace')) return finish(false, 'workspace-folder-cannot-be-removed-from-the-workspace', top)
+    if (has(file, 'Remove Folder') || has(folder, 'Remove Folder')) return finish(false, 'more-than-a-workspace-folder-offers-remove', { file, folder })
 
     // --- a click opens a file and leaves the keyboard here ---------------------------------
     const clicked = await stage(`
@@ -2976,6 +2979,9 @@ async function runTabsSmoke(): Promise<void> {
  * active one adds it there — without switching to it — and to the file, whose hand-written
  * comment and setting survive; Save Workspace As… opens the name form for the workspace clicked;
  * Scratch has nothing to add or remove. The folder picker is answered by RIGEE_SMOKE_PICK_FOLDER.
+ * Remove Folder from Workspace, on that folder in the workspace's tree, takes it out of the file
+ * again with the comment and setting still there, leaves it on disk, and leaves the keyboard on a
+ * row still in the tree; the workspace's own folder does not offer it.
  * And a folder's own menu in the explorer: Open in Terminal Tab starts in that folder, not where the
  * workspace's terminals would, and does not stop to ask about saving; Open in Terminal Split adds a
  * pane to the terminal on screen that starts in the folder rather than where its neighbour is.
@@ -3484,6 +3490,55 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     if (!grown.includes('// kept by hand') || !grown.includes('"files.exclude": { "**/.git": true }')) {
       return finish(false, 'adding-a-folder-lost-what-was-in-the-file', grown)
     }
+
+    // --- right-click a folder in the explorer: Remove Folder from Workspace ---------------------
+    // The same workspace, now on screen. Its own folder at the head of the tree offers no such thing;
+    // repo-c does, and taking it out takes it out of the file, the note and the setting kept, while
+    // the folder itself stays on disk and the keyboard goes to a row that is still there.
+    const removed = await js<{ ok: boolean; stage?: string; own?: string[]; labels?: string[]; folders?: string[]; focused?: string | null }>(`(async () => {
+      ${helpers}; ${tree}; ${exploreRow}
+      store.getState().setActiveWorkspace('ws-files')
+      // Until it draws, the head of the tree is still the last workspace's own folder.
+      const folder = await until(() => explorerRow('repo-c'))
+      const own = await until(() => label(head()) === 'myworkspace' && head())
+      if (!own || !folder) return { ok: false, stage: 'no-own-folder-or-no-repo-c-in-the-tree' }
+      const offered = async (target, pick) => {
+        let items = null
+        menus.answer = (offer) => { items = offer; return pick }
+        target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+        await until(() => items)
+        menus.answer = null
+        return (items || []).filter(i => i.kind === 'item').map(i => i.label)
+      }
+      const ownLabels = await offered(own, null)
+      const labels = await offered(folder, 'remove-folder')
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-files' && w.folders.length === 2))
+      if (!ws) return { ok: false, stage: 'folder-not-removed', own: ownLabels, labels }
+      if (!(await until(() => !explorerRow('repo-c')))) return { ok: false, stage: 'removed-folder-still-in-the-tree', own: ownLabels, labels }
+      const focused = document.querySelector('.explorer__row--focused')?.dataset.path ?? null
+      return { ok: true, own: ownLabels, labels, folders: ws.folders.map(f => f.path), focused }
+    })()`)
+    if (!removed.ok) return finish(false, removed.stage ?? 'menu-remove-folder', removed)
+    trail.push(`in the tree, repo-c's menu offered ${removed.labels?.join(', ')}; the workspace's own folder's offered ${removed.own?.join(', ')}`)
+    if (!removed.labels?.includes('Remove Folder from Workspace')) return finish(false, 'a-workspace-folder-offers-no-remove', removed.labels)
+    if (!removed.own?.includes('New File…') || removed.own.includes('Remove Folder from Workspace')) {
+      return finish(false, 'the-own-folder-offers-remove-or-no-menu', removed.own)
+    }
+    if (removed.folders?.join() !== repos.join()) return finish(false, 'removed-the-wrong-folder', removed.folders)
+    let shrunk = grown
+    for (let i = 0; i < 30 && shrunk.includes('repo-c'); i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      shrunk = readFileSync(target, 'utf8')
+    }
+    const shrunkFolders = parseWorkspaceFile(shrunk, target).folders.map((f) => f.path)
+    trail.push(`its file lists ${shrunkFolders.join(', ')} again, repo-c is ${existsSync(repoC) ? 'still' : 'no longer'} on disk, and the keyboard is on ${removed.focused}`)
+    if (shrunkFolders.join() !== repos.join()) return finish(false, 'folder-not-removed-from-the-file', shrunk)
+    if (!shrunk.includes('// kept by hand') || !shrunk.includes('"files.exclude": { "**/.git": true }')) {
+      return finish(false, 'removing-a-folder-lost-what-was-in-the-file', shrunk)
+    }
+    if (!existsSync(repoC)) return finish(false, 'removing-a-folder-deleted-it')
+    // Rows that have gone are not drawn, so a keyboard left on one would leave no row marked at all.
+    if (!removed.focused || removed.focused.startsWith(repoC)) return finish(false, 'the-keyboard-stayed-on-the-removed-folder', removed.focused)
 
     // --- right-click: Save Workspace As…, and Scratch's menu ------------------------------------
     const named = await js<{ ok: boolean; stage?: string; initial?: string; scratch?: string[] }>(`(async () => {
@@ -6548,19 +6603,11 @@ function registerHandlers(): void {
   })
 
   handle('workspace:addFoldersToFile', ({ file, folders }) => {
-    // This edits a file in place, so only one that is a workspace file by name and by content.
-    if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
-    let text: string
-    try {
-      text = readFileSync(file, 'utf8')
-    } catch (err) {
-      // The likely way for this to fail: the file was moved or deleted since the workspace was saved.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(file)} is no longer in ${dirname(file)}`)
-      throw err
-    }
-    const next = addFoldersToWorkspaceFile(text, file, folders)
-    // In place rather than tmp-and-rename, as saving one is: a workspace file kept as a symlink stays one.
-    if (next !== text) writeFileSync(file, next, 'utf8')
+    editWorkspaceFile(file, (text) => addFoldersToWorkspaceFile(text, file, folders))
+  })
+
+  handle('workspace:removeFoldersFromFile', ({ file, paths }) => {
+    editWorkspaceFile(file, (text) => removeFoldersFromWorkspaceFile(text, file, paths))
   })
 
   // --- clipboard ---------------------------------------------------------
@@ -6605,6 +6652,25 @@ function registerHandlers(): void {
 
   registerTerminalHandlers()
   registerPluginHandlers()
+}
+
+/**
+ * Change a `.code-workspace` file in place, writing only when `edit` changed its text. Only a file
+ * that is a workspace file by name, and by content — `edit` throws for one that is not.
+ */
+function editWorkspaceFile(file: string, edit: (text: string) => string): void {
+  if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (err) {
+    // The likely way for this to fail: the file was moved or deleted since the workspace was saved.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(file)} is no longer in ${dirname(file)}`)
+    throw err
+  }
+  const next = edit(text)
+  // In place rather than tmp-and-rename, as saving one is: a workspace file kept as a symlink stays one.
+  if (next !== text) writeFileSync(file, next, 'utf8')
 }
 
 /** The question a save dialog asks before it overwrites a file, for a save that has no dialog. */

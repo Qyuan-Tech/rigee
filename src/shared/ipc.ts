@@ -178,6 +178,12 @@ export interface IpcRequests {
    * already names are skipped. Rejects with a message fit to show when the file cannot be updated.
    */
   'workspace:addFoldersToFile': (args: { file: string; folders: { path: string; name: string }[] }) => void
+  /**
+   * Take folders out of an existing `.code-workspace` file, the folders having just been removed
+   * from the workspace it is: the other half of `workspace:addFoldersToFile`, keeping the rest of
+   * the file as it does. Folders it does not name are ignored.
+   */
+  'workspace:removeFoldersFromFile': (args: { file: string; paths: string[] }) => void
 
   // --- clipboard -------------------------------------------------------
   /**
@@ -301,6 +307,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'workspace:readWorkspaceFile',
   'workspace:saveWorkspaceFile',
   'workspace:addFoldersToFile',
+  'workspace:removeFoldersFromFile',
   'clipboard:write',
   'clipboard:read',
   'fs:list',

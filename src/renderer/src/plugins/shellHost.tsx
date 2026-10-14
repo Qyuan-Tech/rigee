@@ -91,6 +91,7 @@ const host: ShellHost = {
   useActiveWorkspace,
   workspaceDir,
   addWorkspaceFolders: api.addWorkspaceFolders,
+  removeWorkspaceFolders: api.removeWorkspaceFolders,
   openTerminal: api.openTerminal,
 
   openPluginTab: api.openPluginTab,

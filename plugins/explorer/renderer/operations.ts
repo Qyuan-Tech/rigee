@@ -8,6 +8,7 @@ import {
   openTerminal,
   pluginState,
   popupMenu,
+  removeWorkspaceFolders,
   setPluginState,
   unsavedFiles
 } from '@rigee/plugin-api'
@@ -77,6 +78,12 @@ export function parentOf(path: string): string {
 }
 
 const isRoot = (tree: Tree, path: string): boolean => tree.roots.some((r) => r.path === path)
+
+/**
+ * A folder the workspace lists, which Remove Folder from Workspace can take out of it: any root but
+ * the workspace's own folder, which heads the tree for as long as the workspace has its file.
+ */
+const isListed = (tree: Tree, path: string): boolean => tree.roots.some((r) => r.path === path && !r.own)
 
 /** A row's folder: itself, or the one the file is in. Where a paste, a drop or a New File lands. */
 export const folderOf = (row: Row): string => (row.dir ? row.path : parentOf(row.path))
@@ -252,6 +259,23 @@ export async function deleteEntries(tree: Tree, paths: readonly string[], perman
   tree.refocus()
 }
 
+/**
+ * Remove Folder from Workspace, for the workspace's folders among `paths`. The rules are the shell's:
+ * the workspace stops listing them, and so does its file when it has one; nothing else on disk is
+ * touched. The keyboard goes to the row after them, as after a Delete — never left on a row that has
+ * gone, where the next Delete would reach for a whole repo.
+ */
+export async function removeFromWorkspace(tree: Tree, paths: readonly string[]): Promise<void> {
+  const folders = paths.filter((p) => isListed(tree, p))
+  if (folders.length === 0) return
+  const next = survivor(tree.rows(), folders)
+  // Out of the workspace as soon as this is called; the file is written after.
+  const removing = removeWorkspaceFolders(folders)
+  select(next ? [next] : [], next, { reveal: true })
+  tree.refocus()
+  await removing
+}
+
 export function startRename(tree: Tree, path: string): void {
   if (isRoot(tree, path)) return
   select([path], path)
@@ -343,7 +367,8 @@ const revealLabel = (): string =>
  * selected rows, and offers only what makes sense for several.
  *
  * The workspace's own folders offer no Cut, Rename or Delete: removing one of those is a change to
- * the workspace, not to a file.
+ * the workspace, not to a file, and Remove Folder from Workspace is what a folder it lists offers
+ * instead — in its own group after the terminals, where VS Code has it.
  */
 export async function showMenu(tree: Tree, row: Row): Promise<void> {
   const before = selection()
@@ -376,6 +401,7 @@ export async function showMenu(tree: Tree, row: Row): Promise<void> {
       separator
     )
   }
+  if (isListed(tree, row.path)) items.push(item('remove-folder', 'Remove Folder from Workspace'), separator)
   if (entries.length > 0) items.push(item('cut', 'Cut', 'CmdOrCtrl+X'), item('copy', 'Copy', 'CmdOrCtrl+C'))
   items.push(item('paste', 'Paste', 'CmdOrCtrl+V', clipboard() !== null))
   items.push(separator, item('copy-path', 'Copy Path', mac ? 'Alt+Cmd+C' : 'Shift+Alt+C'))
@@ -401,6 +427,7 @@ export async function showMenu(tree: Tree, row: Row): Promise<void> {
     // A shell started where the user is pointing: in the folder, or in the folder the file is in.
     case 'terminal-tab': openTerminal({ cwd: into, where: 'tab' }); break
     case 'terminal-split': openTerminal({ cwd: into, where: 'split' }); break
+    case 'remove-folder': await removeFromWorkspace(tree, targets); break
     case 'cut': copyEntries(tree, targets, true); break
     case 'copy': copyEntries(tree, targets, false); break
     case 'paste': await paste(tree, into); break

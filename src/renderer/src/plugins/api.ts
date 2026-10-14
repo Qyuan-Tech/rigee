@@ -6,7 +6,7 @@ import { allTabs, groupById, groupOfTab } from '../groups'
 import { focusGroupContent } from '../shortcuts'
 import { nextTabId, rowOf, takeDuplicateOrigin, useApp } from '../store'
 import { openTerminalTab, splitTerminalAt } from '../terminals'
-import { addFolders, openAsWorkspace } from '../workspaces'
+import { addFolders, openAsWorkspace, removeFolders } from '../workspaces'
 import { editorTabTitle, ownerOf, viewTypeFor } from './registry'
 
 /**
@@ -40,6 +40,16 @@ export function activeWorkspaceId(): WorkspaceId | null {
 export async function addWorkspaceFolders(paths: string[]): Promise<void> {
   const target = useApp.getState().activeWorkspaceId
   await (target ? addFolders(target, paths) : openAsWorkspace(paths))
+}
+
+/**
+ * Take folders out of the workspace: the explorer's Remove Folder from Workspace. The rules are the
+ * shell's, as for adding — see `removeFolders`: a saved workspace's file loses them too, and nothing
+ * else on disk is touched.
+ */
+export async function removeWorkspaceFolders(paths: string[]): Promise<void> {
+  const target = useApp.getState().activeWorkspaceId
+  if (target) await removeFolders(target, paths)
 }
 
 /**
