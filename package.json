@@ -63,6 +63,7 @@
     "smoke:running": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=running electron .",
     "smoke:fileops": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=fileops electron .",
     "smoke:install": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=install electron .",
+    "smoke:published": "env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=published electron .",
     "plugins:selftest": "esbuild scripts/plugins-selftest.ts --bundle --platform=node --format=esm --packages=external --alias:@shared=./src/shared --alias:@rigee/plugin-api/manifest=./packages/plugin-api/src/manifest.ts --outfile=node_modules/.tmp/plugins-selftest.mjs --log-level=warning && node node_modules/.tmp/plugins-selftest.mjs",
     "pack:plugin-api": "rm -rf packages/plugin-api/dist && tsc -p packages/plugin-api/tsconfig.build.json && mkdir -p release && npm pack ./packages/plugin-api --pack-destination release"
   },

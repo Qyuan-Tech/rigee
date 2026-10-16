@@ -368,6 +368,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
     else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
     else if (process.env.RIGEE_SMOKE === 'install') void runInstallSmoke()
+    else if (process.env.RIGEE_SMOKE === 'published') void runPublishedSmoke()
     else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
@@ -5731,6 +5732,119 @@ async function runInstallSmoke(): Promise<void> {
   } catch (err) {
     console.error('[smoke:install] threw:', err)
     finish(false, 'threw', String(err))
+  }
+}
+
+/**
+ * Rigee's own plugins, as published: found by searching the real GitHub, installed from their real
+ * latest releases, and each opening a file of its kind.
+ *
+ * Not part of any routine run, on purpose. It needs the network, spends five of GitHub's sixty
+ * anonymous calls an hour, and tests things outside this repository — that each plugin's repository
+ * carries the topic, that its release is published with its asset, and that what was released works
+ * in this build. Run it after releasing a plugin, or after releasing Rigee:
+ *
+ *   pnpm smoke:published
+ *
+ * A plugin missing from the search is reported with what to check (the topic) and the mode goes on
+ * to install it by name anyway, so one run says everything that is wrong rather than the first thing.
+ */
+async function runPublishedSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const OFFICIAL = 'Qyuan-Tech'
+  const ids = ['pdf', 'image', 'video', 'markdown']
+  const problems: string[] = []
+  const trail: string[] = []
+  const asked: { message: string; detail: string }[] = []
+  askProbe.answer = (options) => {
+    asked.push({ message: options.message, detail: options.detail ?? '' })
+    const index = (options.buttons ?? []).indexOf('Install and Run')
+    return index >= 0 ? index : (options.cancelId ?? 0)
+  }
+  const finish = (stage: string, extra?: unknown): void => {
+    askProbe.answer = null
+    const ok = problems.length === 0
+    console.log('[smoke:published]', JSON.stringify({ ok, stage, problems, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const invoke = (channel: string, args: unknown): Promise<unknown> =>
+    wc.executeJavaScript(`window.rigee.invoke(${JSON.stringify(channel)}, ${JSON.stringify(args)})`, true) as Promise<unknown>
+
+  try {
+    // 1. Found by searching, as a user would find them: no words, Rigee's own sorted first.
+    const found = (await invoke('plugins:search', { query: '' })) as { owner: string; repo: string; official: boolean }[]
+    trail.push(`search found: ${found.map((p) => `${p.owner}/${p.repo}`).join(', ') || 'nothing'}`)
+    for (const id of ids) {
+      if (!found.some((p) => p.official && p.repo === `rigee-plugin-${id}`)) {
+        problems.push(`${OFFICIAL}/rigee-plugin-${id} is not found by search: does the repository carry the topic rigee-plugin?`)
+      }
+    }
+
+    // 2. Installed from the real release, after the real dialog.
+    for (const id of ids) {
+      const repo = `rigee-plugin-${id}`
+      const result = (await invoke('plugins:install', { owner: OFFICIAL, repo })) as { ok: boolean; version?: string; reason?: string }
+      if (!result.ok) {
+        problems.push(`${repo} did not install: ${result.reason}`)
+        continue
+      }
+      const dialog = asked.at(-1)
+      trail.push(`${repo} ${result.version} installed after "${dialog?.message}"`)
+      if (!dialog?.detail.includes(`github.com/${OFFICIAL}/${repo}`) || !dialog.detail.includes('has not reviewed')) {
+        problems.push(`${repo}'s dialog left out its source or the warning`)
+      }
+    }
+
+    // 3. Each opens a file of its kind. Fixtures in the throwaway data directory.
+    const dir = app.getPath('userData')
+    const pdf = join(dir, 'published.pdf')
+    const png = join(dir, 'published.png')
+    const md = join(dir, 'published.md')
+    writeFileSync(pdf, minimalPdf(PDF_SMOKE_MARKER))
+    writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAFElEQVR4nGP4z8DwHwgbQBQDMgcAeyoI+eLGsqMAAAAASUVORK5CYII=', 'base64'))
+    writeFileSync(md, '# Published\n\n```ts\nconst answer: number = 42\n```\n', 'utf8')
+    const opened = JSON.parse((await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const until = async (fn, ms = 20000) => {
+          for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100) }
+          return null
+        }
+        const { store, plugins } = window.__rigee
+        const seen = {}
+        for (let i = 0; i < 80; i++) { if (store.getState().ready) break; await sleep(250) }
+        // The plugins view reads the installed list into the registry as it opens.
+        ;[...document.querySelectorAll('.activitybar button')].find(b => b.title === 'Plugins')?.click()
+        await until(() => plugins.resolveViewType('/x/a.pdf') === 'pdf.preview')
+        const s = store.getState()
+        const ws = s.workspaces.find(w => w.id === '__scratch__')
+        s.setActiveWorkspace(ws.id)
+        const open = (id, path, viewType) => store.getState().openTab(ws.id, {
+          id, kind: 'editor', title: path.split('/').pop(), pinned: false,
+          filePath: path, repoId: null, readOnly: true, viewType
+        })
+        open('published-pdf', ${JSON.stringify(pdf)}, plugins.resolveViewType(${JSON.stringify(pdf)}))
+        seen.pdf = !!(await until(() => [...document.querySelectorAll('.pdf__pages canvas')].find(c => c.width > 0)))
+        open('published-png', ${JSON.stringify(png)}, plugins.resolveViewType(${JSON.stringify(png)}))
+        seen.image = !!(await until(() => document.querySelector('.image__picture')?.naturalWidth === 3))
+        // No film to play: a missing one proves both halves ran — the player asked main, main answered.
+        open('published-mp4', '/nonexistent/published.mp4', plugins.resolveViewType('/x/a.mp4'))
+        seen.video = !!(await until(() => (document.body.innerText || '').includes('published.mp4 does not exist')))
+        open('published-md', ${JSON.stringify(md)}, 'markdown.preview')
+        seen.markdown = !!(await until(() => document.querySelector('.markdown__doc h1')?.textContent === 'Published'))
+        seen.markdownColoured = !!(await until(() => document.querySelector('.markdown__doc .tok-keyword')))
+        return JSON.stringify(seen)
+      })()`,
+      true
+    )) as string) as Record<string, boolean>
+    trail.push(`opened: ${JSON.stringify(opened)}`)
+    for (const [what, ok] of Object.entries(opened)) if (!ok) problems.push(`${what} did not show`)
+
+    finish('done')
+  } catch (err) {
+    problems.push(`threw: ${String(err)}`)
+    finish('threw')
   }
 }
 
