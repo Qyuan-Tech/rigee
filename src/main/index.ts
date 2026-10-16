@@ -63,15 +63,24 @@ import {
   revokePlugin,
   scanDiskPlugins
 } from './plugins/installed'
+import { MAX_PLUGIN_BYTES, MAX_PLUGIN_FILES } from './plugins/disk'
 import { searchPlugins } from './plugins/github'
 import { checkForUpdates, installFromGitHub, uninstallPlugin, type InstallDeps } from './plugins/install'
 import { initSourcesStore } from './plugins/sources'
+import { unpackTarballSync } from './plugins/tarball'
 import { initTrustStore } from './plugins/trust'
 import { PLUGIN_MANIFESTS } from '@plugins/index'
 import { PERSISTED_STATE_VERSION, type FileStat, type GroupLayout, type Workspace, type WorkspaceActivity } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 const __dirnameESM = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Plugins a smoke mode planted from their release tarballs, to be approved once the trust store is
+ * open — and why planting failed, if it did. Declared up here because the planting runs during
+ * module evaluation, below, before anything declared further down this file exists.
+ */
+const smokePlugins: { planted: string[]; problem: string | null } = { planted: [], problem: null }
 
 const T0 = Date.now()
 const mark = (label: string): void => {
@@ -118,6 +127,7 @@ if (process.env.RIGEE_SMOKE) {
   // Same reason: the plugin directory is scanned once, at app ready. A plugin copied in after
   // that is not in the snapshot, and the mode would assert against an empty registry.
   if (process.env.RIGEE_SMOKE === 'diskplugin') plantExamplePlugin(dir)
+  plantSmokePlugins(dir, process.env.RIGEE_SMOKE)
   // The keys mode types into terminals — Enter included — so its panes run a sink rather than
   // the user's shell, where every one of those keystrokes would be a command in their history.
   // And it never shows its window or takes the foreground: it runs while somebody is working.
@@ -334,7 +344,10 @@ function createWindow(): void {
     mark('shell did-finish-load')
     if (!HIDDEN_SMOKE) window?.show()
     focusActiveView()
-    if (process.env.RIGEE_SMOKE === 'terminal') void runTerminalSmoke()
+    if (process.env.RIGEE_SMOKE && smokePlugins.problem) {
+      console.log(`[smoke:${process.env.RIGEE_SMOKE}] ${smokePlugins.problem}`)
+      app.exit(1)
+    } else if (process.env.RIGEE_SMOKE === 'terminal') void runTerminalSmoke()
     else if (process.env.RIGEE_SMOKE === 'split') void runSplitSmoke()
     else if (process.env.RIGEE_SMOKE === 'persist') void runPersistSmoke()
     else if (process.env.RIGEE_SMOKE === 'tabs') void runTabsSmoke()
@@ -5213,6 +5226,59 @@ function plantExamplePlugin(dir: string): void {
 }
 
 /**
+ * The plugins each smoke mode needs that no longer ship with the app.
+ *
+ * The PDF viewer, the image viewer, the video player and the Markdown preview live in repositories
+ * of their own now and reach users from GitHub, but the smoke modes that drive them stay here,
+ * because what they test is as much the shell as the plugin: that a worker starts, that a file
+ * streams, that a tab survives a split. So such a mode installs the plugin first, from the tarball
+ * its release would carry, unpacked by the same reader an install uses.
+ *
+ * The tarball is `RIGEE_SMOKE_PLUGIN_<ID>` when that is set, and otherwise the newest
+ * `rigee-plugin-<id>-*.tgz` in a checkout of the plugin's repository beside this one — what
+ * `pnpm release:pack` leaves there. A mode without its plugin fails, saying how to get it, rather
+ * than testing nothing.
+ */
+function plantSmokePlugins(dir: string, mode: string | undefined): void {
+  // In here rather than beside it: this runs during module evaluation, before a `const` declared
+  // at the top level of this part of the file has been initialised.
+  const needs: Record<string, readonly string[]> = {
+    pdf: ['pdf'],
+    video: ['video'],
+    markdown: ['markdown'],
+    plugins: ['pdf', 'image']
+  }
+  for (const id of (mode && needs[mode]) || []) {
+    const tarball = smokePluginTarball(id)
+    if (!tarball) {
+      smokePlugins.problem =
+        `this mode needs the ${id} plugin: run \`pnpm release:pack\` in a checkout of ` +
+        `Qyuan-Tech/rigee-plugin-${id} beside this repository, or set RIGEE_SMOKE_PLUGIN_${id.toUpperCase()} ` +
+        'to its tarball'
+      return
+    }
+    const to = join(dir, 'plugins', id)
+    rmSync(to, { recursive: true, force: true })
+    mkdirSync(to, { recursive: true })
+    unpackTarballSync(readFileSync(tarball), to, { maxFiles: MAX_PLUGIN_FILES, maxBytes: MAX_PLUGIN_BYTES })
+    smokePlugins.planted.push(id)
+    console.log(`[smoke] planted ${tarball} -> ${to}`)
+  }
+}
+
+function smokePluginTarball(id: string): string | null {
+  const named = process.env[`RIGEE_SMOKE_PLUGIN_${id.toUpperCase()}`]
+  if (named) return existsSync(named) ? named : null
+  const checkout = join(__dirnameESM, '../../..', `rigee-plugin-${id}`)
+  if (!existsSync(checkout)) return null
+  const packed = readdirSync(checkout)
+    .filter((f) => f.startsWith(`rigee-plugin-${id}-`) && f.endsWith('.tgz'))
+    .map((f) => join(checkout, f))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return packed[0] ?? null
+}
+
+/**
  * The whole third-party path, end to end: discovered, refused, approved, loaded, tampered with.
  *
  * This is the only test that runs code the app did not ship. Every part of the mechanism it
@@ -5377,8 +5443,8 @@ function npmTarball(files: Record<string, Buffer>): Buffer {
  * needs no network, spends none of the real rate limit, and can serve releases GitHub would never
  * let anybody publish.
  *
- * The plugin is the example one, packed the way a release ships it. Six stages, each of which has
- * to fail if the one before it did not really happen:
+ * The plugin is the example one, packed the way a release ships it. Each stage has to fail if the
+ * one before it did not really happen:
  *
  *   1. Cancel in the dialog installs NOTHING: no plugin directory, nothing left in staging.
  *   2. Search through the plugins view: the warning sits above the results, a repository with the
@@ -5389,6 +5455,7 @@ function npmTarball(files: Record<string, Buffer>): Buffer {
  *   4. An update is offered, and taken: afterwards the NEW main half answers and the panel draws
  *      the NEW build — which is the module caches being stepped around, not merely files changing.
  *   5. Uninstall from the view takes it out of the rail and off the disk.
+ *   6. A tab whose viewer is not installed offers to find its plugin, and the search runs.
  */
 async function runInstallSmoke(): Promise<void> {
   const wc = shellWc()
@@ -5634,6 +5701,31 @@ async function runInstallSmoke(): Promise<void> {
     if (existsSync(join(pluginsDir, 'hello'))) return finish(false, 'uninstall-left-the-files')
     const sources = readFileSync(join(app.getPath('userData'), 'plugin-sources.json'), 'utf8')
     if (sources.includes('rigee-plugin-hello')) return finish(false, 'uninstall-left-the-source-record')
+
+    // 6. A tab whose viewer is not installed — a PDF from before the viewers left the app — offers
+    //    to find its plugin, and the button runs that search in the plugins view.
+    const offered = await inRenderer(`
+      const s = store.getState()
+      const ws = s.workspaces.find(w => w.id === '__scratch__')
+      s.setActiveWorkspace(ws.id)
+      s.openTab(ws.id, {
+        id: 'install-smoke-orphan', kind: 'editor', title: 'old.pdf', pinned: false,
+        filePath: '/tmp/old.pdf', repoId: null, readOnly: true, viewType: 'pdf.preview'
+      })
+      const find = await until(() => [...document.querySelectorAll('.btn')]
+        .find(b => b.textContent === 'Find a plugin on GitHub'))
+      if (!find) return fail('no-find-button-on-the-orphaned-tab', document.body.innerText.slice(0, 300))
+      find.click()
+      const input = await until(() => document.querySelector('.plugins__search-input'))
+      if (!input) return fail('plugins-view-not-shown')
+      if (!(await until(() => input.value === 'pdf' && document.querySelector('.plugins__market .plugins__row')))) {
+        return fail('search-not-run-for-the-plugin', input.value)
+      }
+      trail.push('orphaned pdf tab searched for: ' + input.value)
+    `)
+    trail.push(...(offered.trail ?? []))
+    if (!offered.ok) return finish(false, offered.stage ?? 'orphan', offered.extra)
+    if (!searches.at(-1)?.startsWith('pdf topic:rigee-plugin')) return finish(false, 'orphan-search-asked-for-something-else', searches)
 
     finish(true, 'done')
   } catch (err) {
@@ -6721,6 +6813,13 @@ app.whenReady().then(() => {
     reserved: reservedPluginIds(),
     appVersion: app.getVersion()
   })
+  // What a smoke mode planted is approved as the user would approve it, so the mode starts from a
+  // plugin that is installed and trusted — the state it means to test from.
+  for (const id of smokePlugins.planted) {
+    const refused = scan.rejected.find((r) => r.id === id)
+    const approved = refused ? { ok: false, reason: refused.reason } : approvePlugin(id)
+    if (!approved.ok) smokePlugins.problem ??= `the planted ${id} plugin was refused: ${approved.reason}`
+  }
   if (scan.found > 0) mark(`disk plugins scanned (${scan.found})`)
   registerPluginProtocol()
   registerMediaProtocol()

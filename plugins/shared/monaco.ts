@@ -1,12 +1,12 @@
 /**
  * Monaco, loaded once and themed once, for whichever plugins need it.
  *
- * Three do: the text editor, the source control diff, and the Markdown preview, which borrows its
- * tokenizers to colour code blocks. They live in different folders and load in different chunks,
- * so the loader has to sit somewhere they can all reach — `plugins/shared/` is that place, and it
- * is not a plugin. The shell reaches it in exactly one place, and only through a dynamic import:
- * `tokenizeCode` in src/renderer/src/plugins/code.ts, which lends the tokenizers to plugins from
- * disk. Nothing in the shell may import it statically.
+ * Two plugins do: the text editor and the source control diff. They live in different folders and
+ * load in different chunks, so the loader has to sit somewhere they can both reach —
+ * `plugins/shared/` is that place, and it is not a plugin. The shell reaches it in exactly one
+ * place, and only through a dynamic import: `tokenizeCode` in src/renderer/src/plugins/code.ts,
+ * which lends the tokenizers to plugins from disk — the Markdown preview colours its code blocks
+ * with them. Nothing in the shell may import it statically.
  *
  * MONACO MUST NEVER BE A TOP-LEVEL IMPORT. Measured on this project's stack: eager imports cost
  * +1230 ms to first paint, a 4,481 kB entry chunk and 58 MB of renderer output. The `await

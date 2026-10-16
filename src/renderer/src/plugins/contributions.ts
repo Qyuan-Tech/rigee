@@ -1,5 +1,6 @@
 import { Service, type Context } from 'cordis'
-import { viewNamespace, type PluginId, type ViewType } from '@rigee/plugin-api/manifest'
+import { viewNamespace, type ViewType } from '@rigee/plugin-api/manifest'
+import type { PluginContributionsService } from '@rigee/plugin-api/context'
 import {
   bind,
   type PluginEditorComponent,
@@ -11,12 +12,9 @@ import {
 } from './bindings'
 import { ownerOf } from './registry'
 
-declare module 'cordis' {
-  interface Context {
-    contributions: ContributionService
-    pluginId?: PluginId
-  }
-}
+// `ctx.contributions` and `ctx.pluginId` are declared on Context by @rigee/plugin-api (context.ts),
+// as the interface this class implements — so a plugin from another repository binds against the
+// same declaration the bundled ones do.
 
 /**
  * How a renderer half supplies the components its manifest promised.
@@ -31,7 +29,7 @@ declare module 'cordis' {
  * shell — a tab showing one falls back to the "no viewer" notice instead of rendering a closure
  * over a dead context.
  */
-export class ContributionService extends Service {
+export class ContributionService extends Service implements PluginContributionsService {
   constructor(ctx: Context) {
     super(ctx, 'contributions')
   }

@@ -1,95 +1,13 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { cpSync, createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
-import { extname, join, resolve, sep } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
 
 // Every override in this file is load-bearing and was established by measurement, not taste.
 // See docs/DEVELOPMENT.md before changing anything here.
-
-/**
- * pdf.js's runtime assets, at the same URL in dev and in the packaged app.
- *
- * pdfjs-dist is a devDependency (correctly: promoting it would drag 35 MB, including 243 MB of
- * @napi-rs/canvas prebuilds it never uses in a browser, into the production closure), so
- * node_modules simply does not exist at runtime. electron-builder packs `out/**` and nothing else,
- * which means anything the viewer fetches has to be emitted into out/renderer at build time.
- *
- * The result is one expression that works in both worlds: `new URL('pdfjs/', document.baseURI)` is
- * http://localhost:5173/pdfjs/ under `electron-vite dev` and
- * file:///…/app.asar/out/renderer/pdfjs/ in the packaged app — verified reading a .bcmap out of a
- * real asar, which Electron serves through file:// transparently, so no asarUnpack is needed.
- *
- * Only what the worker actually asks for is copied. Of pdfjs-dist's 1.5 MB wasm directory it wants
- * exactly three files; `quickjs-eval.wasm` (469 kB) belongs to PDF-JavaScript/XFA scripting, which
- * pdf.worker.mjs never references, and the *_nowasm_fallback.js pair (597 kB) is only reached when
- * WebAssembly instantiation fails — which it does not here: a module worker loaded from a URL gets
- * its own empty CSP, so it compiles WASM happily even though the document cannot.
- */
-function pdfjsAssets(): Plugin {
-  const pkg = resolve(__dirname, 'node_modules/pdfjs-dist')
-  const copies: [from: string, to: string][] = [
-    ['cmaps', 'cmaps'],
-    ['standard_fonts', 'standard_fonts'],
-    ['iccs', 'iccs'],
-    ['wasm/jbig2.wasm', 'wasm/jbig2.wasm'],
-    ['wasm/openjpeg.wasm', 'wasm/openjpeg.wasm'],
-    ['wasm/qcms_bg.wasm', 'wasm/qcms_bg.wasm'],
-    ['build/pdf.worker.min.mjs', 'pdf.worker.min.mjs']
-  ]
-  const MIME: Record<string, string> = {
-    '.mjs': 'text/javascript',
-    '.js': 'text/javascript',
-    '.wasm': 'application/wasm',
-    '.icc': 'application/vnd.iccprofile'
-  }
-  let outDir = resolve(__dirname, 'out/renderer')
-
-  return {
-    name: 'rigee:pdfjs-assets',
-    configResolved(config) {
-      outDir = config.build.outDir
-    },
-    // Dev serves straight out of node_modules rather than copying, so a pnpm update is picked up
-    // without a rebuild and the tree stays free of 3.5 MB of vendored binaries.
-    configureServer(server) {
-      server.middlewares.use('/pdfjs', (req, res, next) => {
-        const rel = decodeURIComponent((req.url ?? '/').split('?')[0]!).replace(/^\/+/, '')
-        const match = copies.find(([, to]) => rel === to || rel.startsWith(`${to}/`))
-        if (!match) return next()
-
-        // Containment, checked on the RESOLVED path. The url is decoded before it is matched —
-        // it has to be, cmap names are percent-encoded — so `cmaps/%2e%2e%2f%2e%2e%2f…` would
-        // otherwise walk straight out of node_modules and hand any file on disk to anything that
-        // can reach the dev server, which under this app includes a page open in a browser tab.
-        const root = resolve(pkg, match[0])
-        const file = resolve(root, rel.slice(match[1].length).replace(/^\/+/, ''))
-        if (file !== root && !file.startsWith(root + sep)) return next()
-        if (!existsSync(file) || !statSync(file).isFile()) return next()
-
-        res.setHeader('Content-Type', MIME[extname(file)] ?? 'application/octet-stream')
-        createReadStream(file).pipe(res)
-      })
-    },
-    writeBundle() {
-      for (const [from, to] of copies) {
-        const src = join(pkg, from)
-        // Fatal, not a warning. A missing asset breaks only specific documents and only in the
-        // packaged build — a renamed wasm file means JPEG2000 pages render blank, missing cmaps
-        // mean Chinese text does — so a warning in a 300-line build log is indistinguishable from
-        // success. Failing here is the only place it can still be cheap to notice.
-        if (!existsSync(src)) {
-          this.error(`pdfjs runtime asset missing: node_modules/pdfjs-dist/${from}`)
-        }
-        const dest = join(outDir, 'pdfjs', to)
-        mkdirSync(join(dest, '..'), { recursive: true })
-        cpSync(src, dest, { recursive: true })
-      }
-    }
-  }
-}
 
 /**
  * What a plugin loaded from disk may import by bare name, and where those names point.
@@ -305,6 +223,10 @@ const PLUGIN_API_ALIASES = [
     find: '@rigee/plugin-api/manifest',
     replacement: resolve(__dirname, 'packages/plugin-api/src/manifest.ts')
   },
+  {
+    find: '@rigee/plugin-api/context',
+    replacement: resolve(__dirname, 'packages/plugin-api/src/context.ts')
+  },
   { find: '@rigee/plugin-api', replacement: resolve(__dirname, 'packages/plugin-api/src/index.ts') }
 ]
 
@@ -354,10 +276,7 @@ export default defineConfig({
 
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
-    plugins: [react(), pdfjsAssets(), pluginRuntime()],
-    // build/pdf.mjs is one self-contained 860 kB ESM file with zero static imports. Pre-bundling
-    // it buys nothing and rewrites the /*@vite-ignore*/ dynamic import inside it.
-    optimizeDeps: { exclude: ['pdfjs-dist'] },
+    plugins: [react(), pluginRuntime()],
     // `root` is src/renderer, but the plugins live in plugins/ at the repo root — outside it. Vite's default
     // allowlist walks up to the workspace root and would usually cover that; saying so explicitly
     // means `pnpm dev` cannot start refusing to serve a plugin with "outside of Vite serving

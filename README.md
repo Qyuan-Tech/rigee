@@ -44,8 +44,8 @@ running your own shell.
   out below a *Cold* divider, with a checklist for removing them. Each row also counts the
   [terminals at work](#terminals-at-work) in it — an agent or a build printing — and, in green, the
   ones that have finished since you last looked; click a count to go to that terminal.
-- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, an image, a Markdown
-  preview, a diff, or a Chromium page. Mix them freely and drag to reorder; right-click any of them for Close, Close
+- **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, a diff, a Chromium page,
+  or whatever a plugin shows — a PDF, an image, a video, a Markdown preview. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
 - **Right** — source control, aware of every git repo in the workspace at once.
 
@@ -103,10 +103,10 @@ an app launched from Finder inherits almost none of it.
 | Live refresh — the panel updates when git runs in your own terminal | works |
 | HTTP auth prompt in browser tabs | works |
 | Restoring tabs, splits and browser pages on next launch | works |
-| PDF reader — continuous scrolling, text selection and search, outline, thumbnails | works |
-| Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan | works |
-| Video player — MP4, MOV, M4V, WebM, MKV, Ogg (H.264, HEVC, AV1, VP8, VP9); streamed from disk, so a long film starts at once and seeks anywhere | works |
-| Markdown preview — right-click a `.md` for *Open Preview*: GitHub-flavoured, code coloured, redrawn as the file changes on disk, pictures from the web only when asked | works |
+| PDF reader — continuous scrolling, text selection and search, outline, thumbnails — the [PDF plugin](https://github.com/Qyuan-Tech/rigee-plugin-pdf) | works |
+| Image viewer — PNG, JPEG, GIF, WebP, AVIF, BMP, ICO; fit, zoom, pan — the [image plugin](https://github.com/Qyuan-Tech/rigee-plugin-image) | works |
+| Video player — MP4, MOV, M4V, WebM, MKV, Ogg (H.264, HEVC, AV1, VP8, VP9); streamed from disk, so a long film starts at once and seeks anywhere — the [video plugin](https://github.com/Qyuan-Tech/rigee-plugin-video) | works |
+| Markdown preview — right-click a `.md` for *Open Preview*: GitHub-flavoured, code coloured, redrawn as the file changes on disk, pictures from the web only when asked — the [Markdown plugin](https://github.com/Qyuan-Tech/rigee-plugin-markdown) | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
 | Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
 | Right-click a folder at the top of the explorer — Remove Folder from Workspace, leaving it on disk | works |
@@ -123,7 +123,7 @@ an app launched from Finder inherits almost none of it.
 | Explorer selection — click, Cmd/Ctrl-click and Shift-click, the arrows with Shift, Cmd/Ctrl+A | works |
 | Drag files in from Finder or Explorer to copy them; drag inside the tree to move, holding Option (Ctrl elsewhere) to copy | works |
 | Tabs follow a file renamed or moved in the explorer, and close when it is deleted there | works |
-| Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
+| Plugins — the editor, explorer, search, source control and the browser are plugins that ship with Rigee; the PDF, image, video and Markdown viewers are plugins installed from GitHub | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
 | Find plugins on GitHub, install, update and uninstall them from the plugins view | works |
@@ -133,12 +133,16 @@ an app launched from Finder inherits almost none of it.
 
 Rigee's core is a shell: a window, workspaces, a tab framework, terminals and persistence. The
 features are plugins, and they are not a second-class extension mechanism bolted on afterwards —
-the text editor, the PDF reader, the image viewer, the video player, the Markdown preview, source
-control and the browser are each a folder under `plugins/`, loaded on demand through two IPC channels and a declarative manifest.
+the text editor, the explorer, search, source control and the browser are each a folder under
+`plugins/`, loaded on demand through two IPC channels and a declarative manifest. The viewers —
+[PDF](https://github.com/Qyuan-Tech/rigee-plugin-pdf), [images](https://github.com/Qyuan-Tech/rigee-plugin-image),
+[video](https://github.com/Qyuan-Tech/rigee-plugin-video) and the
+[Markdown preview](https://github.com/Qyuan-Tech/rigee-plugin-markdown) — are plugins in repositories
+of their own, installed from the plugins view.
 
 That means the app you start has none of them running. Open a `.ts` file and the text editor loads;
-open a `.pdf` and 437 kB of pdf.js arrives for the first time; never open one and it costs nothing.
-`pnpm perf:check` fails the build if that stops being true.
+open a browser tab and the browser plugin arrives for the first time; never open one and it costs
+nothing. `pnpm perf:check` fails the build if that stops being true.
 
 The activity bar down the left edge is built from manifests alone, so the icons are there before
 any plugin has loaded and pressing one is what fetches it. The plugins view behind the puzzle icon
@@ -299,7 +303,8 @@ acting on the tree; double-click to start typing in the file. A file renamed or 
 takes its tabs with it, and one deleted there closes them. A file with unsaved changes is not
 renamed or moved until they are saved or undone, and deleting one says that they will be lost.
 
-A Markdown file's menu starts with *Open Preview*: the file rendered, GitHub-flavoured, in a tab
+With the [Markdown plugin](https://github.com/Qyuan-Tech/rigee-plugin-markdown) installed, a
+Markdown file's menu starts with *Open Preview*: the file rendered, GitHub-flavoured, in a tab
 beside its own, and redrawn as it changes on disk — so a plan an agent is writing can be watched as
 it grows. Pictures from the web are not fetched until you press *Show remote images*.
 

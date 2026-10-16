@@ -15,7 +15,6 @@
  *   - the entry chunk stays under its budget
  *   - no heavy library's fingerprint appears in the entry chunk
  *   - each heavy library still exists as its own separately-loaded chunk (i.e. it is lazy, not gone)
- *   - the pdf.js runtime assets were emitted, or CJK PDFs render blank in the packaged app only
  *
  * The budget is deliberately close to the measured number. If a change genuinely needs more, move
  * the number and say why in the commit — that is the point of it being here rather than in
@@ -101,7 +100,6 @@ if (entry) {
  */
 const HEAVY: { name: string; fingerprint: RegExp }[] = [
   { name: 'monaco-editor', fingerprint: /vs\/editor\/editor\.main|monaco-aria-container/ },
-  { name: 'pdf.js', fingerprint: /GlobalWorkerOptions|PDFDocumentLoadingTask/ },
   { name: 'xterm', fingerprint: /xterm-helper-textarea|xterm-rows/ },
   { name: 'cordis', fingerprint: /cannot get property .* without inject/ }
 ]
@@ -117,34 +115,6 @@ for (const { name, fingerprint } of HEAVY) {
   // Present but elsewhere. If a library vanished entirely the first assertion would pass for the
   // wrong reason — a plugin that silently failed to build looks exactly like a lazy one.
   check(`${name} has its own lazily-loaded chunk`, owners.length > 0, owners.join(', ') || 'MISSING')
-}
-
-/**
- * pdf.js needs these at runtime and node_modules is not in the packaged app.
- *
- * Named FILES, not the directories that contain them. A version bump that renames
- * `wasm/openjpeg.wasm` leaves `out/renderer/pdfjs/wasm` standing — created by the sibling copy
- * that did succeed — so a directory check reports green while JPEG2000 pages render blank in the
- * packaged build and nowhere else. The counts are here for the same reason: an empty `cmaps/`
- * would otherwise pass, and the symptom is Chinese text quietly disappearing.
- */
-const PDF_ASSETS = [
-  'pdfjs/pdf.worker.min.mjs',
-  'pdfjs/wasm/jbig2.wasm',
-  'pdfjs/wasm/openjpeg.wasm',
-  'pdfjs/wasm/qcms_bg.wasm',
-  'pdfjs/iccs/CGATS001Compat-v2-micro.icc',
-  'pdfjs/cmaps/UniGB-UCS2-H.bcmap',
-  'pdfjs/cmaps/UniCNS-UCS2-H.bcmap',
-  'pdfjs/standard_fonts/LiberationSans-Regular.ttf'
-]
-for (const asset of PDF_ASSETS) {
-  check(`pdf.js runtime asset emitted: ${asset}`, existsSync(join(OUT, asset)))
-}
-
-for (const [dir, least] of [['pdfjs/cmaps', 100], ['pdfjs/standard_fonts', 10]] as const) {
-  const count = existsSync(join(OUT, dir)) ? readdirSync(join(OUT, dir)).length : 0
-  check(`${dir} has at least ${least} files`, count >= least, `${count}`)
 }
 
 console.log(`\n${checks - failures}/${checks} startup checks passed`)

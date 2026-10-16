@@ -8,6 +8,7 @@ import {
   tabComponent,
   viewComponent
 } from '../plugins/bindings'
+import { searchPluginsFor } from '../plugins/market'
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import {
   fallbackViewType,
@@ -83,13 +84,16 @@ export function PluginEditorPane({ tab }: { tab: EditorTab }): React.ReactElemen
 
   if (!viewType || !ownerOf(viewType)) {
     // A tab naming a viewer that no longer exists. Falling through to the text editor would be
-    // worse than saying so: a PDF read as UTF-8 is a screen of replacement characters.
+    // worse than saying so: a PDF read as UTF-8 is a screen of replacement characters. Most often
+    // its plugin is simply not installed — the viewers left the app for GitHub, and a tab from
+    // before that remembers `pdf.preview` — so the way to get it back is one click away.
     return (
       <Notice>
         <div>
           No viewer for {viewType ? <code>{viewType}</code> : 'this file'}.
-          <div style={{ marginTop: 10 }}>
+          <div style={{ marginTop: 10, display: 'flex', gap: 6, justifyContent: 'center' }}>
             <button className="btn" onClick={openAsText}>Open as text</button>
+            {viewType && <FindPluginButton viewType={viewType} />}
           </div>
         </div>
       </Notice>
@@ -136,7 +140,16 @@ export function PluginTabPane({ tab }: { tab: CustomTab }): React.ReactElement {
   )
 
   if (!ownerOf(tab.viewType)) {
-    return <Notice>No plugin provides <code>{tab.viewType}</code> any more.</Notice>
+    return (
+      <Notice>
+        <div>
+          No plugin provides <code>{tab.viewType}</code> any more.
+          <div style={{ marginTop: 10 }}>
+            <FindPluginButton viewType={tab.viewType} />
+          </div>
+        </div>
+      </Notice>
+    )
   }
   if (error) return <Notice tone="error">{error}</Notice>
 
@@ -144,6 +157,21 @@ export function PluginTabPane({ tab }: { tab: CustomTab }): React.ReactElement {
   if (!Body) return <div style={{ height: '100%', width: '100%' }} />
 
   return <Body tabId={tab.id} state={tab.state} patchState={patchState} setTitle={setTitle} />
+}
+
+/**
+ * Search GitHub for the plugin a view type belongs to: `pdf.preview` is the plugin `pdf`, so the
+ * repository to find is `rigee-plugin-pdf`. Opens the plugins view with the results, under the
+ * same warning every search is shown with.
+ */
+function FindPluginButton({ viewType }: { viewType: string }): React.ReactElement | null {
+  const id = viewType.slice(0, viewType.indexOf('.'))
+  if (!id) return null
+  return (
+    <button className="btn" onClick={() => searchPluginsFor(id)}>
+      Find a plugin on GitHub
+    </button>
+  )
 }
 
 /**

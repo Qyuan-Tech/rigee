@@ -1,24 +1,11 @@
 import { Service, type Context } from 'cordis'
-import { commandNamespace, type PluginId } from '@rigee/plugin-api/manifest'
+import { commandNamespace } from '@rigee/plugin-api/manifest'
+import type { PluginCommandsService } from '@rigee/plugin-api/context'
 
-declare module 'cordis' {
-  interface Context {
-    commands: CommandService
-    /**
-     * Which plugin this Context belongs to.
-     *
-     * Set by the host on each plugin's own Context, so a service can tell who is calling it
-     * without the caller having to say. cordis rebinds `this.ctx` inside a service method to the
-     * *consumer's* context rather than the one the service was provided on, which is what makes
-     * this readable at all.
-     *
-     * The `?` is a TypeScript fiction over a Proxy that THROWS on an unknown property read
-     * (`cannot get property "pluginId" without inject`). The host installs an accessor returning
-     * undefined so the read is safe; without it every guard below would be unreachable.
-     */
-    pluginId?: PluginId
-  }
-}
+// `ctx.commands` and `ctx.pluginId` are declared on Context by @rigee/plugin-api (context.ts), as
+// the interface this class implements — so a plugin from another repository types against the same
+// declaration. `pluginId` is what makes the guards below reachable: cordis rebinds `this.ctx`
+// inside a service method to the CALLING plugin's context, which the host stamped with its id.
 
 export type CommandHandler = (payload: unknown) => unknown | Promise<unknown>
 
@@ -37,7 +24,7 @@ export type CommandHandler = (payload: unknown) => unknown | Promise<unknown>
  * fiber sits in PENDING, apply never runs, and the symptom surfaces later as "unknown plugin
  * command". The host asserts the fiber reached ACTIVE to turn that back into a real error.
  */
-export class CommandService extends Service {
+export class CommandService extends Service implements PluginCommandsService {
   private handlers = new Map<string, CommandHandler>()
 
   constructor(ctx: Context) {

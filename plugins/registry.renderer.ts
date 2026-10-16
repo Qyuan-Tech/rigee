@@ -5,8 +5,8 @@ import type { PluginId } from '@rigee/plugin-api/manifest'
  * Where the renderer finds each plugin's renderer half.
  *
  * Every entry is a dynamic import, so Rollup gives each plugin its own chunk and the startup
- * graph stays exactly what it is today: one script, one modulepreload. Opening a PDF fetches
- * 437 kB of pdf.js; never opening one costs zero bytes and zero milliseconds.
+ * graph stays exactly what it is today: one script, one modulepreload. Opening a browser tab fetches
+ * the browser plugin; never opening one costs zero bytes and zero milliseconds.
  *
  * Do NOT name any of these chunks in `manualChunks`. Doing so pulls them into the entry's static
  * graph and Vite emits a modulepreload for them — the documented regression that once took
@@ -16,10 +16,6 @@ import type { PluginId } from '@rigee/plugin-api/manifest'
  * modules it names are .tsx.
  */
 export const RENDERER_HALVES: Readonly<Record<PluginId, () => Promise<{ default: Plugin }>>> = {
-  pdf: () => import('./pdf/renderer'),
-  image: () => import('./image/renderer'),
-  video: () => import('./video/renderer'),
-  markdown: () => import('./markdown/renderer'),
   scm: () => import('./scm/renderer'),
   browser: () => import('./browser/renderer'),
   explorer: () => import('./explorer/renderer'),

@@ -59,16 +59,18 @@ const plugin: Plugin = {
 export default plugin
 ```
 
-## Three entry points
+## Four entry points
 
 | import | contains | realm |
 |---|---|---|
 | `@rigee/plugin-api` | everything | renderer half |
 | `@rigee/plugin-api/manifest` | the declarative contract only — no React, no DOM | either |
 | `@rigee/plugin-api/data` | the shared data types only | either |
+| `@rigee/plugin-api/context` | types only: what `ctx.contributions`, `ctx.rpc`, `ctx.commands` and `ctx.shell` are | either |
 
 The main half must not import the root entry: it would pull React into a process that cannot
-render.
+render. It gets the `ctx` typings with `import type {} from '@rigee/plugin-api/context'`; a plugin
+with a renderer half has them already, through the root entry.
 
 ## Building
 

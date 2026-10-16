@@ -1,13 +1,10 @@
 import { Service, type Context } from 'cordis'
 import { commandNamespace, type PluginId } from '@rigee/plugin-api/manifest'
+import type { PluginRpcService as PluginRpcContract } from '@rigee/plugin-api/context'
 import { onEvent, rpc } from '../ipc'
 
-declare module 'cordis' {
-  interface Context {
-    rpc: PluginRpcService
-    pluginId?: PluginId
-  }
-}
+// `ctx.rpc` and `ctx.pluginId` are declared on Context by @rigee/plugin-api (context.ts), as the
+// interface this class implements.
 
 type Listener = (payload: unknown) => void
 
@@ -51,7 +48,7 @@ function wire(): void {
  * bare `const invoke = ctx.rpc.invoke` does not merely lose the speed, it THROWS — the shadow is
  * only substituted when the receiver is the proxy itself.
  */
-export class PluginRpcService extends Service {
+export class PluginRpcService extends Service implements PluginRpcContract {
   constructor(ctx: Context) {
     super(ctx, 'rpc')
   }

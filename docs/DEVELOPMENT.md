@@ -23,6 +23,9 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:markdown` | right-clicks a README in the explorer, opens its preview from the menu, and asserts what was drawn — GitHub's anchors, a table, a task list, an alert, front matter, code coloured without losing a tab — and what was not: no script ran, no style, no borrowed class, no bare id. Then pictures: one on disk shown, one on the web fetched only when asked (counted by a server it runs itself), one on another machine's share and one that is a symlink to /dev/zero refused, one written after the document shown at its next change. Links followed without the window navigating; closing a file's unsaved text tab with its preview open still asks; a thousand-column table and a link used 20,000 times stopped before they reach the page; and the file changing, the reader's place kept through redraws and tab switches, and its whole folder deleted and put back. `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
+| `pnpm smoke:install` | installs from a stand-in for GitHub on localhost: cancel, search, install, a checksum that does not match, an update taken live, uninstall |
+| `pnpm plugins:selftest` | the plugin convention, version order, and hostile archives thrown at the tarball reader; reads a real `npm pack` |
+| `pnpm pack:plugin-api` | compiles and packs `@rigee/plugin-api` into `release/`, as a tagged release attaches it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
 | `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split buttons: copy a file and move a terminal, beside and below, nest a row in a column, and drag the divider across it |
 | `pnpm smoke:persist` | builds tabs, splits, a two-group row and a group stacked under one, then reads back what reached disk |
@@ -39,6 +42,14 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
+
+**Four of the smoke modes drive plugins that no longer ship with the app** — `smoke:pdf`,
+`smoke:video`, `smoke:markdown`, and `smoke:plugins`, which uses the PDF and image viewers as its
+subjects. Each installs what it needs before the window opens, from the tarball the plugin's release
+would carry, through the same reader an install uses: `RIGEE_SMOKE_PLUGIN_<ID>` names it, or else the
+newest `rigee-plugin-<id>-*.tgz` in a checkout of `Qyuan-Tech/rigee-plugin-<id>` beside this
+repository — run `pnpm release:pack` there. Without one the mode fails and says so. The plugins
+declare `minAppVersion`, so between releases a mode can refuse them until `version` here catches up.
 
 ### Fixtures for the smoke modes
 
@@ -116,10 +127,6 @@ src/
 plugins/       the features, one folder each — OUTSIDE src/, see below
   text-editor/   Monaco, and the editor of last resort for every file
   explorer/      the file tree, and a watcher that keeps it current
-  pdf/           the PDF reader
-  image/         the image viewer
-  video/         the video player, streaming through the shell's media scheme
-  markdown/      the Markdown preview, offered in a file's menu and kept current as the file changes
   scm/           git: status, staging by line, commits, diffs
   search/        find in every file of the workspace
   browser/       Chromium tabs as native WebContentsViews
@@ -130,6 +137,10 @@ examples/
   hello-plugin/  a worked third-party plugin, hand-written ESM, no build step
 scripts/       self-tests, the startup budget check and the local installer
 ```
+
+The viewers are plugins in repositories of their own, built against `@rigee/plugin-api` like anyone
+else's and installed from the plugins view: `Qyuan-Tech/rigee-plugin-pdf`, `-image`, `-video` and
+`-markdown`.
 
 `plugins/` sits beside `src/` rather than inside it, and that is a statement of intent: a plugin is
 not part of the application's source, it is something the application loads. The ones here are
@@ -147,8 +158,9 @@ the plugin section below.
 ## Plugins
 
 The shell is a window, a workspace model, a tab framework, terminals, persistence and an IPC
-spine. Everything else is a plugin: the text editor, the PDF reader, source control and the
-browser all live in `plugins/<id>/` and reach the shell only through `@rigee/plugin-api`
+spine. Everything else is a plugin: the text editor, source control and the browser all live in
+`plugins/<id>/`, the viewers in repositories of their own, and all reach the shell only through
+`@rigee/plugin-api`
 (`packages/plugin-api/`). The framework underneath is
 [cordis](https://github.com/cordiverse/cordis).
 
@@ -156,7 +168,7 @@ A plugin is up to two halves, because Electron leaves no choice — a PDF render
 renderer and the bytes it renders can only be read in main:
 
 ```
-plugins/pdf/
+plugins/scm/
   manifest.ts          what exists: id, version, contributions. Plain data, read in both realms.
   protocol.ts          the command and event types the two halves share. Realm-free.
   main/index.ts        default-exports a cordis Plugin. Node only.
@@ -419,34 +431,22 @@ the services are reachable code rather than decoration.
 
 - `index.html` gains a second `<link rel="modulepreload">`
 - the entry chunk grows past its budget (276 kB measured before the plugin system)
-- Monaco, pdf.js, xterm or cordis appear **in** the entry chunk, or stop having a chunk of their own
-- pdf.js's runtime assets are missing from `out/renderer/pdfjs/`
+- Monaco, xterm or cordis appear **in** the entry chunk, or stop having a chunk of their own
 
-The first three exist because a plugin system makes one specific regression trivially easy: a
+All three exist because a plugin system makes one specific regression trivially easy: a
 single static import from the shell into a plugin pulls that plugin's whole chunk into the entry's
 static graph, and nothing warns. It is the same failure that listing `monaco-editor` in
 `manualChunks` once produced — dom-ready went from 0.83 s to 14.6 s.
 
-### pdf.js, and two traps that only fire in the packaged app
+### pdf.js
 
-**The worker must be `workerSrc`, pointing at a copied asset — not `workerPort`, and not Vite's
-`?worker`.** With a port, `PDFWorker.create` caches one worker per port in a WeakMap: two open PDF
-tabs share it, closing the first breaks the second, and because `#webWorker` is null in that path
-`destroy()` never calls `terminate()` — one leaked 1.2 MB worker per document. With `workerSrc`,
-pdf.js creates a dedicated worker per document and tears it down with the loading task.
-
-**The runtime assets do not ship by themselves.** `pdfjs-dist` is a devDependency (promoting it
-would drag 35 MB, plus 243 MB of `@napi-rs/canvas` prebuilds it never uses, into the production
-closure), so `node_modules` is gone at runtime and `electron-builder` packs `out/**` and nothing
-else. A small Vite plugin in `electron.vite.config.ts` copies the worker, `cmaps/`,
-`standard_fonts/`, `iccs/` and the three `wasm` files the worker actually asks for into
-`out/renderer/pdfjs/`, and serves the same URLs in dev. **`cMapUrl` is what makes Chinese PDFs
-work**: any CIDFont using a predefined Adobe CMap renders blank or garbled without it, and the only
-symptom is a `warn()` inside the worker.
-
-Also: pass `useWorkerFetch: true` explicitly. pdf.js infers it with `/https?:/.test(protocol)`,
-which is true in dev and false under a packaged `file://` renderer — two different code paths — and
-`false` additionally hard-disables ICC colour management.
+pdf.js left with the PDF viewer, which now ships it — byte for byte as pdf.js publishes it — with
+its worker, CMaps, fonts and WebAssembly decoders inside its own release. The traps that shaped how
+it is loaded (`workerSrc`, never `workerPort`; `cMapUrl`, or Chinese PDFs render blank;
+`useWorkerFetch`, stated rather than inferred) are written down where they apply, in that
+repository's `src/renderer/pdfjs.ts`. What the shell provides for it is `workerUrl`
+(`src/renderer/src/plugins/workers.ts`), because a window will not start a worker from a plugin's
+own URL.
 
 ### Editor groups
 

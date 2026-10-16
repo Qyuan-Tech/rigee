@@ -1,16 +1,12 @@
 import { Service, type Context } from 'cordis'
-import type { BrowserWindow, MessageBoxOptions, WebContents } from 'electron'
+import type { BrowserWindow, WebContents } from 'electron'
 import type { PluginEventEnvelope } from '@rigee/plugin-api/manifest'
+import type { AskOptions, PluginShellService } from '@rigee/plugin-api/context'
 import { serveMedia } from '../media'
 
-declare module 'cordis' {
-  interface Context {
-    shell: ShellService
-  }
-}
-
-/** A question for `ShellService.ask`: Electron's message box, cut down to what a question needs. */
-export type AskOptions = Pick<MessageBoxOptions, 'type' | 'message' | 'detail' | 'buttons' | 'defaultId' | 'cancelId'>
+// `ctx.shell` is declared on Context by @rigee/plugin-api (context.ts), as the interface this class
+// implements, and so is the question `ask` takes.
+export type { AskOptions }
 
 /**
  * What a main-side plugin is given of the shell: the window, a way to push to the renderer, and a
@@ -39,7 +35,7 @@ export type AskOptions = Pick<MessageBoxOptions, 'type' | 'message' | 'detail' |
  * so a detached function reference has no `this` at all. Bind at activation for anything on a hot
  * path — `emit` fires on every filesystem change in every watched repo.
  */
-export class ShellService extends Service {
+export class ShellService extends Service implements PluginShellService {
   constructor(
     ctx: Context,
     private readonly deps: {

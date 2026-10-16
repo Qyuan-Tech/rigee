@@ -3,6 +3,7 @@ import { PLUGIN_MANIFESTS } from '@plugins/index'
 import { CollapseLeftIcon } from '../icons'
 import { activatedPlugins, deactivatePlugin } from '../plugins/activate'
 import { disabledPlugins, setDisabledPlugins, setDiskPlugins } from '../plugins/registry'
+import { onPluginSearch } from '../plugins/market'
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import { rpc } from '../ipc'
 import { PERMISSION_LABELS, type PluginContributions } from '@rigee/plugin-api/manifest'
@@ -101,17 +102,27 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
    * Ask GitHub. On Enter, never per keystroke: anonymous search is ten calls a minute, and a search
    * box that spent one per letter would be out of them before the first word was typed.
    */
-  const search = useCallback(async () => {
+  const search = useCallback(async (words: string) => {
     setSearching(true)
     try {
-      setResults(await rpc['plugins:search']({ query }))
+      setResults(await rpc['plugins:search']({ query: words }))
       setError(null)
     } catch (e) {
       setError(errorText(e))
     } finally {
       setSearching(false)
     }
-  }, [query])
+  }, [])
+
+  // A tab whose viewer is missing asks for its plugin by name: "Find a plugin on GitHub".
+  useEffect(
+    () =>
+      onPluginSearch((words) => {
+        setQuery(words)
+        void search(words)
+      }),
+    [search]
+  )
 
   /**
    * Install or update. Everything that matters happens in main — download, checks, and the
@@ -237,7 +248,7 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
           className="plugins__search"
           onSubmit={(e) => {
             e.preventDefault()
-            void search()
+            void search(query)
           }}
         >
           <input

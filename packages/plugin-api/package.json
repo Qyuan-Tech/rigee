@@ -18,6 +18,10 @@
     "./data": {
       "types": "./dist/data.d.ts",
       "default": "./dist/data.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "default": "./dist/context.js"
     }
   },
   "files": [

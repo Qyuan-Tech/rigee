@@ -33,7 +33,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { gunzip } from 'node:zlib'
+import { gunzip, gunzipSync } from 'node:zlib'
 
 const gunzipAsync = promisify(gunzip)
 
@@ -62,18 +62,40 @@ export async function unpackTarball(
 ): Promise<{ files: number; bytes: number }> {
   let tar: Buffer
   try {
-    tar = await gunzipAsync(gz, {
-      // Headers and padding are on top of the files themselves: a header block per entry, a
-      // partial block per file, a pax header for each long path, and up to 20 blocks of trailer.
-      maxOutputLength: limits.maxBytes + limits.maxFiles * 3 * BLOCK + 64 * BLOCK
-    })
+    tar = await gunzipAsync(gz, { maxOutputLength: inflateCeiling(limits) })
   } catch (err) {
-    if (err instanceof RangeError || (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
-      throw new Error(`the archive unpacks to more than ${limits.maxBytes} bytes`)
-    }
-    throw new Error(`the archive is not valid gzip (${message(err)})`)
+    throw inflateError(err, limits)
   }
   return writeEntries(tar, resolve(dest), limits)
+}
+
+/**
+ * The same, blocking. Only for the smoke modes, which plant plugins before the app is ready and
+ * have nothing to keep responsive; an install from the plugins view uses the asynchronous one, so
+ * inflating a large plugin never stalls the main process.
+ */
+export function unpackTarballSync(gz: Buffer, dest: string, limits: UnpackLimits): { files: number; bytes: number } {
+  let tar: Buffer
+  try {
+    tar = gunzipSync(gz, { maxOutputLength: inflateCeiling(limits) })
+  } catch (err) {
+    throw inflateError(err, limits)
+  }
+  return writeEntries(tar, resolve(dest), limits)
+}
+
+/**
+ * The most a plugin's tarball may inflate to. Headers and padding are on top of the files
+ * themselves: a header block per entry, a partial block per file, a pax header for each long path,
+ * and up to 20 blocks of trailer.
+ */
+const inflateCeiling = (limits: UnpackLimits): number => limits.maxBytes + limits.maxFiles * 3 * BLOCK + 64 * BLOCK
+
+function inflateError(err: unknown, limits: UnpackLimits): Error {
+  if (err instanceof RangeError || (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
+    return new Error(`the archive unpacks to more than ${limits.maxBytes} bytes`)
+  }
+  return new Error(`the archive is not valid gzip (${message(err)})`)
 }
 
 function writeEntries(

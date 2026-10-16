@@ -134,7 +134,7 @@ export class PluginHost {
     // `browser:create` build a fresh native view during shutdown, which is exactly the "live view
     // at quit time" that `pnpm smoke:quit` exists to prevent.
     if (this.disposed) throw new Error(`plugin host is shutting down, refusing ${command}`)
-    return await this.root.commands.dispatch(command, payload)
+    return await this.registry().dispatch(command, payload)
   }
 
   /**
@@ -203,9 +203,17 @@ export class PluginHost {
     return [...this.fibers.keys()].sort()
   }
 
+  /**
+   * The command service as the shell's own class. Plugins see `ctx.commands` as the public
+   * interface, which registers and does nothing else; dispatching is the host's alone.
+   */
+  private registry(): CommandService {
+    return this.root.commands as CommandService
+  }
+
   /** Every command any active plugin has registered. */
   commands(): string[] {
-    return this.root.commands?.names() ?? []
+    return this.root.commands ? this.registry().names() : []
   }
 
   /**

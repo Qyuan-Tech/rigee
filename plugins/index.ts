@@ -1,13 +1,9 @@
 import type { PluginManifest } from '@rigee/plugin-api/manifest'
 import { manifest as browser } from './browser/manifest'
 import { manifest as explorer } from './explorer/manifest'
-import { manifest as image } from './image/manifest'
-import { manifest as markdown } from './markdown/manifest'
-import { manifest as pdf } from './pdf/manifest'
 import { manifest as scm } from './scm/manifest'
 import { manifest as search } from './search/manifest'
 import { manifest as textEditor } from './text-editor/manifest'
-import { manifest as video } from './video/manifest'
 
 /**
  * Every plugin the app ships with.
@@ -22,4 +18,4 @@ import { manifest as video } from './video/manifest'
  * Order is the tie-break for equal-priority editor contributions, so it is meaningful: the text
  * editor is last because it is the fallback.
  */
-export const PLUGIN_MANIFESTS: readonly PluginManifest[] = [pdf, image, video, markdown, scm, browser, explorer, search, textEditor]
+export const PLUGIN_MANIFESTS: readonly PluginManifest[] = [scm, browser, explorer, search, textEditor]
