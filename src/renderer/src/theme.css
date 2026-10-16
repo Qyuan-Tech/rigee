@@ -489,6 +489,128 @@ textarea:focus {
   color: var(--fg-muted);
 }
 
+.plugins__link:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---- Finding plugins on GitHub ---- */
+
+.plugins__search {
+  padding: 4px 10px 8px;
+}
+
+/* The base input rule draws the box; this only makes it fill the panel. */
+.plugins__search-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+}
+
+.plugins__market {
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/*
+ * Above every result list, and quieter than the trust prompt but not invisible: it is the honest
+ * description of where the list comes from, and a list without it reads like a curated store.
+ */
+.plugins__notice {
+  margin: 0 10px 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--git-modified, #b58900);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--git-modified, #b58900) 6%, transparent);
+}
+
+.plugins__notice code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.plugins__empty {
+  padding: 4px 10px 10px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.plugins__section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 10px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-faint);
+}
+
+.plugins__section .plugins__link {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.plugins__repo {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.plugins__repo:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.plugins__badge {
+  font-size: 9px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  line-height: 13px;
+}
+
+.plugins__stars {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.plugins__install {
+  margin-top: 6px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-raised, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.plugins__install:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.plugins__install:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.plugins__note {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+
 .center {
   flex: 1 1 auto;
   display: flex;

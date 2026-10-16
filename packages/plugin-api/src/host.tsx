@@ -102,6 +102,19 @@ export interface FileHandlers {
   discard: () => Promise<void>
 }
 
+/**
+ * One run of a line of code that tokenises as one thing: where it starts, and what it is.
+ *
+ * `type` is a Monarch token type, as the text editor's tokenizers name them — `keyword.ts`,
+ * `string.escape.js`, `attribute.value.html`. The first segment is the kind; the last is the
+ * language and rarely matters.
+ */
+export interface CodeToken {
+  /** In UTF-16 code units from the start of the line. */
+  offset: number
+  type: string
+}
+
 /** What `pluginTabs` reports about one of a plugin's own tabs. */
 /**
  * One row of a context menu a plugin asks the shell to show: a command, or a separator. Plain data;
@@ -227,6 +240,12 @@ export interface ShellHost {
   readFile: (path: string) => Promise<{ content: string; truncated: boolean; tooLarge: boolean; notUtf8?: boolean }>
   writeFile: (path: string, content: string) => Promise<void>
   listDir: (path: string) => Promise<FileStat[]>
+
+  // --- code ---------------------------------------------------------------
+  tokenizeCode: (text: string, language: string) => Promise<CodeToken[][] | null>
+
+  // --- workers ------------------------------------------------------------
+  workerUrl: (script: string | URL) => string
 
   // --- UI -----------------------------------------------------------------
   /**
@@ -508,6 +527,38 @@ export const writeFile = (path: string, content: string): Promise<void> =>
 
 /** Needs `files:read`. */
 export const listDir = (path: string): Promise<FileStat[]> => shell().listDir(path)
+
+/**
+ * Tokenise code with the text editor's own tokenizers: the tokens of each line, in order, or null
+ * when no language goes by that name. The name may be a language id, an alias or an extension —
+ * `ts`, `typescript` and `TypeScript` all find TypeScript — so a Markdown fence's word can be
+ * passed as it is.
+ *
+ * The tokens' text is the caller's: slice each line at the offsets. That is the point of asking
+ * for tokens rather than coloured HTML — HTML from the editor writes spaces as no-break spaces, so
+ * code copied out of it would not be the code that was written.
+ *
+ * Loads the editor's tokenizers the first time, which is megabytes: call it for code that is about
+ * to be shown, not speculatively. Since Rigee 0.0.1-alpha.6.
+ */
+export const tokenizeCode = (text: string, language: string): Promise<CodeToken[][] | null> =>
+  shell().tokenizeCode(text, language)
+
+/**
+ * The URL to start a Web Worker from, for a script that ships with this plugin.
+ *
+ * A window may only start a worker from its own origin, and a plugin's files are served from
+ * another — `rigee-plugin://` — so `new Worker(new URL('./x.js', import.meta.url))` is refused.
+ * Pass the same URL here instead and start the worker from what comes back, as a module worker:
+ *
+ *   new Worker(workerUrl(new URL('./parse.worker.js', import.meta.url)), { type: 'module' })
+ *
+ * The script must be self-contained: a worker has no import map, so `react` and this package
+ * cannot be imported from inside one. Messages posted before the script has loaded are held until
+ * it has, and then delivered. The worker gets no Content Security Policy of its own, so it may
+ * compile WebAssembly, which the window may not. Since Rigee 0.0.1-alpha.6.
+ */
+export const workerUrl = (script: string | URL): string => shell().workerUrl(script)
 
 /**
  * The shell's "this pane has nothing to show" state.

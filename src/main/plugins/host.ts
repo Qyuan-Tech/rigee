@@ -81,8 +81,13 @@ export class PluginHost {
    */
   private disabled: ReadonlySet<PluginId>
 
+  /**
+   * @param loaders asked on every activation rather than once, because the set changes while the
+   *   app runs: a plugin installed from GitHub has to be startable without a relaunch, and one
+   *   uninstalled must stop being startable.
+   */
   constructor(
-    private readonly loaders: Readonly<Record<PluginId, MainPluginLoader>>,
+    private readonly loaders: () => Readonly<Record<PluginId, MainPluginLoader>>,
     deps: PluginHostDeps,
     disabled: Iterable<PluginId> = []
   ) {
@@ -145,7 +150,7 @@ export class PluginHost {
     const existing = this.activations.get(id)
     if (existing) return existing
 
-    const load = this.loaders[id]
+    const load = this.loaders()[id]
     // Not an error worth distinguishing from an unknown command: either way the dispatch that
     // follows rejects with a message naming the command, which is the useful half of the story.
     if (!load) return Promise.resolve()

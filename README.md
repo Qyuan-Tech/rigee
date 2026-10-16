@@ -126,6 +126,7 @@ an app launched from Finder inherits almost none of it.
 | Plugins — the editor, explorer, PDF, images, source control and the browser are all plugins | works |
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
+| Find plugins on GitHub, install, update and uninstall them from the plugins view | works |
 | Terminals surviving a restart | **no** — the layout returns, the running processes do not |
 
 ## Plugins
@@ -160,6 +161,14 @@ Be clear about what that does and does not buy. It is not a sandbox — a plugin
 access to your files, your terminals and the network, and the permission list in its manifest is
 what its author says it needs, not something Rigee enforces. What is enforced is that unapproved
 code does not run at all, and that code which changes has to be looked at again.
+
+**Plugins can be found and installed from GitHub.** Search in the plugins view: it lists public
+repositories tagged `rigee-plugin` and named `rigee-plugin-<id>`, under a line saying that is where
+they come from and that Rigee has not reviewed them. Installing downloads the repository's latest
+release, checks it against the checksum GitHub reports, unpacks and checks it, and only then asks —
+naming the source, saying again that nobody vetted it, and listing what it declares. Updates are
+offered when a newer release appears; uninstalling deletes it. What a repository needs in order to
+be found is in [`packages/plugin-api`](packages/plugin-api#publishing-so-that-rigee-can-find-it).
 
 `examples/hello-plugin/` is a complete one in 80 lines. See `docs/DEVELOPMENT.md` for the
 contribution points and the traps.

@@ -284,6 +284,65 @@ whole file and seeking does nothing; and index.html's CSP needs `media-src rigee
 path and dies with `releaseFile` or the plugin that asked, so the scheme cannot be used to walk the
 disk; and its handler lives in the default session, which a browser tab's page is not in.
 
+#### Installing from GitHub
+
+The plugins view searches public GitHub and installs from it. Rigee runs no registry of its own:
+GitHub is the registry, and a repository opts in by following a convention. The convention is a
+published contract — plugin authors arrange their repositories around it — so
+`src/main/plugins/convention.ts` should change the way an API does.
+
+| | the rule | why |
+|---|---|---|
+| found by | the topic `rigee-plugin` | GitHub's search cannot match a prefix of a name, so a topic is the only key a search can use |
+| named | `rigee-plugin-<id>` | the id is known before anything is downloaded — and it is the install directory and the namespace of everything the plugin registers |
+| released | the latest release, tagged `v<version>` | `releases/latest` skips drafts and pre-releases, which is how an author tests one without offering it to everybody |
+| packaged | an asset `rigee-plugin-<id>-<version>.tgz` | exactly what `npm pack` writes: a plugin is an npm package, and installing one is an unpack |
+| agreeing | `name` is the repository's; the tag, `version` and `rigee.version` match | a tarball holding another package or another version is not what its release says it is |
+
+**Everything is checked before the user is asked anything** (`install.ts`), so the question is
+about one verified build rather than a repository name. The tarball is matched against the SHA-256
+GitHub reports for the asset, unpacked into `<userData>/plugins-staging/` by a reader that accepts
+regular files and directories under `package/` and refuses everything else (`tarball.ts`: no links,
+no `..`, no absolute paths, no `\`, bounded in bytes, files and decompressed size), and judged by
+the same rules discovery applies at launch. Only then the native dialog, from main: where it came
+from, that it was found by searching GitHub and nobody has reviewed it, that running it gives it
+Rigee's access, and what it declares. Yes moves it into place with one rename and grants trust to
+the hash of the copy the dialog described, re-checked against what the scan then finds.
+
+**GitHub without an account** allows 10 searches a minute and 60 other calls an hour per IP —
+measured on the API, not assumed. A search costs one, an install one (the download itself is not an
+API call), and an update check one per plugin installed from GitHub, made by itself at most once a
+session. Requests go through Electron's `net.fetch`, which uses the system proxy and certificate
+store; Node's fetch does not, and is the one that cannot get out of a corporate network.
+
+**An update takes effect without a reload**, because both module caches are stepped around rather
+than flushed: a window never forgets a module it imported, and Node caches an ES module by URL for
+the life of the process. The renderer half is served under `rigee-plugin://<id>/@<hash>/…`, so
+every file of a new build has a URL nothing has seen; the main half is imported with `?v=<hash>`.
+That is why a main half should be one bundled file — a second file it imports relatively is cached
+under its own URL, and would come back as the old one.
+
+**`minAppVersion`** names the oldest Rigee a plugin runs in. Adding a function to
+`@rigee/plugin-api` does not bump `apiVersion`, so a plugin calling a new function would otherwise
+fail to link in an older shell, with an error naming a module rather than the problem.
+
+**Ids the shell owns are refused**: every bundled plugin's, and `shell`. A disk plugin calling
+itself `scm` would otherwise have switched source control's contributions off merely by being
+installed untrusted, and replaced its main half once approved.
+
+**Where it came from** is kept in `<userData>/plugin-sources.json`, NOT in the plugin's directory:
+trust is pinned to a hash over every file in there, and a record the plugin could rewrite is no
+record of anything. It drives the update check and the "from github.com/…" line, never trust.
+
+`pnpm smoke:install` runs the whole path against a stand-in for GitHub on localhost — cancel,
+search, install, a checksum that does not match, an update taken live, uninstall — and
+`pnpm plugins:selftest` throws hostile archives at the tarball reader and reads a real `npm pack`.
+
+**Publishing `@rigee/plugin-api`.** It is not on npm. Every tagged release attaches
+`rigee-plugin-api-<version>.tgz` (`pnpm pack:plugin-api`, compiled JavaScript and declarations), and
+a plugin in another repository installs it by that URL. Bump the package's version when the API
+changes, and put the Rigee version that first ships a new function in the plugin's `minAppVersion`.
+
 #### Trust
 
 A plugin found on disk is **inert**: listed, manifest read, nothing imported — not in main, not in

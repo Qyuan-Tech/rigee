@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 // failure, but only worth having if it cannot happen. Nothing below may move above it.
 import './plugins/shellHost'
 import { App } from './App'
-import { PluginsView } from './components/PluginsView'
+import { LazyPluginsView } from './components/LazyPluginsView'
 import { menuProbe } from './contextMenu'
 import { activatedPlugins } from './plugins/activate'
 import { bind } from './plugins/bindings'
@@ -62,7 +62,7 @@ window.__rigee = {
  * special-casing it in the view host means the activity bar, the panel and the namespace rules
  * treat it exactly as they treat anything a plugin contributes.
  */
-bind('view', 'shell.plugins', PluginsView)
+bind('view', 'shell.plugins', LazyPluginsView)
 
 // Before render: xterm reads these at construction time.
 applyFonts()

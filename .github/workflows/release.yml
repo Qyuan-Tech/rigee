@@ -59,6 +59,9 @@ jobs:
       - name: Split-tree self-test
         run: pnpm run panes:selftest
 
+      - name: Plugin install self-test
+        run: pnpm run plugins:selftest
+
       - name: Build renderer, main and preload
         run: pnpm exec electron-vite build
 
@@ -105,6 +108,19 @@ jobs:
             --notes-file "$NOTES" \
             --generate-notes \
             $PRERELEASE
+
+      # The contract plugins are built against, as the tarball `npm pack` makes. A plugin from
+      # another repository installs it from here by URL — `npm i -D <this asset's URL>` — until the
+      # package is on npm, so every release carries the copy of the API that release implements.
+      - name: Attach the plugin API
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pnpm run pack:plugin-api
+          gh release upload '${{ github.ref_name }}' release/rigee-plugin-api-*.tgz --clobber
 
   build:
     needs: check

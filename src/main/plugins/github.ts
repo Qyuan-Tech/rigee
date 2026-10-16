@@ -1,0 +1,222 @@
+/**
+ * Talking to GitHub: finding plugins, reading a plugin's latest release, and downloading it.
+ *
+ * UNAUTHENTICATED, on purpose. Asking every user for a token so they can browse plugins would be
+ * an odd price, and a token Rigee held would be a credential worth stealing from it. The cost is
+ * GitHub's anonymous limits, measured on the API itself: 10 searches a minute and 60 other calls an
+ * hour, per IP address. So the design spends calls carefully — a search costs one, installing costs
+ * one (the release; the download itself is not an API call), and checking for updates costs one
+ * per plugin installed from GitHub and happens only when asked. When the limit is hit anyway, the
+ * error says when it resets rather than "403".
+ *
+ * Through Electron's `net`, not Node's fetch: `net` is Chromium's network stack, so it uses the
+ * system's proxy settings and certificate store. On a corporate network Node's fetch is the one
+ * that cannot get out.
+ *
+ * WHAT IS VERIFIED, AND WHAT IS NOT. The download is checked against the SHA-256 GitHub itself
+ * reports for the asset, so what is unpacked is byte for byte what the author uploaded — nothing
+ * between here and GitHub changed it. That is ALL it proves. It says nothing about whether the
+ * author is honest, and the install dialog does not pretend otherwise.
+ */
+
+import { net } from 'electron'
+import { createHash } from 'node:crypto'
+import { assetName, marketPluginOf, PLUGIN_TOPIC, versionOfTag } from './convention'
+import type { MarketPlugin } from '@shared/ipc'
+
+/**
+ * The API's base URL. Only ever github.com — except under a smoke mode, which points it at a
+ * local stand-in so the install path can be tested without the network or GitHub's rate limit.
+ * Honoured ONLY there: an environment variable that could redirect where plugins are downloaded
+ * from is not something a normal launch should listen to.
+ */
+function apiBase(): string {
+  const override = process.env.RIGEE_SMOKE ? process.env.RIGEE_GITHUB_API : undefined
+  return override || 'https://api.github.com'
+}
+
+const HEADERS = {
+  Accept: 'application/vnd.github+json',
+  'X-GitHub-Api-Version': '2022-11-28'
+}
+
+async function getJson(path: string): Promise<{ status: number; body: unknown }> {
+  let res: Response
+  try {
+    res = await net.fetch(`${apiBase()}${path}`, { headers: HEADERS })
+  } catch (err) {
+    throw new Error(`could not reach GitHub (${message(err)})`)
+  }
+  if (res.status === 403 || res.status === 429) {
+    // GitHub answers a spent rate limit with either status, and says so in the headers. Anything
+    // else under these statuses is a real refusal and is reported as one.
+    if (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')) {
+      throw new Error(rateLimitMessage(res.headers))
+    }
+  }
+  let body: unknown = null
+  try {
+    body = await res.json()
+  } catch {
+    // An error page, a proxy's login screen. The status is what gets reported.
+  }
+  return { status: res.status, body }
+}
+
+function rateLimitMessage(headers: Headers): string {
+  const reset = Number(headers.get('x-ratelimit-reset'))
+  const retry = Number(headers.get('retry-after'))
+  const seconds = Number.isFinite(retry) && retry > 0
+    ? retry
+    : Number.isFinite(reset) && reset > 0 ? Math.max(0, reset - Date.now() / 1000) : NaN
+  const when = Number.isFinite(seconds)
+    ? seconds < 90 ? `in about ${Math.ceil(seconds)} seconds` : `in about ${Math.ceil(seconds / 60)} minutes`
+    : 'later'
+  return `GitHub's limit for requests without an account has been reached. Try again ${when}.`
+}
+
+const githubError = (status: number, body: unknown): string => {
+  const detail = (body as { message?: unknown } | null)?.message
+  return typeof detail === 'string' ? `GitHub answered ${status}: ${detail}` : `GitHub answered ${status}`
+}
+
+/**
+ * Repositories tagged `rigee-plugin` that match the user's words, most relevant first — or, with
+ * no words, most starred first.
+ *
+ * Every item is re-checked against the convention (`marketPluginOf`), so a result that does not
+ * follow it is dropped rather than shown as something it is not.
+ */
+export async function searchPlugins(query: string): Promise<MarketPlugin[]> {
+  const words = query.trim().slice(0, 200)
+  const q = `${words} topic:${PLUGIN_TOPIC} archived:false`.trim()
+  const params = new URLSearchParams({ q, per_page: '50' })
+  if (!words) {
+    params.set('sort', 'stars')
+    params.set('order', 'desc')
+  }
+  const { status, body } = await getJson(`/search/repositories?${params}`)
+  if (status !== 200) throw new Error(githubError(status, body))
+
+  const items = (body as { items?: unknown } | null)?.items
+  if (!Array.isArray(items)) throw new Error('GitHub sent a search result Rigee cannot read')
+  const out: MarketPlugin[] = []
+  for (const item of items) {
+    const plugin = marketPluginOf(item)
+    if (plugin) out.push(plugin)
+  }
+  // Rigee's own first, then in GitHub's order — which is the order the user asked for.
+  return out.sort((a, b) => Number(b.official) - Number(a.official))
+}
+
+/** A release that follows the convention, reduced to what installing needs. */
+export interface PluginRelease {
+  owner: string
+  repo: string
+  tag: string
+  version: string
+  /** The release's page, for the install dialog. */
+  url: string
+  /** Whether GitHub forbids changing it after publication. Shown, not required. */
+  immutable: boolean
+  asset: {
+    name: string
+    size: number
+    url: string
+    /** Lower-case hex SHA-256, as GitHub computed it when the asset was uploaded. */
+    sha256: string
+  }
+}
+
+/**
+ * The latest published release, checked against the convention.
+ *
+ * `releases/latest` is GitHub's own answer to "the newest release that is neither a draft nor a
+ * pre-release", so publishing a pre-release is how an author tests one without offering it to
+ * everybody.
+ */
+export async function latestRelease(owner: string, repo: string): Promise<PluginRelease> {
+  const { status, body } = await getJson(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/latest`
+  )
+  if (status === 404) throw new Error(`${owner}/${repo} has no published release`)
+  if (status !== 200) throw new Error(githubError(status, body))
+
+  const r = body as Record<string, unknown> | null
+  const tag = r?.tag_name
+  if (typeof tag !== 'string') throw new Error('GitHub sent a release Rigee cannot read')
+  const version = versionOfTag(tag)
+  if (!version) throw new Error(`the latest release is tagged "${tag}", not v<version>`)
+
+  const want = assetName(repo, version)
+  const asset = (Array.isArray(r?.assets) ? r.assets : []).find(
+    (a): a is Record<string, unknown> => (a as Record<string, unknown> | null)?.name === want
+  )
+  if (!asset) throw new Error(`release ${tag} has no ${want}`)
+
+  const size = asset.size
+  const url = asset.browser_download_url
+  const digest = asset.digest
+  if (typeof size !== 'number' || typeof url !== 'string') {
+    throw new Error(`GitHub sent an asset Rigee cannot read (${want})`)
+  }
+  // GitHub has reported a digest for every asset uploaded since June 2025. One without it was
+  // uploaded before that, and there would be nothing to check the download against.
+  const sha256 = typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/i.test(digest)
+    ? digest.slice('sha256:'.length).toLowerCase()
+    : null
+  if (!sha256) throw new Error(`GitHub reports no SHA-256 for ${want}; upload it again to get one`)
+
+  return {
+    owner,
+    repo,
+    tag,
+    version,
+    url: typeof r?.html_url === 'string' ? r.html_url : `https://github.com/${owner}/${repo}/releases/tag/${tag}`,
+    immutable: r?.immutable === true,
+    asset: { name: want, size, url, sha256 }
+  }
+}
+
+/**
+ * Download the release's tarball, refusing anything larger than `maxBytes` and anything whose
+ * SHA-256 is not the one GitHub reported.
+ *
+ * Read as a stream and counted as it arrives: `size` and Content-Length are both claims, and a
+ * response that keeps going past the ceiling is cut off there rather than buffered whole.
+ */
+export async function downloadRelease(release: PluginRelease, maxBytes: number): Promise<Buffer> {
+  const { asset } = release
+  if (asset.size > maxBytes) throw new Error(`${asset.name} is larger than ${maxBytes} bytes`)
+
+  let res: Response
+  try {
+    res = await net.fetch(asset.url)
+  } catch (err) {
+    throw new Error(`could not download ${asset.name} (${message(err)})`)
+  }
+  if (!res.ok || !res.body) throw new Error(`downloading ${asset.name}: HTTP ${res.status}`)
+
+  const hash = createHash('sha256')
+  const chunks: Buffer[] = []
+  let total = 0
+  const reader = res.body.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel()
+      throw new Error(`${asset.name} is larger than ${maxBytes} bytes`)
+    }
+    hash.update(value)
+    chunks.push(Buffer.from(value))
+  }
+  const got = hash.digest('hex')
+  if (got !== asset.sha256) {
+    throw new Error(`${asset.name} does not match the checksum GitHub reports for it`)
+  }
+  return Buffer.concat(chunks, total)
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err))

@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
-import { join, relative, resolve, sep } from 'node:path'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import {
   PLUGIN_API_VERSION,
   viewNamespace,
@@ -28,9 +28,7 @@ import {
   type PluginId,
   type PluginPermission
 } from '@rigee/plugin-api/manifest'
-
-/** Ids are directory names and URL authorities. Keep them boring. */
-const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+import { compareVersions, ID_PATTERN, isVersion } from './convention'
 
 /**
  * Ceiling on what will be hashed for one plugin.
@@ -41,8 +39,8 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
  * partially hashed: a hash over some of the files would be a trust decision about code nobody
  * looked at.
  */
-const MAX_PLUGIN_BYTES = 64 * 1024 * 1024
-const MAX_PLUGIN_FILES = 5000
+export const MAX_PLUGIN_BYTES = 64 * 1024 * 1024
+export const MAX_PLUGIN_FILES = 5000
 
 const PERMISSIONS = new Set<string>(['files:read', 'files:write', 'process:spawn', 'net'])
 
@@ -73,6 +71,20 @@ export interface Discovery {
   rejected: RejectedPlugin[]
 }
 
+/** What the running app contributes to the decision, beyond the plugin's own files. */
+export interface DiscoveryRules {
+  /**
+   * Ids no plugin on disk may take: the bundled plugins', and the shell's own.
+   *
+   * The id namespaces commands, view types, events and persisted state, so a plugin on disk that
+   * declared `scm` would not sit beside source control — it would BE source control, as far as
+   * the registry could tell, and merely being installed untrusted would switch the real one off.
+   */
+  reserved: ReadonlySet<PluginId>
+  /** This build's version, for `minAppVersion`. */
+  appVersion: string
+}
+
 /**
  * Scan the plugins directory once.
  *
@@ -81,7 +93,7 @@ export interface Discovery {
  * moment later, which looks like a glitch. The cost is one readdir plus a hash per plugin, and a
  * plugin directory that does not exist (the overwhelmingly common case) is a single failed stat.
  */
-export function discoverDiskPlugins(pluginsDir: string): Discovery {
+export function discoverDiskPlugins(pluginsDir: string, rules: DiscoveryRules): Discovery {
   const plugins: DiskPlugin[] = []
   const rejected: RejectedPlugin[] = []
 
@@ -99,7 +111,7 @@ export function discoverDiskPlugins(pluginsDir: string): Discovery {
   const seen = new Set<PluginId>()
   for (const name of entries) {
     const dir = join(pluginsDir, name)
-    const result = readPlugin(dir, name)
+    const result = readPlugin(dir, name, rules)
     if ('reason' in result) {
       rejected.push({ id: name, dir, reason: result.reason })
       continue
@@ -117,7 +129,16 @@ export function discoverDiskPlugins(pluginsDir: string): Discovery {
   return { plugins, rejected }
 }
 
-function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string } {
+/**
+ * One directory, judged exactly as discovery would judge it, for a plugin that is not installed
+ * yet: an install unpacks into a staging directory named after the id, and nothing is moved into
+ * place unless this accepts it.
+ */
+export function inspectPlugin(dir: string, rules: DiscoveryRules): DiskPlugin | { reason: string } {
+  return readPlugin(dir, basename(dir), rules)
+}
+
+function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPlugin | { reason: string } {
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
@@ -141,6 +162,9 @@ function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string
   if (id !== dirName) {
     return { reason: `rigee.id is "${id}" but the directory is named "${dirName}"` }
   }
+  if (rules.reserved.has(id)) {
+    return { reason: `the id "${id}" belongs to a plugin that ships with Rigee` }
+  }
 
   if (m.apiVersion !== PLUGIN_API_VERSION) {
     return {
@@ -150,6 +174,18 @@ function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string
   }
   if (typeof m.version !== 'string' || typeof m.displayName !== 'string') {
     return { reason: 'rigee.version and rigee.displayName are required strings' }
+  }
+  let minAppVersion: string | undefined
+  if (m.minAppVersion !== undefined) {
+    if (typeof m.minAppVersion !== 'string' || !isVersion(m.minAppVersion)) {
+      return { reason: 'rigee.minAppVersion must be a version such as 0.0.1-alpha.6' }
+    }
+    // A build whose own version is not one (a hand-edited package.json) cannot say it is new
+    // enough, and is not asked: refusing every plugin on that account would be the worse failure.
+    if (isVersion(rules.appVersion) && compareVersions(rules.appVersion, m.minAppVersion) < 0) {
+      return { reason: `needs Rigee ${m.minAppVersion} or later; this is ${rules.appVersion}` }
+    }
+    minAppVersion = m.minAppVersion
   }
 
   const main = entryPath(dir, m.main)
@@ -185,6 +221,7 @@ function readPlugin(dir: string, dirName: string): DiskPlugin | { reason: string
       description: typeof m.description === 'string' ? m.description : undefined,
       permissions,
       apiVersion: PLUGIN_API_VERSION,
+      ...(minAppVersion ? { minAppVersion } : {}),
       ...(main.value ? { main: main.value } : {}),
       ...(renderer.value ? { renderer: renderer.value } : {}),
       contributes

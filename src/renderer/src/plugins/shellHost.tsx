@@ -39,7 +39,9 @@ import { setFileDecorations, useFileDecoration } from '../decorations'
 import { useActiveWorkspace } from '../store'
 import { workspaceDir } from '../workspaces'
 import * as api from './api'
+import { tokenizeCode } from './code'
 import { editorsOnRequest } from './registry'
+import { workerUrl } from './workers'
 
 /**
  * The icon set, renamed.
@@ -134,6 +136,9 @@ const host: ShellHost = {
   readFile: (path) => rpc['fs:readFile'](path),
   writeFile: (path, content) => rpc['fs:writeFile']({ path, content }),
   listDir: (path) => rpc['fs:list'](path),
+
+  tokenizeCode,
+  workerUrl,
 
   icons: iconSet,
   Notice

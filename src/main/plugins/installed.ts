@@ -10,15 +10,23 @@
  *
  * So the check lives in one function, `servable`, and all three call it.
  *
- * THE SCAN IS TAKEN ONCE, at boot, and held. Re-reading the directory per request would mean the
- * bytes served are not necessarily the bytes hashed — a plugin could pass the trust check and then
- * swap its files before the renderer fetched them. One snapshot, one hash, one decision.
+ * THE SCAN IS TAKEN AT BOOT, and held — taken again only when Rigee itself has just changed the
+ * directory, by installing, updating or uninstalling. Re-reading the directory per request would
+ * mean the bytes served are not necessarily the bytes hashed — a plugin could pass the trust check
+ * and then swap its files before the renderer fetched them. One snapshot, one hash, one decision.
  */
 
 import { protocol, net, type CustomScheme } from 'electron'
 import { extname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { contains, discoverDiskPlugins, type DiskPlugin, type RejectedPlugin } from './disk'
+import {
+  contains,
+  discoverDiskPlugins,
+  type DiscoveryRules,
+  type DiskPlugin,
+  type RejectedPlugin
+} from './disk'
+import { sourceOf, type PluginSource } from './sources'
 import { grantTrust, revokeTrust, trustStateOf, type TrustState } from './trust'
 import type { MainPluginLoader } from './host'
 import type { PluginId, PluginManifest, PluginPermission } from '@rigee/plugin-api/manifest'
@@ -54,19 +62,50 @@ export interface InstalledPlugin {
   /** What it declares it needs. See PluginPermission: a declaration, not a capability. */
   permissions: PluginPermission[]
   version: string
+  /** Where it was installed from, when Rigee installed it. Null for one put there by hand. */
+  source: PluginSource | null
 }
 
 let snapshot: { plugins: DiskPlugin[]; rejected: RejectedPlugin[] } = { plugins: [], rejected: [] }
 let byId = new Map<PluginId, DiskPlugin>()
+let scanned: { dir: string; rules: DiscoveryRules } | null = null
 
 /** Take the one scan. Returns what was found, including what was refused and why. */
-export function scanDiskPlugins(pluginsDir: string): { found: number; rejected: RejectedPlugin[] } {
-  snapshot = discoverDiskPlugins(pluginsDir)
+export function scanDiskPlugins(
+  pluginsDir: string,
+  rules: DiscoveryRules
+): { found: number; rejected: RejectedPlugin[] } {
+  scanned = { dir: pluginsDir, rules }
+  snapshot = discoverDiskPlugins(pluginsDir, rules)
   byId = new Map(snapshot.plugins.map((p) => [p.id, p]))
   for (const r of snapshot.rejected) {
     console.warn(`[plugins] ignoring ${r.dir}: ${r.reason}`)
   }
   return { found: snapshot.plugins.length, rejected: snapshot.rejected }
+}
+
+/**
+ * Take the scan again, with the same directory and rules — after an install, an update or an
+ * uninstall changed what is on disk.
+ *
+ * Still one snapshot at a time, so the property the boot scan exists for holds across it: the
+ * bytes served are the bytes hashed. Whatever was approved against the old snapshot is checked
+ * against the new one's hashes from here on, exactly as at a launch.
+ */
+export function rescanDiskPlugins(): void {
+  if (!scanned) throw new Error('plugins were never scanned')
+  scanDiskPlugins(scanned.dir, scanned.rules)
+}
+
+/** The rules discovery is applying, for judging a plugin that is not installed yet. */
+export function discoveryRules(): DiscoveryRules {
+  if (!scanned) throw new Error('plugins were never scanned')
+  return scanned.rules
+}
+
+/** One installed plugin as the scan found it, trusted or not. For install and uninstall. */
+export function diskPlugin(id: PluginId): DiskPlugin | null {
+  return byId.get(id) ?? null
 }
 
 /**
@@ -89,7 +128,8 @@ export function installedPlugins(): InstalledPlugin[] {
     manifest: p.manifest,
     trust: trustStateOf(p.id, p.hash, p.manifest.permissions ?? []),
     permissions: [...(p.manifest.permissions ?? [])],
-    version: p.manifest.version
+    version: p.manifest.version,
+    source: sourceOf(p.id)
   }))
 }
 
@@ -123,17 +163,29 @@ export function diskLoaders(): Record<PluginId, MainPluginLoader> {
       // and the revoke has to mean the code does not run rather than "does not run next launch".
       const live = servable(p.id)
       if (!live) throw new Error(`plugin "${p.id}" is not trusted, refusing to load its main half`)
-      const url = pathToFileURL(join(live.dir, entry)).href
+      // The hash in the query because Node caches an ES module by URL for the life of the process:
+      // after an update, importing the same file URL would hand back the OLD module, and the code
+      // that ran would not be the code just approved. A main half should be one bundled file — a
+      // second file it imports relatively is cached under its own, unversioned URL.
+      const url = `${pathToFileURL(join(live.dir, entry)).href}?v=${buildTag(live)}`
       return (await import(/* @vite-ignore */ url)) as { default: import('cordis').Plugin }
     }
   }
   return out
 }
 
-/** Approve one exact build, after the user has read what it asks for. */
-export function approvePlugin(id: PluginId): { ok: boolean; reason?: string } {
+/**
+ * Approve one exact build, after the user has read what it asks for.
+ *
+ * `expectedHash`, when given, is the build the user was SHOWN — an install's dialog describes the
+ * staged copy, and this refuses if what the scan now finds in its place is anything else.
+ */
+export function approvePlugin(id: PluginId, expectedHash?: string): { ok: boolean; reason?: string } {
   const plugin = byId.get(id)
   if (!plugin) return { ok: false, reason: `no plugin "${id}" is installed` }
+  if (expectedHash !== undefined && plugin.hash !== expectedHash) {
+    return { ok: false, reason: `"${id}" changed on disk after it was checked; it was not approved` }
+  }
   grantTrust(id, plugin.hash, plugin.manifest.permissions ?? [], plugin.manifest.version)
   return { ok: true }
 }
@@ -181,6 +233,14 @@ export function registerPluginProtocol(): void {
     } catch {
       return new Response('bad request', { status: 400 })
     }
+    // `@<hash>/` is the build the URL was minted for — see `rendererEntryUrl`. A URL for any other
+    // build is a module graph from before an update, and serving it today's files would mix two
+    // versions of one plugin in a window.
+    const versioned = /^@([0-9a-f]{16})\//.exec(rel)
+    if (versioned) {
+      if (versioned[1] !== buildTag(plugin)) return new Response('gone', { status: 404 })
+      rel = rel.slice(versioned[0].length)
+    }
     const file = resolve(plugin.dir, rel)
     if (!contains(plugin.dir, file)) return new Response('forbidden', { status: 403 })
 
@@ -207,9 +267,21 @@ export function registerPluginProtocol(): void {
   })
 }
 
-/** The URL the renderer imports a trusted plugin's renderer half from, or null. */
+/**
+ * The URL the renderer imports a trusted plugin's renderer half from, or null.
+ *
+ * Carries the build's hash as its first path segment, and the reason is the module map: a window
+ * never forgets a module it has imported, so after an update, importing the same URL again would
+ * return the old code — and the plugin's own relative imports, resolved against it, the old
+ * chunks. With the hash in the path, every file of the new build has a URL nothing has seen yet,
+ * so an update takes effect without reloading the window. The plugin itself never notices: a
+ * relative import or `new URL('./x', import.meta.url)` resolves inside the same segment.
+ */
 export function rendererEntryUrl(id: PluginId): string | null {
   const plugin = servable(id)
   const entry = plugin?.manifest.renderer
-  return plugin && entry ? `${PLUGIN_SCHEME}://${id}/${entry}` : null
+  return plugin && entry ? `${PLUGIN_SCHEME}://${id}/@${buildTag(plugin)}/${entry}` : null
 }
+
+/** Enough of the hash to tell two builds apart in a URL. */
+const buildTag = (plugin: DiskPlugin): string => plugin.hash.slice(0, 16)

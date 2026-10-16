@@ -305,6 +305,17 @@ export interface DiskPluginManifest extends PluginManifest {
    * in a stack trace nobody can act on.
    */
   apiVersion: number
+  /**
+   * The oldest Rigee this runs in, as a version: `0.0.1-alpha.6`. Omit if any Rigee that speaks
+   * `apiVersion` will do.
+   *
+   * The other half of what `apiVersion` cannot say. Adding a function to this package does not
+   * bump `apiVersion`, because a plugin that never calls it is unaffected — but a plugin that DOES
+   * call it fails to link in an older shell, whose copy of the package has no such export, and the
+   * error names a module rather than the problem. Declaring the version that added the function
+   * turns that into a refusal at discovery, with "needs Rigee X" as the reason.
+   */
+  minAppVersion?: string
 }
 
 /**

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, net, protocol, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   appendFileSync,
   cpSync,
@@ -15,11 +16,13 @@ import {
   writeFileSync
 } from 'node:fs'
 import { isUtf8 } from 'node:buffer'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { deflateSync } from 'node:zlib'
+import { deflateSync, gzipSync } from 'node:zlib'
 import { popupContextMenu } from './contextMenu'
 import { mediaScheme, registerMediaProtocol, servedCount } from './media'
 import { ensureShellPath } from './env'
@@ -56,9 +59,13 @@ import {
   pluginScheme,
   registerPluginProtocol,
   rendererEntryUrl,
+  rescanDiskPlugins,
   revokePlugin,
   scanDiskPlugins
 } from './plugins/installed'
+import { searchPlugins } from './plugins/github'
+import { checkForUpdates, installFromGitHub, uninstallPlugin, type InstallDeps } from './plugins/install'
+import { initSourcesStore } from './plugins/sources'
 import { initTrustStore } from './plugins/trust'
 import { PLUGIN_MANIFESTS } from '@plugins/index'
 import { PERSISTED_STATE_VERSION, type FileStat, type GroupLayout, type Workspace, type WorkspaceActivity } from '@shared/types'
@@ -229,11 +236,12 @@ function plugins(): Promise<PluginHost> {
       import('@plugins/registry.main')
     ])
     const host = new PluginHost(
-      // Bundled first, disk second, and a disk plugin cannot shadow a bundled one because
-      // discovery rejects an id that is already taken. The disk half re-checks trust when it is
-      // actually called, so revoking approval stops the code running rather than stopping it
-      // running next launch.
-      { ...MAIN_HALVES, ...diskLoaders() },
+      // Asked afresh at every activation, so a plugin installed while the app runs can start and
+      // one uninstalled cannot. Bundled LAST, so they win: discovery already refuses a disk plugin
+      // with a bundled id (see `reservedPluginIds`), and this is the same rule made structural. The
+      // disk half re-checks trust when it is actually called, so revoking approval stops the code
+      // running rather than stopping it running next launch.
+      () => ({ ...diskLoaders(), ...MAIN_HALVES }),
       {
         window: () => window,
         webContents: shellWc,
@@ -249,6 +257,29 @@ function plugins(): Promise<PluginHost> {
     return host
   })()
   return pluginHostP
+}
+
+/**
+ * Ids no plugin on disk may take: every bundled plugin's, and `shell`, the owner the shell's own
+ * views are registered under (SHELL_OWNER in src/renderer/src/plugins/registry.ts).
+ */
+function reservedPluginIds(): ReadonlySet<string> {
+  return new Set(['shell', ...PLUGIN_MANIFESTS.map((m) => m.id)])
+}
+
+/**
+ * What installing needs from the running app. The staging directory sits beside `plugins/`, on
+ * the same volume, so a checked plugin moves into place with one rename — and outside it, so a
+ * half-unpacked download is never something the scan finds.
+ */
+function installDeps(): InstallDeps {
+  return {
+    pluginsDir: join(app.getPath('userData'), 'plugins'),
+    stagingDir: join(app.getPath('userData'), 'plugins-staging'),
+    ask: askUser,
+    // Only if the host exists: a plugin that never ran has nothing to stop.
+    stop: async (id) => { await pluginHost?.deactivate(id) }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +354,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'pdf') void runPdfSmoke()
     else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
     else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
+    else if (process.env.RIGEE_SMOKE === 'install') void runInstallSmoke()
     else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
     else if (process.env.RIGEE_SMOKE === 'workspacefiles') void runWorkspaceFilesSmoke()
@@ -5280,7 +5312,7 @@ async function runDiskPluginSmoke(): Promise<void> {
     // 5. One byte. The grant is pinned to the hash of the whole directory, so appending a comment
     //    is the same event as an update: the code is not the code that was approved.
     appendFileSync(entry, '\n// tampered\n', 'utf8')
-    scanDiskPlugins(join(app.getPath('userData'), 'plugins'))
+    rescanDiskPlugins()
     const tampered = installedPlugins().find((p) => p.manifest.id === 'hello')
 
     // 6. And the renderer half is refused again — asked of the same function the host calls.
@@ -5310,6 +5342,303 @@ async function runDiskPluginSmoke(): Promise<void> {
   } catch (err) {
     console.error('[smoke:diskplugin] threw:', err)
     app.exit(1)
+  }
+}
+
+/**
+ * Files as an `npm pack` tarball: every path under `package/`, ustar headers, gzipped. Enough of
+ * the format to stand in for a real release in the install smoke, written here so the smoke needs
+ * no npm on PATH. The self-test (`pnpm plugins:selftest`) is where a real `npm pack` is read.
+ */
+function npmTarball(files: Record<string, Buffer>): Buffer {
+  const blocks: Buffer[] = []
+  for (const [rel, data] of Object.entries(files)) {
+    const header = Buffer.alloc(512)
+    header.write(`package/${rel}`, 0, 100, 'utf8')
+    header.write('0000644\0', 100, 'latin1')
+    header.write('0000000\0', 108, 'latin1')
+    header.write('0000000\0', 116, 'latin1')
+    header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 'latin1')
+    header.write('00000000000\0', 136, 'latin1')
+    header.fill(0x20, 148, 156)
+    header.write('0', 156, 'latin1')
+    header.write('ustar\0', 257, 'latin1')
+    header.write('00', 263, 'latin1')
+    let sum = 0
+    for (const b of header) sum += b
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'latin1')
+    blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512))
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]))
+}
+
+/**
+ * Installing from GitHub, end to end, against a stand-in for GitHub's API on localhost — so it
+ * needs no network, spends none of the real rate limit, and can serve releases GitHub would never
+ * let anybody publish.
+ *
+ * The plugin is the example one, packed the way a release ships it. Six stages, each of which has
+ * to fail if the one before it did not really happen:
+ *
+ *   1. Cancel in the dialog installs NOTHING: no plugin directory, nothing left in staging.
+ *   2. Search through the plugins view: the warning sits above the results, a repository with the
+ *      topic but not the name is not shown, and one whose id belongs to a bundled plugin cannot be
+ *      installed. Install from the result: the dialog names the source and says nobody reviewed
+ *      it, and once answered the panel appears, renders and its main half answers.
+ *   3. A release whose tarball does not match the checksum GitHub reports is refused.
+ *   4. An update is offered, and taken: afterwards the NEW main half answers and the panel draws
+ *      the NEW build — which is the module caches being stepped around, not merely files changing.
+ *   5. Uninstall from the view takes it out of the rail and off the disk.
+ */
+async function runInstallSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const example = join(__dirnameESM, '../../examples/hello-plugin')
+  if (!existsSync(example)) {
+    console.log(`[smoke:install] no ${example}: this mode runs from the repository, not a package`)
+    app.exit(1)
+    return
+  }
+
+  const OWNER = 'rigee-smoke'
+  const REPO = 'rigee-plugin-hello'
+  const pluginsDir = join(app.getPath('userData'), 'plugins')
+  const stagingDir = join(app.getPath('userData'), 'plugins-staging')
+
+  /** The example as release `version`. Past 1.0.0 the main half and the panel both say which build they are. */
+  const releaseOf = (version: string): Buffer => {
+    const pkg = JSON.parse(readFileSync(join(example, 'package.json'), 'utf8')) as {
+      version: string
+      rigee: { version: string }
+    }
+    pkg.version = version
+    pkg.rigee.version = version
+    let main = readFileSync(join(example, 'dist/main.js'), 'utf8')
+    let renderer = readFileSync(join(example, 'dist/renderer.js'), 'utf8')
+    if (version !== '1.0.0') {
+      main = main.replace('pong: true,', `pong: true, version: ${JSON.stringify(version)},`)
+      renderer = renderer.replace("'Ping main half'", `'Ping main half ${version}'`)
+    }
+    return npmTarball({
+      'package.json': Buffer.from(JSON.stringify(pkg, null, 2)),
+      'dist/main.js': Buffer.from(main),
+      'dist/renderer.js': Buffer.from(renderer)
+    })
+  }
+
+  let version = '1.0.0'
+  let tarball = releaseOf(version)
+  let base = ''
+  const searches: string[] = []
+  const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const json = (status: number, body: unknown): void => {
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    const repository = (name: string): Record<string, unknown> => ({
+      name,
+      owner: { login: OWNER },
+      description: `${name}, for the install smoke`,
+      stargazers_count: 3,
+      pushed_at: '2026-10-15T00:00:00Z',
+      license: { spdx_id: 'MIT' },
+      topics: ['rigee-plugin'],
+      archived: false,
+      fork: false,
+      private: false
+    })
+    const release = (repo: string, digest: string): void =>
+      json(200, {
+        tag_name: `v${version}`,
+        html_url: `${base}/${OWNER}/${repo}/releases/tag/v${version}`,
+        immutable: true,
+        assets: [{
+          name: `${repo}-${version}.tgz`,
+          size: tarball.length,
+          digest: `sha256:${digest}`,
+          browser_download_url: `${base}/download/${repo}-${version}.tgz`
+        }]
+      })
+
+    if (url.pathname === '/search/repositories') {
+      searches.push(url.searchParams.get('q') ?? '')
+      return json(200, {
+        total_count: 3,
+        items: [repository(REPO), repository('not-a-plugin'), repository('rigee-plugin-scm')]
+      })
+    }
+    if (url.pathname === `/repos/${OWNER}/${REPO}/releases/latest`) return release(REPO, sha256(tarball))
+    // Its download is a perfectly good plugin — just not the one the checksum describes.
+    if (url.pathname === `/repos/${OWNER}/rigee-plugin-tampered/releases/latest`) {
+      return release('rigee-plugin-tampered', '0'.repeat(64))
+    }
+    if (url.pathname.startsWith('/download/')) {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+      res.end(tarball)
+      return
+    }
+    json(404, { message: 'Not Found' })
+  })
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', () => resolveListen()))
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  process.env.RIGEE_GITHUB_API = base
+
+  const trail: string[] = []
+  const asked: { message: string; detail: string }[] = []
+  /** The button to press for each question, in order. A question nobody planned for is cancelled. */
+  const answers: string[] = []
+  askProbe.answer = (options) => {
+    asked.push({ message: options.message, detail: options.detail ?? '' })
+    const want = answers.shift()
+    const index = want === undefined ? -1 : (options.buttons ?? []).indexOf(want)
+    return index >= 0 ? index : (options.cancelId ?? 0)
+  }
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    askProbe.answer = null
+    server.close()
+    console.log('[smoke:install]', JSON.stringify({ ok, stage, trail, asked: asked.map((a) => a.message), searches, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const invoke = (channel: string, args: unknown): Promise<unknown> =>
+    wc.executeJavaScript(`window.rigee.invoke(${JSON.stringify(channel)}, ${JSON.stringify(args)})`, true) as Promise<unknown>
+  /** Run a stage in the renderer: `body` returns a stage name on failure, or nothing. */
+  const inRenderer = async (body: string): Promise<{ ok: boolean; stage?: string; trail?: string[]; extra?: unknown }> =>
+    JSON.parse((await wc.executeJavaScript(
+      `(async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+        const { store } = window.__rigee
+        const trail = []
+        const fail = (stage, extra) => JSON.stringify({ ok: false, stage, trail, extra })
+        const until = async (fn, ms = 10000) => {
+          for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100) }
+          return null
+        }
+        const rails = () => [...document.querySelectorAll('.activitybar button')].map(b => b.title)
+        const railButton = (part) => [...document.querySelectorAll('.activitybar button')].find(b => b.title.includes(part))
+        const installedRow = (part) => [...document.querySelectorAll('.plugins__body > .plugins__row')]
+          .find(r => (r.textContent || '').includes(part))
+        for (let i = 0; i < 80; i++) { if (store.getState().ready) break; await sleep(250) }
+        if (!store.getState().ready) return fail('never-ready')
+        ${body}
+        return JSON.stringify({ ok: true, trail })
+      })()`,
+      true
+    )) as string) as { ok: boolean; stage?: string; trail?: string[]; extra?: unknown }
+
+  try {
+    // 1. Cancel installs nothing.
+    answers.push('Cancel')
+    const cancelled = (await invoke('plugins:install', { owner: OWNER, repo: REPO })) as { ok: boolean; cancelled?: boolean }
+    trail.push(`cancelled: ${JSON.stringify(cancelled)}`)
+    if (cancelled.ok || !cancelled.cancelled) return finish(false, 'cancel-did-not-cancel')
+    if (existsSync(join(pluginsDir, 'hello'))) return finish(false, 'cancel-left-a-plugin-behind')
+    const leftovers = existsSync(stagingDir) ? readdirSync(stagingDir) : []
+    if (leftovers.length > 0) return finish(false, 'cancel-left-staging-behind', leftovers)
+
+    // 2. Find it in the view, and install it from there.
+    answers.push('Install and Run')
+    const found = await inRenderer(`
+      railButton('Plugins')?.click()
+      const input = await until(() => document.querySelector('.plugins__search-input'))
+      if (!input) return fail('no-search-box')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'hello')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.form.requestSubmit()
+      const rows = await until(() => {
+        const r = [...document.querySelectorAll('.plugins__market .plugins__row')]
+        return r.length ? r : null
+      })
+      if (!rows) return fail('no-results', document.querySelector('.plugins__body')?.textContent)
+      trail.push('results: ' + rows.map(r => r.querySelector('.plugins__repo')?.textContent).join(', '))
+      if (!(document.querySelector('.plugins__notice')?.textContent || '').includes('does not review')) {
+        return fail('no-warning-above-the-results')
+      }
+      if (rows.some(r => (r.textContent || '').includes('not-a-plugin'))) return fail('a-repository-without-the-name-was-shown')
+      const scm = rows.find(r => (r.textContent || '').includes('rigee-plugin-scm'))
+      if (!scm || scm.querySelector('button')) return fail('a-bundled-id-was-offered-for-install')
+      const hello = rows.find(r => (r.textContent || '').includes('${OWNER}/${REPO}'))
+      const install = hello?.querySelector('.plugins__install')
+      if (!install) return fail('no-install-button')
+      install.click()
+      if (!(await until(() => rails().some(t => t.includes('Hello')), 15000))) {
+        return fail('installed-plugin-not-in-the-rail', document.querySelector('.error-banner')?.textContent)
+      }
+      trail.push('rail: ' + rails().join(','))
+      if (!installedRow('from github.com/${OWNER}/${REPO}')) return fail('installed-row-names-no-source')
+      railButton('Hello').click()
+      if (!(await until(() => document.querySelector('#hello-ping')))) return fail('panel-never-rendered')
+      document.querySelector('#hello-ping').click()
+      const pong = await until(() => document.querySelector('#hello-pong')?.textContent)
+      trail.push('main half: ' + pong)
+      if (!pong || !pong.startsWith('pong from node')) return fail('main-half-did-not-answer')
+    `)
+    trail.push(...(found.trail ?? []))
+    if (!found.ok) return finish(false, found.stage ?? 'install', found.extra)
+    const dialog = asked[1]
+    if (!dialog || dialog.message !== 'Install Hello 1.0.0?') return finish(false, 'install-dialog-not-asked', dialog)
+    for (const must of [`github.com/${OWNER}/${REPO}`, 'has not reviewed', 'same access Rigee has', 'Read files on this computer']) {
+      if (!dialog.detail.includes(must)) return finish(false, 'install-dialog-left-something-out', { must, detail: dialog.detail })
+    }
+    if (!searches[0]?.includes('topic:rigee-plugin')) return finish(false, 'search-did-not-ask-for-the-topic', searches)
+
+    // 3. A checksum that does not match.
+    const tampered = (await invoke('plugins:install', { owner: OWNER, repo: 'rigee-plugin-tampered' })) as { ok: boolean; reason?: string }
+    trail.push(`tampered: ${tampered.reason ?? 'installed'}`)
+    if (tampered.ok || !/checksum/.test(tampered.reason ?? '')) return finish(false, 'tampered-release-not-refused', tampered)
+    if (existsSync(join(pluginsDir, 'tampered'))) return finish(false, 'tampered-release-left-files')
+
+    // 4. An update, offered and taken.
+    version = '1.1.0'
+    tarball = releaseOf(version)
+    answers.push('Update and Run')
+    const updated = await inRenderer(`
+      railButton('Plugins')?.click()
+      const check = await until(() => [...document.querySelectorAll('.plugins__section .plugins__link')]
+        .find(b => b.textContent.includes('check for updates')))
+      if (!check) return fail('no-update-check')
+      check.click()
+      const update = await until(() => [...(installedRow('Hello')?.querySelectorAll('.plugins__install') ?? [])]
+        .find(b => b.textContent.includes('Update to 1.1.0')))
+      if (!update) return fail('update-not-offered', document.querySelector('.error-banner')?.textContent)
+      update.click()
+      if (!(await until(() => installedRow('Hello')?.querySelector('.plugins__version')?.textContent === '1.1.0', 15000))) {
+        return fail('update-not-installed', document.querySelector('.error-banner')?.textContent)
+      }
+      const reply = await window.rigee.invoke('plugin:invoke', { command: 'hello:ping', payload: {} })
+      trail.push('main half after the update: ' + JSON.stringify(reply.version))
+      if (reply.version !== '1.1.0') return fail('the-old-main-half-is-still-answering')
+      railButton('Hello').click()
+      const button = await until(() => document.querySelector('#hello-ping')?.textContent)
+      trail.push('panel after the update: ' + button)
+      if (button !== 'Ping main half 1.1.0') return fail('the-old-renderer-half-is-still-drawing', button)
+    `)
+    trail.push(...(updated.trail ?? []))
+    if (!updated.ok) return finish(false, updated.stage ?? 'update', updated.extra)
+    if (asked[2]?.message !== 'Update Hello to 1.1.0?') return finish(false, 'update-dialog-not-asked', asked[2])
+
+    // 5. Uninstall.
+    answers.push('Uninstall')
+    const removed = await inRenderer(`
+      railButton('Plugins')?.click()
+      const link = await until(() => [...(installedRow('Hello')?.querySelectorAll('.plugins__link') ?? [])]
+        .find(b => b.textContent === 'uninstall'))
+      if (!link) return fail('no-uninstall-link')
+      link.click()
+      if (!(await until(() => !rails().some(t => t.includes('Hello'))))) return fail('uninstalled-plugin-still-in-the-rail')
+      if (installedRow('Hello')) return fail('uninstalled-plugin-still-listed')
+    `)
+    trail.push(...(removed.trail ?? []))
+    if (!removed.ok) return finish(false, removed.stage ?? 'uninstall', removed.extra)
+    if (existsSync(join(pluginsDir, 'hello'))) return finish(false, 'uninstall-left-the-files')
+    const sources = readFileSync(join(app.getPath('userData'), 'plugin-sources.json'), 'utf8')
+    if (sources.includes('rigee-plugin-hello')) return finish(false, 'uninstall-left-the-source-record')
+
+    finish(true, 'done')
+  } catch (err) {
+    console.error('[smoke:install] threw:', err)
+    finish(false, 'threw', String(err))
   }
 }
 
@@ -6387,7 +6716,11 @@ app.whenReady().then(() => {
   // and a hash per installed plugin; with no plugins directory — the normal case — one failed
   // stat.
   initTrustStore(join(app.getPath('userData'), 'plugin-trust.json'))
-  const scan = scanDiskPlugins(join(app.getPath('userData'), 'plugins'))
+  initSourcesStore(join(app.getPath('userData'), 'plugin-sources.json'))
+  const scan = scanDiskPlugins(join(app.getPath('userData'), 'plugins'), {
+    reserved: reservedPluginIds(),
+    appVersion: app.getVersion()
+  })
   if (scan.found > 0) mark(`disk plugins scanned (${scan.found})`)
   registerPluginProtocol()
   registerMediaProtocol()
@@ -6507,6 +6840,11 @@ function registerHandlers(): void {
     const result = approvePlugin(id)
     return result
   })
+
+  handle('plugins:search', ({ query }) => searchPlugins(query))
+  handle('plugins:install', ({ owner, repo }) => installFromGitHub(owner, repo, installDeps()))
+  handle('plugins:uninstall', ({ id }) => uninstallPlugin(id, installDeps()))
+  handle('plugins:checkUpdates', () => checkForUpdates())
 
   handle('state:setDisabledPlugins', async ({ disabled }) => {
     saveDisabledPlugins(disabled)

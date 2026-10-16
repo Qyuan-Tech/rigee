@@ -58,7 +58,43 @@ export interface InstalledPluginInfo {
    * on the other side of the bridge from a status string.
    */
   rendererUrl: string | null
+  /** Where Rigee installed it from. Null for a plugin somebody put in the directory by hand. */
+  source: PluginSourceInfo | null
 }
+
+/** The repository and release a plugin was installed from. See src/main/plugins/sources.ts. */
+export interface PluginSourceInfo {
+  owner: string
+  repo: string
+  /** `v1.2.0`, and the version it names. */
+  tag: string
+  version: string
+}
+
+/**
+ * A plugin found by searching GitHub — a repository, not yet anything installable. What makes a
+ * repository one is in src/main/plugins/convention.ts.
+ */
+export interface MarketPlugin {
+  owner: string
+  repo: string
+  /** From the repository's name, `rigee-plugin-<id>`: who it would be once installed. */
+  id: PluginId
+  description: string | null
+  stars: number
+  /** ISO 8601: the last push. */
+  updatedAt: string
+  /** SPDX id, when GitHub recognised one. */
+  license: string | null
+  url: string
+  /** Published by Rigee's own organisation. Not a trust decision — see convention.ts. */
+  official: boolean
+}
+
+/** What an install or update came to. `cancelled` is the user saying no, not a failure. */
+export type PluginInstallResult =
+  | { ok: true; id: PluginId; version: string; updated: boolean }
+  | { ok: false; reason: string; cancelled?: boolean }
 
 /**
  * One row of a native context menu: a command to pick, or a separator.
@@ -263,6 +299,24 @@ export interface IpcRequests {
    * Approval pins the plugin's current hash and permissions; see src/main/plugins/trust.ts.
    */
   'plugins:setTrust': (args: { id: PluginId; trusted: boolean }) => { ok: boolean; reason?: string }
+  /**
+   * Public GitHub repositories that follow the plugin convention and match the words given. One
+   * call against GitHub's anonymous search limit, so the view asks on Enter, not per keystroke.
+   */
+  'plugins:search': (args: { query: string }) => MarketPlugin[]
+  /**
+   * Install, or update, from a repository's latest release. Main downloads, verifies and checks it
+   * and puts the question to the user in a native dialog before anything is moved into place — so
+   * the renderer cannot install anything the user has not been asked about, only ask for it.
+   */
+  'plugins:install': (args: { owner: string; repo: string }) => PluginInstallResult
+  /** Delete a plugin installed from disk, after asking. */
+  'plugins:uninstall': (args: { id: PluginId }) => { ok: boolean; reason?: string; cancelled?: boolean }
+  /** Newer releases of the plugins installed from GitHub. One API call per such plugin. */
+  'plugins:checkUpdates': () => {
+    updates: { id: PluginId; version: string; tag: string }[]
+    problems: string[]
+  }
 }
 
 /** main -> renderer push. Low rate; terminal bytes do NOT go through here. */
@@ -321,7 +375,11 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'terminal:disconnect',
   'plugin:invoke',
   'plugins:list',
-  'plugins:setTrust'
+  'plugins:setTrust',
+  'plugins:search',
+  'plugins:install',
+  'plugins:uninstall',
+  'plugins:checkUpdates'
 ] as const
 
 export const EVENT_CHANNELS: readonly IpcEventChannel[] = [

@@ -1,0 +1,21 @@
+{
+  // What `pnpm pack:plugin-api` compiles: JavaScript and declarations, for plugins built outside
+  // this repository. The app itself never reads dist/ — it resolves the TypeScript sources by path
+  // (see PLUGIN_API_ALIASES in electron.vite.config.ts) — so nothing here can affect its build.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": []
+  },
+  "include": ["src"]
+}

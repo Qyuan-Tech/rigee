@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { PLUGIN_MANIFESTS } from '@plugins/index'
 import { CollapseLeftIcon } from '../icons'
 import { activatedPlugins, deactivatePlugin } from '../plugins/activate'
@@ -6,8 +6,23 @@ import { disabledPlugins, setDisabledPlugins, setDiskPlugins } from '../plugins/
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import { rpc } from '../ipc'
 import { PERMISSION_LABELS, type PluginContributions } from '@rigee/plugin-api/manifest'
-import type { InstalledPluginInfo } from '@shared/ipc'
+import type { InstalledPluginInfo, MarketPlugin } from '@shared/ipc'
 import type { PluginViewProps } from '../plugins/bindings'
+
+/**
+ * Newer releases of plugins installed from GitHub, by id — kept beyond the view's own life, so
+ * collapsing the panel and opening it again does not forget what the last check found.
+ *
+ * Checked by itself once per session, the first time the view opens with such a plugin installed,
+ * and otherwise only when asked: each check spends one of GitHub's sixty anonymous calls an hour
+ * per plugin, and a check on every visit would spend them on a panel being glanced at.
+ */
+let knownUpdates: ReadonlyMap<string, { version: string; tag: string }> = new Map()
+let updatesChecked = false
+
+const BUNDLED_IDS: ReadonlySet<string> = new Set(PLUGIN_MANIFESTS.map((m) => m.id))
+
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /**
  * The plugins view: what is installed, what it contributes, what is running, and a switch.
@@ -29,6 +44,12 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   const [running, setRunning] = useState<ReadonlySet<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [fromDisk, setFromDisk] = useState<InstalledPluginInfo[]>([])
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<MarketPlugin[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  /** `owner/repo` of the install in flight. One at a time — main refuses a second anyway. */
+  const [installing, setInstalling] = useState<string | null>(null)
+  const [updates, setUpdates] = useState(knownUpdates)
 
   /**
    * The list comes from main, not from the bundled barrel.
@@ -52,8 +73,97 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   }, [])
 
   useEffect(() => {
-    void refresh().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+    void refresh().catch((e: unknown) => setError(errorText(e)))
   }, [refresh])
+
+  const rememberUpdates = useCallback((next: ReadonlyMap<string, { version: string; tag: string }>) => {
+    knownUpdates = next
+    setUpdates(next)
+  }, [])
+
+  const checkUpdates = useCallback(async () => {
+    try {
+      const { updates: found, problems } = await rpc['plugins:checkUpdates']()
+      rememberUpdates(new Map(found.map((u) => [u.id, { version: u.version, tag: u.tag }])))
+      setError(problems[0] ?? null)
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }, [rememberUpdates])
+
+  useEffect(() => {
+    if (updatesChecked || !fromDisk.some((p) => p.source)) return
+    updatesChecked = true
+    void checkUpdates()
+  }, [fromDisk, checkUpdates])
+
+  /**
+   * Ask GitHub. On Enter, never per keystroke: anonymous search is ten calls a minute, and a search
+   * box that spent one per letter would be out of them before the first word was typed.
+   */
+  const search = useCallback(async () => {
+    setSearching(true)
+    try {
+      setResults(await rpc['plugins:search']({ query }))
+      setError(null)
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setSearching(false)
+    }
+  }, [query])
+
+  /**
+   * Install or update. Everything that matters happens in main — download, checks, and the
+   * question, in a native dialog this view can neither draw nor answer — so all this does is ask
+   * for it and catch up with the outcome.
+   */
+  const install = useCallback(
+    async (owner: string, repo: string) => {
+      setInstalling(`${owner}/${repo}`)
+      try {
+        const result = await rpc['plugins:install']({ owner, repo })
+        if (!result.ok) {
+          if (!result.cancelled) setError(result.reason)
+          return
+        }
+        setError(null)
+        // An update replaces code that may be running. Stopping the old renderer half means the
+        // next use imports the new build — whose URL names its own hash — rather than carrying on
+        // with the old one for the rest of the session.
+        if (result.updated) await deactivatePlugin(result.id)
+        const rest = new Map(knownUpdates)
+        rest.delete(result.id)
+        rememberUpdates(rest)
+        await refresh()
+      } catch (e) {
+        setError(errorText(e))
+      } finally {
+        setInstalling(null)
+      }
+    },
+    [refresh, rememberUpdates]
+  )
+
+  const uninstall = useCallback(
+    async (id: string) => {
+      try {
+        const result = await rpc['plugins:uninstall']({ id })
+        if (!result.ok) {
+          if (!result.cancelled) setError(result.reason ?? 'could not uninstall')
+          return
+        }
+        setError(null)
+        await deactivatePlugin(id)
+        await refresh()
+      } catch (e) {
+        setError(errorText(e))
+      }
+    },
+    [refresh]
+  )
+
+  const installedById = useMemo(() => new Map(fromDisk.map((p) => [p.manifest.id, p])), [fromDisk])
 
   const setTrust = useCallback(
     async (id: string, trusted: boolean) => {
@@ -123,10 +233,64 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
         as its file selector — so main sends only what it alone knows about.
       */}
       <div className="plugins__body">
+        <form
+          className="plugins__search"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void search()
+          }}
+        >
+          <input
+            className="plugins__search-input"
+            type="search"
+            placeholder="Search GitHub for plugins"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </form>
+
+        {(searching || results) && (
+          <div className="plugins__market">
+            {/*
+              Above the results, always, rather than only in the install dialog. The list is the
+              moment someone decides what is worth a look, and it should not read like a store
+              somebody curated.
+            */}
+            <div className="plugins__notice">
+              From public GitHub repositories tagged <code>rigee-plugin</code>. Rigee does not review
+              them and cannot vouch for their safety.
+            </div>
+            {searching && <div className="plugins__empty">Searching…</div>}
+            {!searching && results?.length === 0 && (
+              <div className="plugins__empty">No plugins found.</div>
+            )}
+            {!searching &&
+              results?.map((plugin) => (
+                <MarketRow
+                  key={`${plugin.owner}/${plugin.repo}`}
+                  plugin={plugin}
+                  installed={installedById.get(plugin.id) ?? null}
+                  busy={installing !== null}
+                  installing={installing === `${plugin.owner}/${plugin.repo}`}
+                  onInstall={() => void install(plugin.owner, plugin.repo)}
+                />
+              ))}
+          </div>
+        )}
+
+        <div className="plugins__section">
+          <span>Installed</span>
+          {fromDisk.some((p) => p.source) && (
+            <button className="plugins__link" onClick={() => void checkUpdates()}>
+              check for updates
+            </button>
+          )}
+        </div>
         {PLUGIN_MANIFESTS.map((manifest) => (
           <PluginRow
             key={manifest.id}
-            plugin={{ manifest, trust: { status: 'trusted' }, permissions: [], version: manifest.version, rendererUrl: null }}
+            plugin={{ manifest, trust: { status: 'trusted' }, permissions: [], version: manifest.version, rendererUrl: null, source: null }}
             bundled
             enabled={!disabled.has(manifest.id)}
             running={running.has(manifest.id)}
@@ -141,8 +305,12 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
             bundled={false}
             enabled={!disabled.has(plugin.manifest.id)}
             running={running.has(plugin.manifest.id)}
+            update={updates.get(plugin.manifest.id) ?? null}
+            busy={installing !== null}
             onToggle={(enable) => void toggle(plugin.manifest.id, enable)}
             onSetTrust={(trusted) => void setTrust(plugin.manifest.id, trusted)}
+            onUpdate={(source) => void install(source.owner, source.repo)}
+            onUninstall={() => void uninstall(plugin.manifest.id)}
           />
         ))}
       </div>
@@ -155,17 +323,25 @@ function PluginRow({
   bundled,
   enabled,
   running,
+  update = null,
+  busy = false,
   onToggle,
-  onSetTrust
+  onSetTrust,
+  onUpdate,
+  onUninstall
 }: {
   plugin: InstalledPluginInfo
   bundled: boolean
   enabled: boolean
   running: boolean
+  update?: { version: string; tag: string } | null
+  busy?: boolean
   onToggle: (enable: boolean) => void
   onSetTrust: (trusted: boolean) => void
+  onUpdate?: (source: NonNullable<InstalledPluginInfo['source']>) => void
+  onUninstall?: () => void
 }): React.ReactElement {
-  const { manifest, trust } = plugin
+  const { manifest, trust, source } = plugin
   const trusted = trust.status === 'trusted'
 
   return (
@@ -193,6 +369,18 @@ function PluginRow({
 
       {manifest.description && <div className="plugins__desc">{manifest.description}</div>}
 
+      {source && (
+        <a className="plugins__repo" href={`https://github.com/${source.owner}/${source.repo}`} target="_blank" rel="noreferrer">
+          from github.com/{source.owner}/{source.repo}
+        </a>
+      )}
+
+      {source && update && onUpdate && (
+        <button className="plugins__install" disabled={busy} onClick={() => onUpdate(source)}>
+          Update to {update.version}
+        </button>
+      )}
+
       {!bundled && !trusted && <TrustPrompt plugin={plugin} onSetTrust={onSetTrust} />}
 
       <div className="plugins__meta">
@@ -208,7 +396,82 @@ function PluginRow({
             withdraw trust
           </button>
         )}
+        {!bundled && onUninstall && (
+          <button className="plugins__link" disabled={busy} onClick={onUninstall}>
+            uninstall
+          </button>
+        )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * One search result: a repository, which is all a search can know. Its name, version and what it
+ * asks for are read from the release itself, after the download, and shown in the dialog that
+ * asks — not here, where they would only be what the repository's front page claims.
+ */
+function MarketRow({
+  plugin,
+  installed,
+  busy,
+  installing,
+  onInstall
+}: {
+  plugin: MarketPlugin
+  installed: InstalledPluginInfo | null
+  busy: boolean
+  installing: boolean
+  onInstall: () => void
+}): React.ReactElement {
+  const bundled = BUNDLED_IDS.has(plugin.id)
+  const fromHere =
+    installed?.source?.owner.toLowerCase() === plugin.owner.toLowerCase() &&
+    installed.source.repo === plugin.repo
+
+  let action: React.ReactNode
+  if (bundled) {
+    action = <span className="plugins__note">Its id belongs to a plugin that ships with Rigee</span>
+  } else if (installing) {
+    action = <span className="plugins__note">Installing…</span>
+  } else if (installed && fromHere) {
+    action = <span className="plugins__note">Installed</span>
+  } else {
+    action = (
+      <button className="plugins__install" disabled={busy} onClick={onInstall}>
+        {/* Another repository already has this id here. Main says so in the dialog. */}
+        {installed ? `Replace ${installed.manifest.displayName}` : 'Install'}
+      </button>
+    )
+  }
+
+  const updated = plugin.updatedAt ? new Date(plugin.updatedAt) : null
+  return (
+    <div className="plugins__row">
+      <div className="plugins__head">
+        <span className="plugins__name">{plugin.id}</span>
+        {plugin.official && (
+          <span className="plugins__badge" title={`Published by ${plugin.owner}, the organisation Rigee is published from`}>
+            Rigee
+          </span>
+        )}
+        <span className="plugins__stars" title="GitHub stars">★ {plugin.stars}</span>
+      </div>
+      <a className="plugins__repo" href={plugin.url} target="_blank" rel="noreferrer">
+        {plugin.owner}/{plugin.repo}
+      </a>
+      {plugin.description && <div className="plugins__desc">{plugin.description}</div>}
+      <div className="plugins__meta">
+        <span className="plugins__contribution">
+          {[
+            updated && !Number.isNaN(updated.getTime()) ? `updated ${updated.toLocaleDateString()}` : null,
+            plugin.license
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </span>
+      </div>
+      {action}
     </div>
   )
 }
