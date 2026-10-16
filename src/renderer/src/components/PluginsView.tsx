@@ -5,9 +5,10 @@ import { activatedPlugins, deactivatePlugin } from '../plugins/activate'
 import { disabledPlugins, setDisabledPlugins, setDiskPlugins } from '../plugins/registry'
 import { onPluginSearch } from '../plugins/market'
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
-import { rpc } from '../ipc'
+import { onEvent, rpc } from '../ipc'
 import { PERMISSION_LABELS, type PluginContributions } from '@rigee/plugin-api/manifest'
-import type { InstalledPluginInfo, MarketPlugin } from '@shared/ipc'
+import { ageText, matchesPluginQuery } from '@shared/pluginCatalog'
+import type { InstalledPluginInfo, MarketPlugin, PluginCatalog } from '@shared/ipc'
 import type { PluginViewProps } from '../plugins/bindings'
 
 /**
@@ -46,8 +47,10 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   const [error, setError] = useState<string | null>(null)
   const [fromDisk, setFromDisk] = useState<InstalledPluginInfo[]>([])
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<MarketPlugin[] | null>(null)
-  const [searching, setSearching] = useState(false)
+  /** Every plugin on GitHub, as main last fetched it. Null only until main has answered. */
+  const [catalog, setCatalog] = useState<PluginCatalog | null>(null)
+  /** For "updated 5 minutes ago", which has to keep counting while the panel stays open. */
+  const [now, setNow] = useState(() => Date.now())
   /** `owner/repo` of the install in flight. One at a time — main refuses a second anyway. */
   const [installing, setInstalling] = useState<string | null>(null)
   const [updates, setUpdates] = useState(knownUpdates)
@@ -99,29 +102,40 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   }, [fromDisk, checkUpdates])
 
   /**
-   * Ask GitHub. On Enter, never per keystroke: anonymous search is ten calls a minute, and a search
-   * box that spent one per letter would be out of them before the first word was typed.
+   * The catalog: what main has kept, at once, and every change after — a fetch starting, landing,
+   * failing — pushed as it happens. Asking is free; main fetches behind the answer only when the
+   * list is due, so opening this panel never waits on GitHub and seldom spends a request.
    */
-  const search = useCallback(async (words: string) => {
-    setSearching(true)
+  useEffect(() => {
+    let live = true
+    void rpc['plugins:catalog']().then(
+      (c) => { if (live) setCatalog(c) },
+      (e: unknown) => { if (live) setError(errorText(e)) }
+    )
+    const off = onEvent('plugins:catalog', setCatalog)
+    const tick = setInterval(() => setNow(Date.now()), 30_000)
+    return () => {
+      live = false
+      off()
+      clearInterval(tick)
+    }
+  }, [])
+
+  const refreshCatalog = useCallback(async () => {
     try {
-      setResults(await rpc['plugins:search']({ query: words }))
-      setError(null)
+      setCatalog(await rpc['plugins:refreshCatalog']())
     } catch (e) {
       setError(errorText(e))
-    } finally {
-      setSearching(false)
     }
   }, [])
 
   // A tab whose viewer is missing asks for its plugin by name: "Find a plugin on GitHub".
-  useEffect(
-    () =>
-      onPluginSearch((words) => {
-        setQuery(words)
-        void search(words)
-      }),
-    [search]
+  useEffect(() => onPluginSearch(setQuery), [])
+
+  /** Filtered here, as the user types: the whole list is already on this side. */
+  const shown = useMemo(
+    () => catalog?.plugins.filter((p) => matchesPluginQuery(p, query)) ?? [],
+    [catalog, query]
   )
 
   /**
@@ -227,6 +241,44 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
     []
   )
 
+  const market = (
+    <div className="plugins__market">
+      <div className="plugins__section">
+        <span>On GitHub</span>
+        {catalog && (
+          <button className="plugins__link" disabled={catalog.refreshing} onClick={() => void refreshCatalog()}>
+            {catalog.error && !catalog.refreshing ? 'retry' : 'refresh'}
+          </button>
+        )}
+      </div>
+      <CatalogStatus catalog={catalog} now={now} />
+      {/*
+        Above the list, always, rather than only in the install dialog. The list is the moment
+        someone decides what is worth a look, and it should not read like a store somebody curated.
+      */}
+      <div className="plugins__notice">
+        From public GitHub repositories tagged <code>rigee-plugin</code>. Rigee does not review them
+        and cannot vouch for their safety.
+      </div>
+      {catalog?.fetchedAt != null && catalog.plugins.length === 0 && (
+        <div className="plugins__empty">No plugins on GitHub yet.</div>
+      )}
+      {catalog?.fetchedAt != null && catalog.plugins.length > 0 && shown.length === 0 && (
+        <div className="plugins__empty">No plugins match “{query.trim()}”.</div>
+      )}
+      {shown.map((plugin) => (
+        <MarketRow
+          key={`${plugin.owner}/${plugin.repo}`}
+          plugin={plugin}
+          installed={installedById.get(plugin.id) ?? null}
+          busy={installing !== null}
+          installing={installing === `${plugin.owner}/${plugin.repo}`}
+          onInstall={() => void install(plugin.owner, plugin.repo)}
+        />
+      ))}
+    </div>
+  )
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="section-header">
@@ -244,51 +296,22 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
         as its file selector — so main sends only what it alone knows about.
       */}
       <div className="plugins__body">
-        <form
-          className="plugins__search"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void search(query)
-          }}
-        >
+        <form className="plugins__search" onSubmit={(e) => e.preventDefault()}>
           <input
             className="plugins__search-input"
             type="search"
-            placeholder="Search GitHub for plugins"
+            placeholder="Search plugins"
             spellCheck={false}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </form>
 
-        {(searching || results) && (
-          <div className="plugins__market">
-            {/*
-              Above the results, always, rather than only in the install dialog. The list is the
-              moment someone decides what is worth a look, and it should not read like a store
-              somebody curated.
-            */}
-            <div className="plugins__notice">
-              From public GitHub repositories tagged <code>rigee-plugin</code>. Rigee does not review
-              them and cannot vouch for their safety.
-            </div>
-            {searching && <div className="plugins__empty">Searching…</div>}
-            {!searching && results?.length === 0 && (
-              <div className="plugins__empty">No plugins found.</div>
-            )}
-            {!searching &&
-              results?.map((plugin) => (
-                <MarketRow
-                  key={`${plugin.owner}/${plugin.repo}`}
-                  plugin={plugin}
-                  installed={installedById.get(plugin.id) ?? null}
-                  busy={installing !== null}
-                  installing={installing === `${plugin.owner}/${plugin.repo}`}
-                  onInstall={() => void install(plugin.owner, plugin.repo)}
-                />
-              ))}
-          </div>
-        )}
+        {/*
+          Searching puts the matches first, the way VS Code's extensions view does; with nothing
+          typed, what is installed comes first and the rest of GitHub's list follows it.
+        */}
+        {query.trim() !== '' && market}
 
         <div className="plugins__section">
           <span>Installed</span>
@@ -324,9 +347,29 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
             onUninstall={() => void uninstall(plugin.manifest.id)}
           />
         ))}
+
+        {query.trim() === '' && market}
       </div>
     </div>
   )
+}
+
+/**
+ * How old the list is, and whether it is being fetched. A failure is said here and not in the
+ * banner: nobody asked for the clock's fetch, and the list it failed to replace is still good — so
+ * this says how old that list is rather than raising an alarm. A line of its own, under the heading,
+ * because a reason from GitHub is a sentence, and squeezed beside the heading it broke it in two.
+ */
+function CatalogStatus({ catalog, now }: { catalog: PluginCatalog | null; now: number }): React.ReactElement | null {
+  if (!catalog) return null
+  const { fetchedAt, refreshing, error } = catalog
+  const age = fetchedAt === null ? null : ageText(fetchedAt, now)
+  const text = refreshing
+    ? fetchedAt === null ? 'Fetching the list…' : 'Updating…'
+    : error
+      ? age ? `Could not update: ${error} This list is from ${age}.` : `Could not fetch the list: ${error}`
+      : age ? `Updated ${age}.` : 'Not fetched yet.'
+  return <div className={`plugins__catalog${error && !refreshing ? ' plugins__catalog--error' : ''}`}>{text}</div>
 }
 
 function PluginRow({

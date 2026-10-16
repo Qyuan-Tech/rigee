@@ -64,7 +64,8 @@ import {
   scanDiskPlugins
 } from './plugins/installed'
 import { MAX_PLUGIN_BYTES, MAX_PLUGIN_FILES } from './plugins/disk'
-import { searchPlugins } from './plugins/github'
+import { catalogForView, initCatalog, refreshCatalog } from './plugins/catalog'
+import { serializeCatalog, type CatalogTiming } from './plugins/catalogFile'
 import { checkForUpdates, installFromGitHub, uninstallPlugin, type InstallDeps } from './plugins/install'
 import { initSourcesStore } from './plugins/sources'
 import { unpackTarballSync } from './plugins/tarball'
@@ -124,6 +125,8 @@ if (process.env.RIGEE_SMOKE) {
   // process, so a v2 document written once the window is up would never be read — the mode would
   // assert against a freshly created v3 document and pass without migrating anything.
   if (process.env.RIGEE_SMOKE === 'migrate') plantV2Document(dir)
+  // The catalog is read once, at app ready, and its clock set then: both have to be in place first.
+  if (process.env.RIGEE_SMOKE === 'catalog') plantStaleCatalog(dir)
   // Same reason: the plugin directory is scanned once, at app ready. A plugin copied in after
   // that is not in the snapshot, and the mode would assert against an empty registry.
   if (process.env.RIGEE_SMOKE === 'diskplugin') plantExamplePlugin(dir)
@@ -282,6 +285,18 @@ function reservedPluginIds(): ReadonlySet<string> {
  * the same volume, so a checked plugin moves into place with one rename — and outside it, so a
  * half-unpacked download is never something the scan finds.
  */
+/**
+ * The catalog's clock, quickened for `smoke:catalog` — first look, between looks, stale after, rest
+ * after a failure, in ms. Honoured only in a smoke mode, like RIGEE_GITHUB_API.
+ */
+function smokeCatalogTiming(): CatalogTiming | undefined {
+  const raw = process.env.RIGEE_SMOKE ? process.env.RIGEE_SMOKE_CATALOG_TIMING : undefined
+  const ms = raw?.split(',').map(Number) ?? []
+  if (ms.length !== 4 || !ms.every((n) => Number.isFinite(n) && n > 0)) return undefined
+  const [firstCheck, checkEvery, staleAfter, retryAfter] = ms as [number, number, number, number]
+  return { firstCheck, checkEvery, staleAfter, retryAfter }
+}
+
 function installDeps(): InstallDeps {
   return {
     pluginsDir: join(app.getPath('userData'), 'plugins'),
@@ -368,6 +383,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'migrate') void runMigrateSmoke()
     else if (process.env.RIGEE_SMOKE === 'diskplugin') void runDiskPluginSmoke()
     else if (process.env.RIGEE_SMOKE === 'install') void runInstallSmoke()
+    else if (process.env.RIGEE_SMOKE === 'catalog') void runCatalogSmoke()
     else if (process.env.RIGEE_SMOKE === 'published') void runPublishedSmoke()
     else if (process.env.RIGEE_SMOKE === 'keys') void runKeysSmoke()
     else if (process.env.RIGEE_SMOKE === 'editing') void runEditingSmoke()
@@ -5448,16 +5464,18 @@ function npmTarball(files: Record<string, Buffer>): Buffer {
  * one before it did not really happen:
  *
  *   1. Cancel in the dialog installs NOTHING: no plugin directory, nothing left in staging.
- *   2. Search through the plugins view: the warning sits above the results, a repository with the
- *      topic but not the name is not shown, and one whose id belongs to a bundled plugin cannot be
- *      installed. Install from the result: the dialog names the source and says nobody reviewed
+ *   2. The plugins view lists GitHub's plugins with nothing typed, fetched once as it first asks:
+ *      the warning sits above them, a repository with the topic but not the name is not shown, and
+ *      one whose id belongs to a bundled plugin cannot be installed. Typing filters that list and
+ *      asks GitHub nothing. Install from it: the dialog names the source and says nobody reviewed
  *      it, and once answered the panel appears, renders and its main half answers.
  *   3. A release whose tarball does not match the checksum GitHub reports is refused, and a display
  *      name with line breaks in it cannot write sentences into the dialog.
  *   4. An update is offered, and taken: afterwards the NEW main half answers and the panel draws
  *      the NEW build — which is the module caches being stepped around, not merely files changing.
  *   5. Uninstall from the view takes it out of the rail and off the disk.
- *   6. A tab whose viewer is not installed offers to find its plugin, and the search runs.
+ *   6. A tab whose viewer is not installed offers to find its plugin, and the list is filtered to
+ *      it — from the catalog already fetched, without a second search.
  */
 async function runInstallSmoke(): Promise<void> {
   const wc = shellWc()
@@ -5552,8 +5570,8 @@ async function runInstallSmoke(): Promise<void> {
     if (url.pathname === '/search/repositories') {
       searches.push(url.searchParams.get('q') ?? '')
       return json(200, {
-        total_count: 3,
-        items: [repository(REPO), repository('not-a-plugin'), repository('rigee-plugin-scm')]
+        total_count: 4,
+        items: [repository(REPO), repository('not-a-plugin'), repository('rigee-plugin-scm'), repository('rigee-plugin-pdf')]
       })
     }
     if (url.pathname === `/repos/${OWNER}/${REPO}/releases/latest`) return release(REPO, sha256(tarball))
@@ -5633,23 +5651,26 @@ async function runInstallSmoke(): Promise<void> {
       railButton('Plugins')?.click()
       const input = await until(() => document.querySelector('.plugins__search-input'))
       if (!input) return fail('no-search-box')
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'hello')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      input.form.requestSubmit()
-      const rows = await until(() => {
-        const r = [...document.querySelectorAll('.plugins__market .plugins__row')]
-        return r.length ? r : null
-      })
-      if (!rows) return fail('no-results', document.querySelector('.plugins__body')?.textContent)
-      trail.push('results: ' + rows.map(r => r.querySelector('.plugins__repo')?.textContent).join(', '))
+      const marketRows = () => [...document.querySelectorAll('.plugins__market .plugins__row')]
+      // The whole list, with nothing typed: fetched as the view first asks for the catalog.
+      const rows = await until(() => (marketRows().length ? marketRows() : null))
+      if (!rows) return fail('no-catalog', document.querySelector('.plugins__body')?.textContent)
+      trail.push('catalog: ' + rows.map(r => r.querySelector('.plugins__repo')?.textContent).join(', '))
       if (!(document.querySelector('.plugins__notice')?.textContent || '').includes('does not review')) {
-        return fail('no-warning-above-the-results')
+        return fail('no-warning-above-the-list')
       }
       if (rows.some(r => (r.textContent || '').includes('not-a-plugin'))) return fail('a-repository-without-the-name-was-shown')
       const scm = rows.find(r => (r.textContent || '').includes('rigee-plugin-scm'))
       if (!scm || scm.querySelector('button')) return fail('a-bundled-id-was-offered-for-install')
-      const hello = rows.find(r => (r.textContent || '').includes('${OWNER}/${REPO}'))
-      const install = hello?.querySelector('.plugins__install')
+      // Typing filters what is already here.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'hello')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      const filtered = await until(() => (marketRows().length === 1 ? marketRows() : null))
+      if (!filtered || !(filtered[0].textContent || '').includes('${OWNER}/${REPO}')) {
+        return fail('typing-did-not-filter', marketRows().map(r => r.querySelector('.plugins__repo')?.textContent))
+      }
+      trail.push('typing hello left: ' + filtered[0].querySelector('.plugins__repo')?.textContent)
+      const install = filtered[0].querySelector('.plugins__install')
       if (!install) return fail('no-install-button')
       install.click()
       if (!(await until(() => rails().some(t => t.includes('Hello')), 15000))) {
@@ -5672,6 +5693,7 @@ async function runInstallSmoke(): Promise<void> {
       if (!dialog.detail.includes(must)) return finish(false, 'install-dialog-left-something-out', { must, detail: dialog.detail })
     }
     if (!searches[0]?.includes('topic:rigee-plugin')) return finish(false, 'search-did-not-ask-for-the-topic', searches)
+    if (searches.length !== 1) return finish(false, 'the-list-was-not-fetched-once-and-filtered-here', searches)
 
     // 3. A checksum that does not match.
     const tampered = (await invoke('plugins:install', { owner: OWNER, repo: 'rigee-plugin-tampered' })) as { ok: boolean; reason?: string }
@@ -5750,18 +5772,247 @@ async function runInstallSmoke(): Promise<void> {
       find.click()
       const input = await until(() => document.querySelector('.plugins__search-input'))
       if (!input) return fail('plugins-view-not-shown')
-      if (!(await until(() => input.value === 'pdf' && document.querySelector('.plugins__market .plugins__row')))) {
-        return fail('search-not-run-for-the-plugin', input.value)
+      const rows = () => [...document.querySelectorAll('.plugins__market .plugins__row')]
+      if (!(await until(() => input.value === 'pdf' && rows().length === 1 && (rows()[0].textContent || '').includes('rigee-plugin-pdf')))) {
+        return fail('list-not-filtered-for-the-plugin', { value: input.value, rows: rows().map(r => r.textContent) })
       }
-      trail.push('orphaned pdf tab searched for: ' + input.value)
+      trail.push('orphaned pdf tab filtered the list for: ' + input.value)
     `)
     trail.push(...(offered.trail ?? []))
     if (!offered.ok) return finish(false, offered.stage ?? 'orphan', offered.extra)
-    if (!searches.at(-1)?.startsWith('pdf topic:rigee-plugin')) return finish(false, 'orphan-search-asked-for-something-else', searches)
+    if (searches.length !== 1) return finish(false, 'the-orphan-search-went-to-github-again', searches)
 
     finish(true, 'done')
   } catch (err) {
     console.error('[smoke:install] threw:', err)
+    finish(false, 'threw', String(err))
+  }
+}
+
+/** A two-day-old catalog with one plugin in it, and a clock quick enough to watch it work. */
+function plantStaleCatalog(dir: string): void {
+  writeFileSync(
+    join(dir, 'plugin-catalog.json'),
+    serializeCatalog(Date.now() - 2 * 24 * 60 * 60_000, [{
+      owner: 'rigee-smoke',
+      repo: 'rigee-plugin-old',
+      id: 'old',
+      description: 'From the list kept on disk',
+      stars: 1,
+      updatedAt: '2026-10-01T00:00:00Z',
+      license: 'MIT',
+      url: 'https://github.com/rigee-smoke/rigee-plugin-old',
+      official: false,
+      topics: ['rigee-plugin']
+    }])
+  )
+  // First look, between looks, stale after, rest after a failure.
+  process.env.RIGEE_SMOKE_CATALOG_TIMING = '500,300,6000,2000'
+}
+
+/**
+ * The plugin catalog: kept on disk, fetched by itself on a clock, filtered in the view.
+ *
+ * Against a stand-in for GitHub's search that can hold an answer, fail with a spent rate limit, or
+ * change what it lists, and that counts what it is asked. The clock is quickened — a list goes
+ * stale in six seconds and a failure rests two — so each claim can be watched happening:
+ *
+ *   1. The list from the last run shows at once, two days old and saying so, with nothing asked.
+ *   2. The clock fetches it by itself; while it does, the old list stays up and says "updating…";
+ *      when it lands the view changes without anybody asking, and the file on disk is the new list.
+ *   3. Typing filters it, and opening the view again asks GitHub nothing.
+ *   4. A fetch that fails keeps the list, says how old it is and why, leaves the file alone, and is
+ *      not tried again until the rest is over.
+ *   5. After the rest the clock tries again, by itself, and a plugin published meanwhile appears.
+ *   6. Refresh pressed twice while it runs spends one search, not two.
+ *
+ * With RIGEE_SHOT_DIR set it photographs the list as it landed and as it reads after a failure.
+ */
+async function runCatalogSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const file = join(app.getPath('userData'), 'plugin-catalog.json')
+  const trail: string[] = []
+  const searches: number[] = []
+  /** Through a function: the server pushes into `searches`, which a narrowed `.length` cannot see. */
+  const asked = (): number => searches.length
+  let listed = ['rigee-plugin-alpha', 'rigee-plugin-beta', 'not-a-plugin']
+  let failing = false
+  let release: (() => void) | null = null
+  let held: Promise<void> | null = null
+  const hold = (): void => { held = new Promise((r) => { release = r }) }
+  const server = createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      if (url.pathname !== '/search/repositories') {
+        res.writeHead(404).end()
+        return
+      }
+      searches.push(Date.now())
+      trail.push(`asked: ${url.searchParams.get('q')} sort=${url.searchParams.get('sort')}`)
+      if (held) await held
+      if (failing) {
+        res.writeHead(403, {
+          'Content-Type': 'application/json',
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 120)
+        })
+        res.end(JSON.stringify({ message: 'API rate limit exceeded' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        total_count: listed.length,
+        incomplete_results: false,
+        items: listed.map((name, i) => ({
+          name,
+          owner: { login: 'rigee-smoke' },
+          description: `${name}, for the catalog smoke`,
+          stargazers_count: 10 - i,
+          pushed_at: '2026-10-15T00:00:00Z',
+          license: { spdx_id: 'MIT' },
+          topics: ['rigee-plugin'],
+          archived: false,
+          fork: false,
+          private: false
+        }))
+      }))
+    })()
+  })
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    release?.()
+    server.close()
+    console.log('[smoke:catalog]', JSON.stringify({ ok, stage, searches: searches.length, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store } = window.__rigee
+    const until = async (fn, ms = 10000) => {
+      for (let t = 0; t < ms; t += 50) { const v = fn(); if (v) return v; await sleep(50) }
+      return null
+    }
+    const rail = (part) => [...document.querySelectorAll('.activitybar button')].find(b => b.title.includes(part))
+    const status = () => (document.querySelector('.plugins__catalog')?.textContent || '').toLowerCase()
+    const listedNow = () => [...document.querySelectorAll('.plugins__market .plugins__row .plugins__repo')].map(a => a.textContent).join(',')
+    const type = (value) => {
+      const input = document.querySelector('.plugins__search-input')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }`
+  /** Wait in the renderer until `test` holds, answering what `report` says then. */
+  const waitFor = (test: string, report: string, ms = 10000): Promise<{ ok: boolean; seen: unknown }> =>
+    js(`(async () => { ${helpers}
+      const ok = !!(await until(() => ${test}, ${ms}))
+      return { ok, seen: ${report} }
+    })()`)
+  const onDisk = (): { fetchedAt?: number; plugins?: { repo: string }[] } => {
+    try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return {} }
+  }
+  const shoot = async (name: string): Promise<void> => {
+    const dir = process.env.RIGEE_SHOT_DIR
+    if (!dir) return
+    // The GitHub list comes after what is installed: brought into the frame to be looked at.
+    await js(`document.querySelector('.plugins__market')?.scrollIntoView(); new Promise(r => setTimeout(r, 150))`)
+    writeFileSync(join(dir, `${name}.png`), (await wc.capturePage()).toPNG())
+  }
+
+  try {
+    // 1. The list from the last run, at once, saying how old it is — and nothing asked.
+    const first = await js<{ ok: boolean; status: string; listed: string }>(`(async () => { ${helpers}
+      if (!(await until(() => store.getState().ready, 15000))) return { ok: false, status: 'never ready', listed: '' }
+      rail('Plugins').click()
+      const shown = await until(() => listedNow())
+      return { ok: !!shown, status: status(), listed: listedNow() }
+    })()`)
+    trail.push(`at launch: ${first.listed} — "${first.status}"`)
+    if (!first.ok || first.listed !== 'rigee-smoke/rigee-plugin-old') return finish(false, 'the-kept-list-was-not-shown', first)
+    if (!first.status.includes('updated 2 days ago')) return finish(false, 'the-kept-list-did-not-say-how-old-it-is', first.status)
+    if (asked() !== 0) return finish(false, 'showing-the-kept-list-asked-github')
+
+    // 2. The clock fetches it by itself. Held, to see the old list stay up while it is fetched.
+    hold()
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    process.env.RIGEE_GITHUB_API = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    // Nobody presses anything: the request has to arrive by itself.
+    for (let t = 0; t < 5000 && asked() === 0; t += 50) await sleep(50)
+    if (asked() !== 1) return finish(false, 'the-clock-did-not-fetch-a-stale-list')
+    const updating = await waitFor(`status().includes('updating') && listedNow() === 'rigee-smoke/rigee-plugin-old'`, `[status(), listedNow()]`)
+    trail.push(`while the clock's fetch is held: ${JSON.stringify(updating.seen)}`)
+    if (!updating.ok) return finish(false, 'the-old-list-did-not-stay-up-while-updating', updating.seen)
+    release!()
+    held = null
+    const landed = await waitFor(
+      `listedNow() === 'rigee-smoke/rigee-plugin-alpha,rigee-smoke/rigee-plugin-beta' && status().includes('updated just now')`,
+      `[status(), listedNow()]`
+    )
+    trail.push(`when it landed: ${JSON.stringify(landed.seen)}`)
+    if (!landed.ok) return finish(false, 'the-fetched-list-did-not-replace-the-old-one', landed.seen)
+    await shoot('catalog-landed')
+    const kept = onDisk()
+    trail.push(`on disk: ${kept.plugins?.map((p) => p.repo).join(',')}, ${Math.round((Date.now() - (kept.fetchedAt ?? 0)) / 1000)} s old`)
+    if (kept.plugins?.map((p) => p.repo).join() !== 'rigee-plugin-alpha,rigee-plugin-beta' || Date.now() - (kept.fetchedAt ?? 0) > 10_000) {
+      return finish(false, 'the-new-list-was-not-kept-on-disk', kept)
+    }
+
+    // 3. Typing filters it here; opening the view again asks nothing.
+    const filtered = await js<{ beta: string; none: string; back: string; reopened: string }>(`(async () => { ${helpers}
+      type('beta'); await until(() => listedNow() === 'rigee-smoke/rigee-plugin-beta', 2000)
+      const beta = listedNow()
+      type('zzz'); await until(() => document.querySelector('.plugins__market .plugins__empty'), 2000)
+      const none = document.querySelector('.plugins__market .plugins__empty')?.textContent || ''
+      type(''); await sleep(100)
+      const back = listedNow()
+      rail('Explorer').click(); await sleep(150); rail('Plugins').click()
+      await until(() => listedNow(), 2000)
+      return { beta, none, back, reopened: listedNow() }
+    })()`)
+    trail.push(`typing: beta → ${filtered.beta}; zzz → "${filtered.none}"; reopened → ${filtered.reopened}`)
+    if (filtered.beta !== 'rigee-smoke/rigee-plugin-beta' || !filtered.none.includes('No plugins match') || filtered.back.split(',').length !== 2) {
+      return finish(false, 'typing-did-not-filter-the-list', filtered)
+    }
+    if (filtered.reopened.split(',').length !== 2 || asked() !== 1) return finish(false, 'filtering-or-reopening-asked-github', filtered)
+
+    // 4. Six seconds on, the list is stale and the clock fetches again — into a spent rate limit.
+    failing = true
+    const failed = await waitFor(`status().includes('could not update')`, `[status(), listedNow(), !!document.querySelector('.plugins__catalog--error')]`, 12000)
+    trail.push(`after a failed fetch: ${JSON.stringify(failed.seen)}`)
+    const [failText, failList, flagged] = failed.seen as [string, string, boolean]
+    if (!failed.ok || asked() !== 2) return finish(false, 'the-clock-did-not-fetch-again-when-stale', failed.seen)
+    if (!failText.includes("github's limit") || !failText.includes('this list is from') || !flagged) return finish(false, 'the-failure-was-not-said', failText)
+    if (failList.split(',').length !== 2) return finish(false, 'a-failure-lost-the-list', failList)
+    if (onDisk().plugins?.length !== 2 || onDisk().fetchedAt !== kept.fetchedAt) return finish(false, 'a-failure-rewrote-the-file')
+    await shoot('catalog-failed')
+    await sleep(1000)
+    if (asked() !== 2) return finish(false, 'it-tried-again-before-the-rest-was-over', searches)
+
+    // 5. The rest over, the clock tries again by itself, and something published meanwhile appears.
+    failing = false
+    listed = ['rigee-plugin-alpha', 'rigee-plugin-beta', 'rigee-plugin-gamma']
+    const recovered = await waitFor(`listedNow().includes('rigee-plugin-gamma') && !status().includes('could not')`, `[status(), listedNow()]`, 8000)
+    const waited = (searches[2] ?? 0) - (searches[1] ?? 0)
+    trail.push(`recovered by itself, ${(waited / 1000).toFixed(1)} s after the failure: ${JSON.stringify(recovered.seen)}`)
+    if (!recovered.ok || waited < 1900) return finish(false, 'it-did-not-recover-by-itself-after-the-rest', { seen: recovered.seen, waited })
+
+    // 6. Refresh, pressed twice while its fetch is held: one search.
+    const before = asked()
+    hold()
+    await js(`(async () => { ${helpers}
+      const button = document.querySelector('.plugins__market .plugins__section .plugins__link')
+      button.click(); button.click()
+      await sleep(300)
+    })()`)
+    release!()
+    held = null
+    await waitFor(`!status().includes('updating')`, `status()`)
+    trail.push(`refresh pressed twice: ${asked() - before} search`)
+    if (asked() - before !== 1) return finish(false, 'refresh-was-not-one-fetch-at-a-time', asked() - before)
+
+    finish(true, 'kept')
+  } catch (err) {
+    console.error('[smoke:catalog] threw:', err)
     finish(false, 'threw', String(err))
   }
 }
@@ -5803,9 +6054,11 @@ async function runPublishedSmoke(): Promise<void> {
     wc.executeJavaScript(`window.rigee.invoke(${JSON.stringify(channel)}, ${JSON.stringify(args)})`, true) as Promise<unknown>
 
   try {
-    // 1. Found by searching, as a user would find them: no words, Rigee's own sorted first.
-    const found = (await invoke('plugins:search', { query: '' })) as { owner: string; repo: string; official: boolean }[]
-    trail.push(`search found: ${found.map((p) => `${p.owner}/${p.repo}`).join(', ') || 'nothing'}`)
+    // 1. In the catalog, fetched from GitHub as the clock would fetch it, Rigee's own sorted first.
+    const catalog = (await invoke('plugins:refreshCatalog', {})) as { plugins: { owner: string; repo: string; official: boolean }[]; error: string | null }
+    if (catalog.error) problems.push(`the catalog could not be fetched: ${catalog.error}`)
+    const found = catalog.plugins
+    trail.push(`catalog found: ${found.map((p) => `${p.owner}/${p.repo}`).join(', ') || 'nothing'}`)
     for (const id of ids) {
       if (!found.some((p) => p.official && p.repo === `rigee-plugin-${id}`)) {
         problems.push(`${OFFICIAL}/rigee-plugin-${id} is not found by search: does the repository carry the topic rigee-plugin?`)
@@ -6954,6 +7207,13 @@ app.whenReady().then(() => {
   // stat.
   initTrustStore(join(app.getPath('userData'), 'plugin-trust.json'))
   initSourcesStore(join(app.getPath('userData'), 'plugin-sources.json'))
+  // The list of plugins on GitHub: read now, fetched by itself later. See plugins/catalog.ts.
+  initCatalog({
+    file: join(app.getPath('userData'), 'plugin-catalog.json'),
+    notify: (catalog) => emit(shellWc(), 'plugins:catalog', catalog),
+    mayFetch: () => !process.env.RIGEE_SMOKE || !!process.env.RIGEE_GITHUB_API,
+    timing: smokeCatalogTiming()
+  })
   const scan = scanDiskPlugins(join(app.getPath('userData'), 'plugins'), {
     reserved: reservedPluginIds(),
     appVersion: app.getVersion()
@@ -7085,7 +7345,8 @@ function registerHandlers(): void {
     return result
   })
 
-  handle('plugins:search', ({ query }) => searchPlugins(query))
+  handle('plugins:catalog', () => catalogForView())
+  handle('plugins:refreshCatalog', () => refreshCatalog())
   handle('plugins:install', ({ owner, repo }) => installFromGitHub(owner, repo, installDeps()))
   handle('plugins:uninstall', ({ id }) => uninstallPlugin(id, installDeps()))
   handle('plugins:checkUpdates', () => checkForUpdates())

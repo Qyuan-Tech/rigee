@@ -24,7 +24,14 @@ import {
   pluginIdOfRepo,
   versionOfTag
 } from '../src/main/plugins/convention.ts'
+import {
+  DEFAULT_TIMING,
+  fetchDue,
+  parseCatalogFile,
+  serializeCatalog
+} from '../src/main/plugins/catalogFile.ts'
 import { inspectPlugin, type DiscoveryRules } from '../src/main/plugins/disk.ts'
+import { ageText, matchesPluginQuery } from '../src/shared/pluginCatalog.ts'
 import { unpackTarball } from '../src/main/plugins/tarball.ts'
 
 let failures = 0
@@ -114,6 +121,102 @@ console.log('\nsearch results')
   eq('a malformed owner is dropped', marketPluginOf(item({ owner: { login: '../x' } })), null)
   eq('NOASSERTION is no licence', marketPluginOf(item({ license: { spdx_id: 'NOASSERTION' } }))?.license, null)
   eq('garbage is dropped', marketPluginOf('rigee-plugin-pdf'), null)
+  eq('topics are kept', marketPluginOf(item({ topics: ['rigee-plugin', 'pdf', 'viewer'] }))?.topics.join(), 'rigee-plugin,pdf,viewer')
+  eq('but only plain short words', marketPluginOf(item({ topics: ['rigee-plugin', 'Not A Topic', 'x'.repeat(80), 7] }))?.topics.join(), 'rigee-plugin')
+}
+
+console.log('\nthe plugin catalog, kept on disk')
+{
+  const plugin = (repo: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    name: repo,
+    owner: { login: 'Qyuan-Tech' },
+    description: `${repo} for Rigee`,
+    stargazers_count: 2,
+    pushed_at: '2026-10-15T00:00:00Z',
+    license: { spdx_id: 'MIT' },
+    topics: ['rigee-plugin', 'viewer'],
+    archived: false,
+    fork: false,
+    private: false,
+    ...over
+  })
+  const pdf = marketPluginOf(plugin('rigee-plugin-pdf'))!
+  const video = marketPluginOf(plugin('rigee-plugin-video', { owner: { login: 'someone' }, description: 'Plays MP4 and WebM' }))!
+
+  const back = parseCatalogFile(serializeCatalog(1_000, [pdf, video]))
+  eq('what is written reads back', back?.plugins.map((p) => p.id).join(), 'pdf,video')
+  eq('with its date', back?.fetchedAt, 1_000)
+  eq('and every field', JSON.stringify(back?.plugins[1]), JSON.stringify(video))
+
+  eq('another version is no list', parseCatalogFile(JSON.stringify({ version: 2, fetchedAt: 1, plugins: [] })), null)
+  eq('nor is a file with no date', parseCatalogFile(JSON.stringify({ version: 1, plugins: [] })), null)
+  eq('nor one that is not JSON', parseCatalogFile('{ half a file'), null)
+  eq('nor JSON that is not an object', parseCatalogFile('null'), null)
+
+  // Edited by hand, or by something worse: every entry goes back through the search result's check.
+  const tampered = parseCatalogFile(JSON.stringify({
+    version: 1,
+    fetchedAt: 5,
+    plugins: [
+      { ...pdf, url: 'https://evil.example/rigee-plugin-pdf', official: false },
+      { ...video, repo: 'not-a-plugin' },
+      { ...video, owner: '../escape' },
+      { ...video, topics: ['viewer'] },
+      { ...video, id: 'pdf' },
+      { ...pdf },
+      'rigee-plugin-scm',
+      null
+    ]
+  }))
+  eq('a tampered file keeps only real plugins, once each', tampered?.plugins.map((p) => `${p.owner}/${p.id}`).join(), 'Qyuan-Tech/pdf,someone/video')
+  eq('its page is rebuilt, not believed', tampered?.plugins[0]?.url, 'https://github.com/Qyuan-Tech/rigee-plugin-pdf')
+  eq('and "Rigee\'s own" is worked out again', tampered?.plugins[0]?.official, true)
+  eq('the id comes from the repository, whatever the entry says', tampered?.plugins[1]?.id, 'video')
+}
+
+console.log('\nwhen the catalog is fetched')
+{
+  const t = DEFAULT_TIMING
+  const hour = 60 * 60_000
+  const now = 100 * hour
+  eq('a list never fetched is fetched', fetchDue({ fetchedAt: null, failedAt: null }, now, t), true)
+  eq('a fresh one is not', fetchDue({ fetchedAt: now - hour, failedAt: null }, now, t), false)
+  eq('six hours old, it is', fetchDue({ fetchedAt: now - 6 * hour, failedAt: null }, now, t), true)
+  eq('but not straight after a failure', fetchDue({ fetchedAt: now - 7 * hour, failedAt: now - 60_000 }, now, t), false)
+  eq('nor a list never fetched, offline', fetchDue({ fetchedAt: null, failedAt: now - 60_000 }, now, t), false)
+  eq('half an hour after the failure it tries again', fetchDue({ fetchedAt: now - 7 * hour, failedAt: now - t.retryAfter }, now, t), true)
+  eq('a list from the future is stale — the clock was put back', fetchDue({ fetchedAt: now + 2 * hour, failedAt: null }, now, t), true)
+  eq('and so is a failure from the future, which rests nothing', fetchDue({ fetchedAt: null, failedAt: now + hour }, now, t), true)
+  check('the clock looks more often than the list goes stale', t.checkEvery < t.staleAfter)
+}
+
+console.log('\nfiltering the catalog')
+{
+  const p = marketPluginOf({
+    name: 'rigee-plugin-markdown',
+    owner: { login: 'Qyuan-Tech' },
+    description: 'A live Markdown preview',
+    topics: ['rigee-plugin', 'preview'],
+    archived: false,
+    fork: false,
+    private: false
+  })!
+  eq('no words matches', matchesPluginQuery(p, '   '), true)
+  eq('the id matches', matchesPluginQuery(p, 'markdown'), true)
+  eq('in any case', matchesPluginQuery(p, 'MarkDown'), true)
+  eq('the owner matches', matchesPluginQuery(p, 'qyuan'), true)
+  eq('the description matches', matchesPluginQuery(p, 'live'), true)
+  eq('a topic matches', matchesPluginQuery(p, 'preview'), true)
+  eq('every word has to', matchesPluginQuery(p, 'markdown live'), true)
+  eq('so one that is not there fails it', matchesPluginQuery(p, 'markdown pdf'), false)
+
+  const now = 10 * 24 * 60 * 60_000
+  eq('a moment ago is just now', ageText(now - 10_000, now), 'just now')
+  eq('one minute', ageText(now - 60_000, now), '1 minute ago')
+  eq('minutes', ageText(now - 25 * 60_000, now), '25 minutes ago')
+  eq('hours', ageText(now - 5 * 60 * 60_000, now), '5 hours ago')
+  eq('days', ageText(now - 3 * 24 * 60 * 60_000, now), '3 days ago')
+  eq('the future is just now, not negative', ageText(now + 60_000, now), 'just now')
 }
 
 // ---------------------------------------------------------------------------

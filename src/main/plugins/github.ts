@@ -4,10 +4,11 @@
  * UNAUTHENTICATED, on purpose. Asking every user for a token so they can browse plugins would be
  * an odd price, and a token Rigee held would be a credential worth stealing from it. The cost is
  * GitHub's anonymous limits, measured on the API itself: 10 searches a minute and 60 other calls an
- * hour, per IP address. So the design spends calls carefully — a search costs one, installing costs
- * one (the release; the download itself is not an API call), and checking for updates costs one
- * per plugin installed from GitHub and happens only when asked. When the limit is hit anyway, the
- * error says when it resets rather than "403".
+ * hour, per IP address. So the design spends calls carefully — the list of every plugin costs one
+ * search per hundred plugins and is fetched every six hours and kept (catalog.ts), so typing in the
+ * plugins view costs nothing; installing costs one (the release; the download itself is not an API
+ * call); and checking for updates costs one per plugin installed from GitHub and happens only when
+ * asked. When the limit is hit anyway, the error says when it resets rather than "403".
  *
  * Through Electron's `net`, not Node's fetch: `net` is Chromium's network stack, so it uses the
  * system's proxy settings and certificate store. On a corporate network Node's fetch is the one
@@ -82,32 +83,44 @@ const githubError = (status: number, body: unknown): string => {
   return typeof detail === 'string' ? `GitHub answered ${status}: ${detail}` : `GitHub answered ${status}`
 }
 
+/** A hundred is the most GitHub returns a page; five pages is five hundred plugins, a long way off. */
+const CATALOG_PAGE = 100
+const CATALOG_PAGES = 5
+
 /**
- * Repositories tagged `rigee-plugin` that match the user's words, most relevant first — or, with
- * no words, most starred first.
+ * Every repository tagged `rigee-plugin`, most starred first: the whole catalog, which the plugins
+ * view then filters by itself. One search per page, and a page short of full is the last.
  *
  * Every item is re-checked against the convention (`marketPluginOf`), so a result that does not
  * follow it is dropped rather than shown as something it is not.
  */
-export async function searchPlugins(query: string): Promise<MarketPlugin[]> {
-  const words = query.trim().slice(0, 200)
-  const q = `${words} topic:${PLUGIN_TOPIC} archived:false`.trim()
-  const params = new URLSearchParams({ q, per_page: '50' })
-  if (!words) {
-    params.set('sort', 'stars')
-    params.set('order', 'desc')
-  }
-  const { status, body } = await getJson(`/search/repositories?${params}`)
-  if (status !== 200) throw new Error(githubError(status, body))
-
-  const items = (body as { items?: unknown } | null)?.items
-  if (!Array.isArray(items)) throw new Error('GitHub sent a search result Rigee cannot read')
+export async function fetchCatalog(): Promise<MarketPlugin[]> {
   const out: MarketPlugin[] = []
-  for (const item of items) {
-    const plugin = marketPluginOf(item)
-    if (plugin) out.push(plugin)
+  const seen = new Set<string>()
+  for (let page = 1; page <= CATALOG_PAGES; page++) {
+    const params = new URLSearchParams({
+      q: `topic:${PLUGIN_TOPIC} archived:false`,
+      sort: 'stars',
+      order: 'desc',
+      per_page: String(CATALOG_PAGE),
+      page: String(page)
+    })
+    const { status, body } = await getJson(`/search/repositories?${params}`)
+    if (status !== 200) throw new Error(githubError(status, body))
+
+    const items = (body as { items?: unknown } | null)?.items
+    if (!Array.isArray(items)) throw new Error('GitHub sent a search result Rigee cannot read')
+    for (const item of items) {
+      const plugin = marketPluginOf(item)
+      // Stars change between pages, so a repository can sit on two of them.
+      const key = plugin && `${plugin.owner.toLowerCase()}/${plugin.repo}`
+      if (!plugin || !key || seen.has(key)) continue
+      seen.add(key)
+      out.push(plugin)
+    }
+    if (items.length < CATALOG_PAGE) break
   }
-  // Rigee's own first, then in GitHub's order — which is the order the user asked for.
+  // Rigee's own first, then most starred first, which is the order GitHub sent them in.
   return out.sort((a, b) => Number(b.official) - Number(a.official))
 }
 

@@ -89,6 +89,24 @@ export interface MarketPlugin {
   url: string
   /** Published by Rigee's own organisation. Not a trust decision — see convention.ts. */
   official: boolean
+  /** The repository's topics, `rigee-plugin` among them: words the list is filtered by. */
+  topics: string[]
+}
+
+/**
+ * Every plugin on GitHub, as last fetched — kept on disk and refreshed by itself every few hours,
+ * so the plugins view lists them at once, offline included, and typing in its search box filters
+ * them here rather than spending one of GitHub's ten anonymous searches a minute per question.
+ * See src/main/plugins/catalog.ts.
+ */
+export interface PluginCatalog {
+  plugins: MarketPlugin[]
+  /** When it was fetched, in ms since the epoch; null when it never has been. */
+  fetchedAt: number | null
+  /** A fetch is under way. The list stays what it was until it lands. */
+  refreshing: boolean
+  /** Why the last fetch failed, when it did — the list is then still the one from `fetchedAt`. */
+  error: string | null
 }
 
 /** What an install or update came to. `cancelled` is the user saying no, not a failure. */
@@ -300,10 +318,12 @@ export interface IpcRequests {
    */
   'plugins:setTrust': (args: { id: PluginId; trusted: boolean }) => { ok: boolean; reason?: string }
   /**
-   * Public GitHub repositories that follow the plugin convention and match the words given. One
-   * call against GitHub's anonymous search limit, so the view asks on Enter, not per keystroke.
+   * The plugins on GitHub, from the cache — no request. A first look at a list never fetched starts
+   * a fetch, and its result arrives as a `plugins:catalog` event.
    */
-  'plugins:search': (args: { query: string }) => MarketPlugin[]
+  'plugins:catalog': () => PluginCatalog
+  /** Fetch the list now, whatever its age; resolves when it has landed or failed. */
+  'plugins:refreshCatalog': () => PluginCatalog
   /**
    * Install, or update, from a repository's latest release. Main downloads, verifies and checks it
    * and puts the question to the user in a native dialog before anything is moved into place — so
@@ -334,6 +354,8 @@ export interface IpcEvents {
   'shortcuts:run': { action: string }
   /** Main is about to quit or close the window and the user chose Save: save everything. */
   'app:saveAll': { id: number }
+  /** The plugin catalog changed: a fetch started, landed or failed. */
+  'plugins:catalog': PluginCatalog
 }
 
 export type IpcRequestChannel = keyof IpcRequests
@@ -376,7 +398,8 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'plugin:invoke',
   'plugins:list',
   'plugins:setTrust',
-  'plugins:search',
+  'plugins:catalog',
+  'plugins:refreshCatalog',
   'plugins:install',
   'plugins:uninstall',
   'plugins:checkUpdates'
@@ -388,7 +411,8 @@ export const EVENT_CHANNELS: readonly IpcEventChannel[] = [
   'fs:changed',
   'app:error',
   'shortcuts:run',
-  'app:saveAll'
+  'app:saveAll',
+  'plugins:catalog'
 ] as const
 
 /**

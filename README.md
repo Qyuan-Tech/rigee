@@ -127,6 +127,7 @@ an app launched from Finder inherits almost none of it.
 | Activity bar — icons down the left edge switch the side panel, VS Code style | works |
 | Plugins view — what is installed, what it contributes, and a switch to turn it off | works |
 | Find plugins on GitHub, install, update and uninstall them from the plugins view | works |
+| The list of plugins on GitHub kept on disk and refreshed by itself every six hours — shown at once, filtered as you type, offline too | works |
 | Terminals surviving a restart | **no** — the layout returns, the running processes do not |
 
 ## Plugins
@@ -166,9 +167,12 @@ access to your files, your terminals and the network, and the permission list in
 what its author says it needs, not something Rigee enforces. What is enforced is that unapproved
 code does not run at all, and that code which changes has to be looked at again.
 
-**Plugins can be found and installed from GitHub.** Search in the plugins view: it lists public
-repositories tagged `rigee-plugin` and named `rigee-plugin-<id>`, under a line saying that is where
-they come from and that Rigee has not reviewed them. Installing downloads the repository's latest
+**Plugins can be found and installed from GitHub.** The plugins view lists public repositories
+tagged `rigee-plugin` and named `rigee-plugin-<id>`, under a line saying that is where they come
+from and that Rigee has not reviewed them. The list is kept on disk and fetched again by itself once
+it is six hours old, so it is there the moment the view opens — offline too, saying how old it is —
+and typing in the search box filters it without asking GitHub anything. *Refresh* beside it fetches
+it now. Installing downloads the repository's latest
 release, checks it against the checksum GitHub reports, unpacks and checks it, and only then asks —
 naming the source, saying again that nobody vetted it, and listing what it declares. Updates are
 offered when a newer release appears; uninstalling deletes it. What a repository needs in order to

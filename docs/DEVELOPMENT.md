@@ -23,9 +23,10 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:markdown` | right-clicks a README in the explorer, opens its preview from the menu, and asserts what was drawn — GitHub's anchors, a table, a task list, an alert, front matter, code coloured without losing a tab — and what was not: no script ran, no style, no borrowed class, no bare id. Then pictures: one on disk shown, one on the web fetched only when asked (counted by a server it runs itself), one on another machine's share and one that is a symlink to /dev/zero refused, one written after the document shown at its next change. Links followed without the window navigating; closing a file's unsaved text tab with its preview open still asks; a thousand-column table and a link used 20,000 times stopped before they reach the page; and the file changing, the reader's place kept through redraws and tab switches, and its whole folder deleted and put back. `RIGEE_SHOT` leaves a PNG |
 | `pnpm smoke:pdf` | renders a PDF and counts its pixels, then splits the row and puts a terminal beside it |
-| `pnpm smoke:install` | installs from a stand-in for GitHub on localhost: cancel, search, install, a checksum that does not match, an update taken live, uninstall, and "Find a plugin on GitHub" from a tab whose viewer is missing |
-| `pnpm smoke:published` | against the real GitHub, so not routine: finds Rigee's own four plugins by searching, installs each from its latest release, and opens a PDF, an image, a video and a Markdown file with them. Needs the network, spends five anonymous API calls, and needs `version` at least the plugins' `minAppVersion` |
-| `pnpm plugins:selftest` | the plugin convention, version order, and hostile archives thrown at the tarball reader; reads a real `npm pack` |
+| `pnpm smoke:install` | installs from a stand-in for GitHub on localhost: cancel, the list fetched once and filtered as you type, install, a checksum that does not match, an update taken live, uninstall, and "Find a plugin on GitHub" from a tab whose viewer is missing |
+| `pnpm smoke:catalog` | the plugin catalog on a quickened clock, against a stand-in that can hold, fail or change its answer: the kept list shown at once, refreshed by itself with the old one up meanwhile and the new one kept on disk, filtered without a request, a rate-limited fetch keeping the list and resting before it retries, recovering by itself, and Refresh pressed twice spending one search |
+| `pnpm smoke:published` | against the real GitHub, so not routine: finds Rigee's own four plugins in the catalog it fetches, installs each from its latest release, and opens a PDF, an image, a video and a Markdown file with them. Needs the network, spends five anonymous API calls, and needs `version` at least the plugins' `minAppVersion` |
+| `pnpm plugins:selftest` | the plugin convention, version order, the catalog file and its timetable, filtering, and hostile archives thrown at the tarball reader; reads a real `npm pack` |
 | `pnpm pack:plugin-api` | compiles and packs `@rigee/plugin-api` into `release/`, as a tagged release attaches it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
 | `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split buttons: copy a file and move a terminal, beside and below, nest a row in a column, and drag the divider across it |
@@ -347,8 +348,20 @@ installed untrusted, and replaced its main half once approved.
 trust is pinned to a hash over every file in there, and a record the plugin could rewrite is no
 record of anything. It drives the update check and the "from github.com/…" line, never trust.
 
+**The list of plugins is a cache with a clock**, `src/main/plugins/catalog.ts`, kept in
+`<userData>/plugin-catalog.json`. The view used to search GitHub per question, which spent one of
+the ten anonymous searches a minute each time, showed nothing until somebody typed, and nothing at
+all offline. Now main fetches every repository tagged `rigee-plugin` — one search per hundred — when
+the list is six hours old — it looks twenty seconds after launch and every half hour after, and
+rests half an hour after a failure — and the view filters what it was sent. A failed fetch
+keeps the old list and says how old it is. Two things to know: an entry read back from the file goes
+through `marketPluginOf` again, so the file can lose entries but never add one that is not a plugin;
+and no smoke mode fetches by itself unless `RIGEE_GITHUB_API` names a stand-in, or every long smoke
+run would reach the real GitHub twenty seconds in. `RIGEE_SMOKE_CATALOG_TIMING` quickens the clock
+for `smoke:catalog`, honoured only under `RIGEE_SMOKE`.
+
 `pnpm smoke:install` runs the whole path against a stand-in for GitHub on localhost — cancel,
-search, install, a checksum that does not match, an update taken live, uninstall — and
+the list, install, a checksum that does not match, an update taken live, uninstall — and
 `pnpm plugins:selftest` throws hostile archives at the tarball reader and reads a real `npm pack`.
 
 **Publishing `@rigee/plugin-api`.** It is on npm. A tagged release publishes it when

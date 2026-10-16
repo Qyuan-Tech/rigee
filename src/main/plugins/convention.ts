@@ -135,6 +135,10 @@ export function marketPluginOf(item: unknown): MarketPlugin | null {
   if (r.archived === true || r.fork === true || r.private === true) return null
 
   const license = (r.license as Record<string, unknown> | null | undefined)?.spdx_id
+  // Only plain short words: they are filtered against and shown, and they are somebody else's.
+  const topics = r.topics
+    .filter((t): t is string => typeof t === 'string' && /^[a-z0-9][a-z0-9-]{0,49}$/.test(t))
+    .slice(0, 20)
   return {
     owner,
     repo,
@@ -144,6 +148,7 @@ export function marketPluginOf(item: unknown): MarketPlugin | null {
     updatedAt: typeof r.pushed_at === 'string' ? r.pushed_at : '',
     license: typeof license === 'string' && license !== 'NOASSERTION' ? license : null,
     url: `https://github.com/${owner}/${repo}`,
-    official: owner.toLowerCase() === OFFICIAL_OWNER.toLowerCase()
+    official: owner.toLowerCase() === OFFICIAL_OWNER.toLowerCase(),
+    topics
   }
 }

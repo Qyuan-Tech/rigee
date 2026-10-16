@@ -552,6 +552,18 @@ textarea:focus {
   letter-spacing: normal;
 }
 
+/* How old GitHub's list is: quiet, until a fetch has failed. */
+.plugins__catalog {
+  padding: 0 10px 6px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--fg-faint);
+}
+
+.plugins__catalog--error {
+  color: var(--git-modified, #b58900);
+}
+
 .plugins__repo {
   display: block;
   margin-top: 2px;
