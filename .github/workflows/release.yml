@@ -51,6 +51,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Every installer's name, and the version the app reports about itself, come from
+      # package.json — not from the tag. v1.0.0 was tagged on a package.json still saying
+      # 0.0.1-alpha.5, and every installer it built was named, and called itself, alpha.5.
+      - name: The tag is the version package.json says
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "v$VERSION" != '${{ github.ref_name }}' ]; then
+            echo "::error::tagged ${{ github.ref_name }}, but package.json says $VERSION: commit the version first, then tag that commit"
+            exit 1
+          fi
+
       - run: pnpm run typecheck
 
       - name: Source control self-test
@@ -109,18 +121,6 @@ jobs:
             --generate-notes \
             $PRERELEASE
 
-      # The contract plugins are built against, as the tarball `npm pack` makes. A plugin from
-      # another repository installs it from here by URL — `npm i -D <this asset's URL>` — until the
-      # package is on npm, so every release carries the copy of the API that release implements.
-      - name: Attach the plugin API
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          pnpm run pack:plugin-api
-          gh release upload '${{ github.ref_name }}' release/rigee-plugin-api-*.tgz --clobber
 
   build:
     needs: check
@@ -248,6 +248,47 @@ jobs:
           printf 'attaching %d files:\n' "${#FILES[@]}"
           printf '  %s\n' "${FILES[@]}"
           gh release upload '${{ github.ref_name }}' "${FILES[@]}" --clobber
+
+  # @rigee/plugin-api, to npm — when this tag carries a version of it npm does not have yet. Most
+  # releases do not change the API, and those skip. Its own job, so that a refusal from npm can
+  # never hold back the installers, and the reverse.
+  #
+  # Authenticated by npm's trusted publishing: npm trusts this workflow, on this repository, by its
+  # OIDC identity, so no npm token is stored anywhere to leak. `--provenance` publishes a signed
+  # statement of which commit and which run built the tarball, shown on the package's npm page.
+  plugin-api:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: corepack enable
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      # Trusted publishing needs npm 11.5.1 or later; the npm bundled with Node may be older.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Publish @rigee/plugin-api, if this version is new
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/plugin-api/package.json').version")
+          if npm view "@rigee/plugin-api@$VERSION" version >/dev/null 2>&1; then
+            echo "@rigee/plugin-api $VERSION is already on npm; nothing to publish"
+            exit 0
+          fi
+          pnpm run pack:plugin-api
+          npm publish "release/rigee-plugin-api-$VERSION.tgz" --provenance --access public
 
   # By now every leg has attached its installers to the draft. If any leg failed, this is skipped
   # and the release stays a draft, which only people with write access can see: re-run the failed

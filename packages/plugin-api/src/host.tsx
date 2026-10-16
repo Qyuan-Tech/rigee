@@ -539,7 +539,7 @@ export const listDir = (path: string): Promise<FileStat[]> => shell().listDir(pa
  * code copied out of it would not be the code that was written.
  *
  * Loads the editor's tokenizers the first time, which is megabytes: call it for code that is about
- * to be shown, not speculatively. Since Rigee 0.0.1-alpha.6.
+ * to be shown, not speculatively. Since Rigee 1.1.0.
  */
 export const tokenizeCode = (text: string, language: string): Promise<CodeToken[][] | null> =>
   shell().tokenizeCode(text, language)
@@ -556,7 +556,7 @@ export const tokenizeCode = (text: string, language: string): Promise<CodeToken[
  * The script must be self-contained: a worker has no import map, so `react` and this package
  * cannot be imported from inside one. Messages posted before the script has loaded are held until
  * it has, and then delivered. The worker gets no Content Security Policy of its own, so it may
- * compile WebAssembly, which the window may not. Since Rigee 0.0.1-alpha.6.
+ * compile WebAssembly, which the window may not. Since Rigee 1.1.0.
  */
 export const workerUrl = (script: string | URL): string => shell().workerUrl(script)
 

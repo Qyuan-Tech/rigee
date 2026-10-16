@@ -2,12 +2,13 @@
 
 The contract a [Rigee](https://github.com/Qyuan-Tech/rigee) plugin is written against.
 
-It is not on npm yet. Every Rigee release carries it as `rigee-plugin-api-<version>.tgz`, and npm
-installs it straight from that URL. Take it from the release your plugin requires:
-
 ```bash
-npm install --save-dev https://github.com/Qyuan-Tech/rigee/releases/download/v0.0.1-alpha.6/rigee-plugin-api-0.2.0.tgz
+npm install --save-dev @rigee/plugin-api
 ```
+
+It is a development dependency on purpose: a renderer half leaves it out of its bundle and gets
+Rigee's own copy at runtime (see Building), so the version you build against is for types and for
+`minAppVersion`, not something that ships.
 
 A plugin is up to two halves, because Electron leaves no choice: a PDF renders in the sandboxed
 renderer, and the bytes it renders can only be read in the main process. Each half default-exports
@@ -30,7 +31,7 @@ my-plugin/
     "version": "1.0.0",
     "displayName": "Hello",
     "apiVersion": 1,
-    "minAppVersion": "0.0.1-alpha.6",
+    "minAppVersion": "1.1.0",
     "permissions": ["files:read"],
     "main": "dist/main.js",
     "renderer": "dist/renderer.js",
@@ -125,7 +126,7 @@ function does not bump it; removing or reshaping one does.
 
 `minAppVersion` is the oldest Rigee the plugin runs in. A function added to this package exists
 only in Rigee releases from then on, so a plugin that calls one should say so — `tokenizeCode` and
-`workerUrl` arrived in 0.0.1-alpha.6. An older Rigee then refuses the plugin by name instead of
+`workerUrl` arrived in Rigee 1.1.0. An older Rigee then refuses the plugin by name instead of
 failing to link it.
 
 ## Permissions, and what they are not

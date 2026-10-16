@@ -178,7 +178,7 @@ function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPl
   let minAppVersion: string | undefined
   if (m.minAppVersion !== undefined) {
     if (typeof m.minAppVersion !== 'string' || !isVersion(m.minAppVersion)) {
-      return { reason: 'rigee.minAppVersion must be a version such as 0.0.1-alpha.6' }
+      return { reason: 'rigee.minAppVersion must be a version such as 1.1.0' }
     }
     // A build whose own version is not one (a hand-edited package.json) cannot say it is new
     // enough, and is not asked: refusing every plugin on that account would be the worse failure.

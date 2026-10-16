@@ -73,9 +73,9 @@ export function assetName(repo: string, version: string): string {
  * semver precedence: negative when `a` is older than `b`, zero when they are the same release.
  *
  * Written out rather than taken from a library because it is twenty lines and the cases that
- * matter are the ones Rigee's own versions exercise: `0.0.1-alpha.5` against `0.0.1-alpha.6`
- * (numeric identifiers compare as numbers, so alpha.10 is newer than alpha.9), and
- * `0.0.1-alpha.6` against `0.0.1` (a pre-release is older than its release).
+ * matter are the ones Rigee's own versions exercise: its 0.0.1-alpha.N releases, where numeric
+ * identifiers compare as numbers so alpha.10 is newer than alpha.9, against 1.1.0 and after; and
+ * a pre-release such as `1.2.0-beta.1` against `1.2.0`, which it comes before.
  *
  * Throws on something that is not a version, rather than ordering it somewhere: a comparison that
  * quietly answered for `latest` or `1.2` would decide whether code runs on a guess.

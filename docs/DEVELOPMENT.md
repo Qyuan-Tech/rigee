@@ -351,10 +351,13 @@ record of anything. It drives the update check and the "from github.com/…" lin
 search, install, a checksum that does not match, an update taken live, uninstall — and
 `pnpm plugins:selftest` throws hostile archives at the tarball reader and reads a real `npm pack`.
 
-**Publishing `@rigee/plugin-api`.** It is not on npm. Every tagged release attaches
-`rigee-plugin-api-<version>.tgz` (`pnpm pack:plugin-api`, compiled JavaScript and declarations), and
-a plugin in another repository installs it by that URL. Bump the package's version when the API
-changes, and put the Rigee version that first ships a new function in the plugin's `minAppVersion`.
+**Publishing `@rigee/plugin-api`.** It is on npm. A tagged release publishes it when
+`packages/plugin-api/package.json` names a version npm does not have yet — most releases do not
+change the API, and skip — from the release workflow's `plugin-api` job: `pnpm pack:plugin-api`
+(compiled JavaScript and declarations), then `npm publish --provenance`. It authenticates through
+npm's trusted publishing, which trusts that workflow on this repository by its OIDC identity, so no
+npm token exists anywhere to leak. Bump the package's version when the API changes, and put the Rigee
+version that first ships a new function in the plugins' `minAppVersion`.
 
 #### Trust
 

@@ -306,7 +306,7 @@ export interface DiskPluginManifest extends PluginManifest {
    */
   apiVersion: number
   /**
-   * The oldest Rigee this runs in, as a version: `0.0.1-alpha.6`. Omit if any Rigee that speaks
+   * The oldest Rigee this runs in, as a version: `1.1.0`. Omit if any Rigee that speaks
    * `apiVersion` will do.
    *
    * The other half of what `apiVersion` cannot say. Adding a function to this package does not
