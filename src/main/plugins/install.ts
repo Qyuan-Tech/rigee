@@ -176,7 +176,8 @@ function installQuestion(
   previous: DiskPlugin | null,
   replacing: boolean
 ): AskOptions {
-  const { displayName, version } = plugin.manifest
+  const displayName = shown(plugin.manifest.displayName)
+  const { version } = plugin.manifest
   const wants = plugin.manifest.permissions ?? []
   const lines = [
     `From github.com/${release.owner}/${release.repo}, release ${release.tag}.`,
@@ -195,7 +196,7 @@ function installQuestion(
     lines.push('', `New in this version: ${added.map((p) => PERMISSION_LABELS[p].toLowerCase()).join(', ')}.`)
   }
   if (previous || replacing) {
-    const was = previous ? `${previous.manifest.displayName} ${previous.manifest.version}` : `the files in plugins/${plugin.id}`
+    const was = previous ? `“${shown(previous.manifest.displayName)}” ${previous.manifest.version}` : `the files in plugins/${plugin.id}`
     const from = previous ? sourceOf(previous.id) : null
     const where = from ? ` from github.com/${from.owner}/${from.repo}` : previous ? ', which was not installed from GitHub' : ''
     lines.push('', `This replaces ${was}${where}.`)
@@ -207,13 +208,28 @@ function installQuestion(
   const updating = previous !== null
   return {
     type: 'warning',
-    message: updating ? `Update ${displayName} to ${version}?` : `Install ${displayName} ${version}?`,
+    // Quoted, so that whatever the author named it reads as a name and not as part of the question.
+    message: updating ? `Update “${displayName}” to ${version}?` : `Install “${displayName}” ${version}?`,
     detail: lines.join('\n'),
     buttons: [updating ? 'Update and Run' : 'Install and Run', 'Cancel'],
     // Return cancels. Running somebody else's code should take a deliberate click.
     defaultId: 1,
     cancelId: 1
   }
+}
+
+/**
+ * A name from a manifest, made fit to stand in the dialog's own sentences.
+ *
+ * The plugin writes its display name, and the dialog is the one place Rigee speaks for itself about
+ * that plugin — so a name carrying line breaks could append "Rigee has verified this plugin" to the
+ * question, in the dialog's own voice. Control characters go, whitespace runs become one space, and
+ * it is cut to a length that cannot fill the box.
+ */
+function shown(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = name.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return (flat.length > 60 ? `${flat.slice(0, 59)}…` : flat) || '(unnamed)'
 }
 
 function addedPermissions(had: readonly PluginPermission[], wants: readonly PluginPermission[]): PluginPermission[] {
@@ -237,7 +253,7 @@ export async function uninstallPlugin(
 
   const answer = await deps.ask({
     type: 'question',
-    message: `Uninstall ${plugin.manifest.displayName}?`,
+    message: `Uninstall “${shown(plugin.manifest.displayName)}”?`,
     detail: `Its files are deleted from ${target}. Tabs it shows stay open and say that no plugin provides them.`,
     buttons: ['Uninstall', 'Cancel'],
     defaultId: 0,

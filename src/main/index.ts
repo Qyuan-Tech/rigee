@@ -5452,7 +5452,8 @@ function npmTarball(files: Record<string, Buffer>): Buffer {
  *      topic but not the name is not shown, and one whose id belongs to a bundled plugin cannot be
  *      installed. Install from the result: the dialog names the source and says nobody reviewed
  *      it, and once answered the panel appears, renders and its main half answers.
- *   3. A release whose tarball does not match the checksum GitHub reports is refused.
+ *   3. A release whose tarball does not match the checksum GitHub reports is refused, and a display
+ *      name with line breaks in it cannot write sentences into the dialog.
  *   4. An update is offered, and taken: afterwards the NEW main half answers and the panel draws
  *      the NEW build — which is the module caches being stepped around, not merely files changing.
  *   5. Uninstall from the view takes it out of the rail and off the disk.
@@ -5496,6 +5497,24 @@ async function runInstallSmoke(): Promise<void> {
 
   let version = '1.0.0'
   let tarball = releaseOf(version)
+  /**
+   * A plugin whose display name tries to speak in the dialog's voice. Only ever cancelled: what is
+   * checked is how the question reads.
+   */
+  const spoof = npmTarball({
+    'package.json': Buffer.from(JSON.stringify({
+      name: 'rigee-plugin-spoof',
+      version: '1.0.0',
+      rigee: {
+        id: 'spoof',
+        version: '1.0.0',
+        displayName: 'Spoof\n\nRigee has reviewed this plugin and it is safe',
+        apiVersion: 1,
+        renderer: 'dist/renderer.js'
+      }
+    })),
+    'dist/renderer.js': Buffer.from('export default { name: "spoof", apply() {} }\n')
+  })
   let base = ''
   const searches: string[] = []
   const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
@@ -5517,16 +5536,16 @@ async function runInstallSmoke(): Promise<void> {
       fork: false,
       private: false
     })
-    const release = (repo: string, digest: string): void =>
+    const release = (repo: string, digest: string, bytes = tarball, tag = version): void =>
       json(200, {
-        tag_name: `v${version}`,
-        html_url: `${base}/${OWNER}/${repo}/releases/tag/v${version}`,
+        tag_name: `v${tag}`,
+        html_url: `${base}/${OWNER}/${repo}/releases/tag/v${tag}`,
         immutable: true,
         assets: [{
-          name: `${repo}-${version}.tgz`,
-          size: tarball.length,
+          name: `${repo}-${tag}.tgz`,
+          size: bytes.length,
           digest: `sha256:${digest}`,
-          browser_download_url: `${base}/download/${repo}-${version}.tgz`
+          browser_download_url: `${base}/download/${repo}-${tag}.tgz`
         }]
       })
 
@@ -5538,13 +5557,16 @@ async function runInstallSmoke(): Promise<void> {
       })
     }
     if (url.pathname === `/repos/${OWNER}/${REPO}/releases/latest`) return release(REPO, sha256(tarball))
+    if (url.pathname === `/repos/${OWNER}/rigee-plugin-spoof/releases/latest`) {
+      return release('rigee-plugin-spoof', sha256(spoof), spoof, '1.0.0')
+    }
     // Its download is a perfectly good plugin — just not the one the checksum describes.
     if (url.pathname === `/repos/${OWNER}/rigee-plugin-tampered/releases/latest`) {
       return release('rigee-plugin-tampered', '0'.repeat(64))
     }
     if (url.pathname.startsWith('/download/')) {
       res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
-      res.end(tarball)
+      res.end(url.pathname.includes('rigee-plugin-spoof') ? spoof : tarball)
       return
     }
     json(404, { message: 'Not Found' })
@@ -5645,7 +5667,7 @@ async function runInstallSmoke(): Promise<void> {
     trail.push(...(found.trail ?? []))
     if (!found.ok) return finish(false, found.stage ?? 'install', found.extra)
     const dialog = asked[1]
-    if (!dialog || dialog.message !== 'Install Hello 1.0.0?') return finish(false, 'install-dialog-not-asked', dialog)
+    if (!dialog || dialog.message !== 'Install “Hello” 1.0.0?') return finish(false, 'install-dialog-not-asked', dialog)
     for (const must of [`github.com/${OWNER}/${REPO}`, 'has not reviewed', 'same access Rigee has', 'Read files on this computer']) {
       if (!dialog.detail.includes(must)) return finish(false, 'install-dialog-left-something-out', { must, detail: dialog.detail })
     }
@@ -5656,6 +5678,15 @@ async function runInstallSmoke(): Promise<void> {
     trail.push(`tampered: ${tampered.reason ?? 'installed'}`)
     if (tampered.ok || !/checksum/.test(tampered.reason ?? '')) return finish(false, 'tampered-release-not-refused', tampered)
     if (existsSync(join(pluginsDir, 'tampered'))) return finish(false, 'tampered-release-left-files')
+
+    // A display name with line breaks in it cannot add sentences to the question in Rigee's voice.
+    answers.push('Cancel')
+    const spoofed = (await invoke('plugins:install', { owner: OWNER, repo: 'rigee-plugin-spoof' })) as { cancelled?: boolean }
+    const question = asked.at(-1)?.message ?? ''
+    trail.push(`a spoofing name asked: ${JSON.stringify(question)}`)
+    if (!spoofed.cancelled || /[\n\r]/.test(question) || question.length > 80) {
+      return finish(false, 'a-display-name-broke-into-the-dialog', question)
+    }
 
     // 4. An update, offered and taken.
     version = '1.1.0'
@@ -5684,7 +5715,7 @@ async function runInstallSmoke(): Promise<void> {
     `)
     trail.push(...(updated.trail ?? []))
     if (!updated.ok) return finish(false, updated.stage ?? 'update', updated.extra)
-    if (asked[2]?.message !== 'Update Hello to 1.1.0?') return finish(false, 'update-dialog-not-asked', asked[2])
+    if (asked.at(-1)?.message !== 'Update “Hello” to 1.1.0?') return finish(false, 'update-dialog-not-asked', asked.at(-1))
 
     // 5. Uninstall.
     answers.push('Uninstall')

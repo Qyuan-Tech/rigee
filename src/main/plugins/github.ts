@@ -30,9 +30,11 @@ import type { MarketPlugin } from '@shared/ipc'
  * Honoured ONLY there: an environment variable that could redirect where plugins are downloaded
  * from is not something a normal launch should listen to.
  */
+const GITHUB_API = 'https://api.github.com'
+
 function apiBase(): string {
   const override = process.env.RIGEE_SMOKE ? process.env.RIGEE_GITHUB_API : undefined
-  return override || 'https://api.github.com'
+  return override || GITHUB_API
 }
 
 const HEADERS = {
@@ -159,6 +161,13 @@ export async function latestRelease(owner: string, repo: string): Promise<Plugin
   const digest = asset.digest
   if (typeof size !== 'number' || typeof url !== 'string') {
     throw new Error(`GitHub sent an asset Rigee cannot read (${want})`)
+  }
+  // Downloaded from the release's own address on github.com and nowhere else: GitHub redirects that
+  // to its storage, and the checksum covers what arrives, but an address elsewhere is not this
+  // repository's release whatever the response says. The smoke stand-in serves its own addresses.
+  const expected = `https://github.com/${owner}/${repo}/releases/download/`
+  if (apiBase() === GITHUB_API && !url.toLowerCase().startsWith(expected.toLowerCase())) {
+    throw new Error(`${want} is not offered from ${owner}/${repo}'s own releases`)
   }
   // GitHub has reported a digest for every asset uploaded since June 2025. One without it was
   // uploaded before that, and there would be nothing to check the download against.
