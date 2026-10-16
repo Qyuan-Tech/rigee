@@ -288,7 +288,8 @@ jobs:
             exit 0
           fi
           pnpm run pack:plugin-api
-          npm publish "release/rigee-plugin-api-$VERSION.tgz" --provenance --access public
+          # ./ is load-bearing: without it npm reads release/<file> as a GitHub user/repo shorthand.
+          npm publish "./release/rigee-plugin-api-$VERSION.tgz" --provenance --access public
 
   # By now every leg has attached its installers to the draft. If any leg failed, this is skipped
   # and the release stays a draft, which only people with write access can see: re-run the failed
