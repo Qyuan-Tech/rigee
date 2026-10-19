@@ -1,7 +1,8 @@
 /**
- * Workspace heat: how much each workspace has been used lately, worked out from its activity
- * record, for the side bar to colour the list by and order it by — unless the user has it ordered
- * by when anything last happened in each, by when each was added, or by name (`rankWorkspaces`).
+ * Workspace heat: how lately, and how much, each workspace has been used, worked out from its
+ * activity record — for the side bar to colour the list by, and to order it by unless the user has
+ * it ordered by when anything last happened in each, by when each was added, or by name
+ * (`rankWorkspaces`).
  *
  * Pure, as `groups.ts` and `tabs.ts` are, so `pnpm panes:selftest` can hold it to its numbers:
  * everything in here fails quietly. A decay that ran on the calendar would greet somebody back
@@ -9,30 +10,42 @@
  * printing that counted for as much as the user would make a forgotten `tail -f` the hottest thing
  * in the list.
  *
- * Heat is minutes of use, each worth a quarter less for every day of use since — plus a tenth as
- * much for minutes in which a workspace's terminals printed on their own, capped short of hot. So
- * an agent at work keeps its workspace from going cold, but only the user makes one hot.
+ * Heat runs from 0 to 1 and is mostly how recently the user was in a workspace: full the minute
+ * they were, it fades by the hour once they leave, then by a day of use at a time. How much they
+ * have used it lately makes up the rest — the same moment of use is half as hot for a glance as for
+ * a workspace in heavy use — so the colour fades as a workspace goes unused, rather than standing
+ * for minutes that piled up last week. Its terminals printing on their own warm it too, but never
+ * past OUTPUT_GLOW: an agent at work keeps its workspace from going cold, but only the user makes
+ * one hot.
  *
  * AGE IS COUNTED IN DAYS OF USE, NOT CALENDAR DAYS: today, and each day on which the user did
  * something in any workspace. A weekend or a holiday adds none, so the list comes back from one
  * looking as it was left, and "cold" means passed over while other things were being worked on —
- * which is the only sense in which it is a reason to remove anything.
+ * which is the only sense in which it is a reason to remove anything. Only within today does heat
+ * fade by the clock — which is what "a while ago" means while the user is there — and never
+ * further than a day of use would take it: a lunch break dims the morning's work, and a weekend
+ * dims Friday's no more than a night would.
  */
 
 import type { ActivityDay, WorkspaceActivity, WorkspaceSort } from '@shared/types'
 
-export type Temperature = 'hot' | 'warm' | 'cool' | 'cold'
-
-/** What a day of use is worth against the one after it: halved in about two and a half. */
-export const DAILY_DECAY = 0.75
+/** What each day of use leaves of what came before it — of a minute's worth, and of heat: 0.6. */
+export const DAILY_DECAY = 0.6
+/**
+ * Hours in which the heat of a use today fades as far as a day of use would take it, and stops:
+ * an hour after the user leaves a workspace it has 0.88 of the heat it had, four hours after 0.6.
+ */
+export const FADE_HOURS = 4
+/** The hottest a workspace's terminals printing on their own can make it, against the user's 1. */
+export const OUTPUT_GLOW = 0.4
+/** How hot a glance makes a workspace, just now; use lately makes up the rest, up to 1. */
+export const LEAST_GLOW = 0.5
+/** Minutes of use lately that take a workspace most of the way — 63% — from a glance's heat to full. */
+export const BUSY_MINUTES = 20
 /** A minute of a workspace's terminals printing is worth a tenth of a minute of the user's… */
 export const OUTPUT_WEIGHT = 0.1
-/** …and all of it together no more than this, which is warm and short of hot. */
+/** …and all of it together no more than twenty minutes of the user's. */
 export const OUTPUT_CEILING = 20
-/** About an hour of use today, or a few hours spread over the last few days of use. */
-export const HOT = 40
-/** About ten minutes today. */
-export const WARM = 8
 /** Days of use with nothing at all in a workspace before it is cold, and offered for removal. */
 export const COLD_AFTER = 10
 /** Days kept per workspace: past COLD_AFTER, and far enough back that decay has done its work. */
@@ -102,7 +115,7 @@ export function ageOf(day: string, clock: readonly string[]): number {
 }
 
 /** How much a workspace has been used lately, in minutes of use as they count today. */
-export function heatOf(activity: WorkspaceActivity | undefined, clock: readonly string[]): number {
+export function minutesOf(activity: WorkspaceActivity | undefined, clock: readonly string[]): number {
   let used = 0
   let output = 0
   for (const d of activity?.days ?? []) {
@@ -114,20 +127,58 @@ export function heatOf(activity: WorkspaceActivity | undefined, clock: readonly 
 }
 
 /**
- * Hot, warm or cool by heat — or cold, which goes by recency alone: COLD_AFTER days of use with
- * nothing at all in it, however busy it once was. Cold is what the side bar offers to remove, and
- * "not touched in your last ten days of work" is a reason anybody can check, where "its score
- * dropped below eight" is not.
- *
- * No record at all is evidence of nothing, so it is cool rather than cold.
+ * How recently anything happened in a workspace, 1 for just now: the more of what the user's last
+ * minute in it leaves and what its terminals' last minute of output leaves, at OUTPUT_GLOW the
+ * strength.
  */
-export function temperatureOf(activity: WorkspaceActivity | undefined, clock: readonly string[]): Temperature {
-  if (!activity) return 'cool'
+export function recencyOf(activity: WorkspaceActivity | undefined, clock: readonly string[], now: number): number {
+  if (!activity) return 0
+  const last = (kind: 'used' | 'output'): string | undefined => activity.days.find((d) => d[kind] > 0)?.day
+  return Math.max(
+    fadeOf(last('used'), activity.usedAt, clock, now),
+    OUTPUT_GLOW * fadeOf(last('output'), activity.outputAt, clock, now)
+  )
+}
+
+/**
+ * What is left by `now` of something that happened on `day` — at `at`, if that was today: by the
+ * clock within today, down to DAILY_DECAY in FADE_HOURS and no further, which is where the first
+ * day of use leaves it, so midnight moves nothing; before today, DAILY_DECAY for each day of use.
+ */
+function fadeOf(day: string | undefined, at: number | undefined, clock: readonly string[], now: number): number {
+  if (!day) return 0
+  const age = ageOf(day, clock)
+  if (age > 0) return DAILY_DECAY ** age
+  // With no time of day to go by — a record somebody edited — as faded as today can make it.
+  const hours = at === undefined ? FADE_HOURS : Math.max(0, now - at) / HOUR
+  return DAILY_DECAY ** Math.min(hours / FADE_HOURS, 1)
+}
+
+const HOUR = 3_600_000
+
+/**
+ * How hot a workspace is, from 0 to 1: how recently it was used, scaled by how much it has been
+ * used lately — LEAST_GLOW of it for a glance, all of it for a workspace in heavy use. So the one
+ * the user is working in is at or near the top, a glance just now outshines a full day's work two
+ * days of use ago, and of two used at the same moment the busier is the hotter.
+ */
+export function heatOf(activity: WorkspaceActivity | undefined, clock: readonly string[], now: number): number {
+  const busy = 1 - Math.exp(-minutesOf(activity, clock) / BUSY_MINUTES)
+  return recencyOf(activity, clock, now) * (LEAST_GLOW + (1 - LEAST_GLOW) * busy)
+}
+
+/**
+ * Whether a workspace is cold: COLD_AFTER days of use with nothing at all in it, however busy it
+ * once was. Cold is what the side bar offers to remove, and "not touched in your last ten days of
+ * work" is a reason anybody can check, where "its heat dropped below a twentieth" is not.
+ *
+ * No record at all is evidence of nothing, so it is not cold.
+ */
+export function isCold(activity: WorkspaceActivity | undefined, clock: readonly string[]): boolean {
+  if (!activity) return false
   const newest = activity.days[0]?.day
   const latest = newest && newest > activity.since ? newest : activity.since
-  if (ageOf(latest, clock) >= COLD_AFTER) return 'cold'
-  const heat = heatOf(activity, clock)
-  return heat >= HOT ? 'hot' : heat >= WARM ? 'warm' : 'cool'
+  return ageOf(latest, clock) >= COLD_AFTER
 }
 
 /** When anything last happened in a workspace — the user, or its terminals — or null if nothing has. */
@@ -136,9 +187,11 @@ export function lastActiveAt(activity: WorkspaceActivity | undefined): number | 
   return at > 0 ? at : null
 }
 
-/** What the side bar orders a workspace by. */
+/** What the side bar colours and orders a workspace by. */
 export interface Warmth {
-  temperature: Temperature
+  /** `isCold`: faded, below the divider, and offered for removal. */
+  cold: boolean
+  /** `heatOf`, 0 to 1. */
   heat: number
   /** Epoch ms; 0 for never. */
   lastActive: number
@@ -150,10 +203,8 @@ export interface Warmth {
  * workspaces nobody has touched do not trade places from one render to the next.
  */
 export function compareWarmth(a: Warmth, b: Warmth): number {
-  const aCold = a.temperature === 'cold'
-  const bCold = b.temperature === 'cold'
-  if (aCold !== bCold) return aCold ? 1 : -1
-  if (!aCold && a.heat !== b.heat) return b.heat - a.heat
+  if (a.cold !== b.cold) return a.cold ? 1 : -1
+  if (!a.cold && a.heat !== b.heat) return b.heat - a.heat
   return b.lastActive - a.lastActive
 }
 
@@ -188,8 +239,8 @@ export function rankWorkspaces(listed: readonly Listed[], sort: WorkspaceSort): 
   }
   const sorted = [...listed].sort(sort === 'recent' ? latestActive : compareWarmth)
   return {
-    recent: sorted.filter((w) => w.temperature !== 'cold').map((w) => w.id),
-    cold: sorted.filter((w) => w.temperature === 'cold').map((w) => w.id)
+    recent: sorted.filter((w) => !w.cold).map((w) => w.id),
+    cold: sorted.filter((w) => w.cold).map((w) => w.id)
   }
 }
 

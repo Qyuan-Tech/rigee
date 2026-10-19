@@ -89,25 +89,30 @@ import {
 } from '../src/shared/workspaceFiles.ts'
 import { parseByteRange } from '../src/main/byteRange.ts'
 import {
+  BUSY_MINUTES,
   COLD_AFTER,
-  HOT,
+  DAILY_DECAY,
+  FADE_HOURS,
   KEEP_DAYS,
+  LEAST_GLOW,
   OUTPUT_CEILING,
-  WARM,
+  OUTPUT_GLOW,
   activityClock,
   ageOf,
   compareWarmth,
   freshActivity,
   heatOf,
   holdRanking,
+  isCold,
   lastActiveAt,
   localDay,
   longAgo,
+  minutesOf,
   rankWorkspaces,
+  recencyOf,
   recordMinute,
   sanitizeActivity,
   shortAgo,
-  temperatureOf,
   type Listed,
   type Warmth
 } from '../src/renderer/src/heat.ts'
@@ -137,6 +142,10 @@ function check(label: string, ok: boolean, detail = ''): void {
 }
 function eq<T>(label: string, actual: T, expected: T): void {
   check(label, Object.is(actual, expected), `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`)
+}
+/** For arithmetic that goes through powers and exponentials: equal to nine places. */
+function near(label: string, actual: number, expected: number): void {
+  check(label, Math.abs(actual - expected) < 1e-9, `got ${actual}, want ${expected}`)
 }
 
 /** Compact shape, for asserting structure without caring about generated ids. */
@@ -1194,58 +1203,97 @@ console.log('\nworkspace heat')
   eq('today is age 0', ageOf('2026-10-13', clock), 0)
   eq('a day between days of use is as old as those after it', ageOf('2026-10-05', clock), 2)
 
-  // Heat.
-  eq('a minute today is worth a minute', heatOf(rec([['2026-10-13', 60]]), ['2026-10-13']), 60)
-  eq('a day of use ago, three quarters', heatOf(rec([['2026-10-12', 60]]), ['2026-10-13', '2026-10-12']), 45)
-  eq('a fortnight away costs a single day', heatOf(rec([['2026-09-28', 60]]), ['2026-10-13', '2026-09-28']), 45)
-  eq('a terminal printing all day on its own stops short of hot',
-    heatOf(rec([['2026-10-13', 0, 480]]), ['2026-10-13']), OUTPUT_CEILING)
-  check('…which is warm', temperatureOf(rec([['2026-10-13', 0, 480]]), ['2026-10-13']) === 'warm')
-  eq('output adds to use, a tenth as much', heatOf(rec([['2026-10-13', 30, 100]]), ['2026-10-13']), 40)
-  eq('no record has no heat', heatOf(undefined, ['2026-10-13']), 0)
+  // How much: minutes of use, as they count today.
+  eq('a minute today is worth a minute', minutesOf(rec([['2026-10-13', 60]]), ['2026-10-13']), 60)
+  near('a day of use ago, DAILY_DECAY of one', minutesOf(rec([['2026-10-12', 60]]), ['2026-10-13', '2026-10-12']), 60 * DAILY_DECAY)
+  near('a fortnight away costs a single day', minutesOf(rec([['2026-09-28', 60]]), ['2026-10-13', '2026-09-28']), 60 * DAILY_DECAY)
+  eq('a terminal printing all day on its own counts for OUTPUT_CEILING minutes at most',
+    minutesOf(rec([['2026-10-13', 0, 480]]), ['2026-10-13']), OUTPUT_CEILING)
+  eq('output adds to use, a tenth as much', minutesOf(rec([['2026-10-13', 30, 100]]), ['2026-10-13']), 40)
+  eq('no record has no minutes', minutesOf(undefined, ['2026-10-13']), 0)
 
-  // Temperature.
+  // How recently. T is ten in the morning.
+  const H = 3_600_000
   const today = ['2026-10-13']
-  eq('hot from HOT', temperatureOf(rec([['2026-10-13', HOT]]), today), 'hot')
-  eq('warm just below it', temperatureOf(rec([['2026-10-13', HOT - 1]]), today), 'warm')
-  eq('warm from WARM', temperatureOf(rec([['2026-10-13', WARM]]), today), 'warm')
-  eq('cool just below it', temperatureOf(rec([['2026-10-13', WARM - 1]]), today), 'cool')
-  eq('no record is cool, not cold', temperatureOf(undefined, today), 'cool')
+  const usedAt = (t: number, minutes = 5): WorkspaceActivity => ({ ...rec([[localDay(t), minutes]]), usedAt: t })
+  eq('used just now is as recent as anything', recencyOf(usedAt(T), today, T), 1)
+  near('an hour on, it has begun to fade', recencyOf(usedAt(T), today, T + H), DAILY_DECAY ** (1 / FADE_HOURS))
+  near(`${FADE_HOURS} hours on, as far as a day of use would take it`, recencyOf(usedAt(T), today, T + FADE_HOURS * H), DAILY_DECAY)
+  near('…and no further that day', recencyOf(usedAt(T), today, T + 12 * H), DAILY_DECAY)
+  const nextDay = ['2026-10-14', '2026-10-13']
+  near('which is where the next day of use leaves it, so midnight moves nothing',
+    recencyOf(usedAt(T), nextDay, at(2026, 10, 14, 0, 1)), DAILY_DECAY)
+  near('each day of use after that takes as much again',
+    recencyOf(usedAt(T), ['2026-10-15', ...nextDay], at(2026, 10, 15)), DAILY_DECAY ** 2)
+  near('days without use take nothing', recencyOf(usedAt(T), ['2026-10-19', '2026-10-13'], at(2026, 10, 19)), DAILY_DECAY)
+  eq('a clock put back counts as just now', recencyOf(usedAt(T + H), today, T), 1)
+  near('a day with no time of use to go by is as faded as a day can make it',
+    recencyOf(rec([['2026-10-13', 5]]), today, T), DAILY_DECAY)
+  near('a terminal printing on its own just now is OUTPUT_GLOW as recent',
+    recencyOf({ ...rec([['2026-10-13', 0, 30]]), outputAt: T }, today, T), OUTPUT_GLOW)
+  near('use and output, whichever leaves more', recencyOf({
+    since: '2026-10-12',
+    usedAt: at(2026, 10, 12),
+    outputAt: T,
+    days: [{ day: '2026-10-13', used: 0, output: 3 }, { day: '2026-10-12', used: 9, output: 0 }]
+  }, ['2026-10-13', '2026-10-12'], T), Math.max(DAILY_DECAY, OUTPUT_GLOW))
+  eq('a record nothing has happened in yet is not recent at all', recencyOf(freshActivity(T), today, T), 0)
+  eq('nor is no record', recencyOf(undefined, today, T), 0)
+
+  // How hot: mostly how recently, partly how much.
+  const glance = usedAt(T, 1)
+  near('a glance just now is about LEAST_GLOW',
+    heatOf(glance, today, T), LEAST_GLOW + (1 - LEAST_GLOW) * (1 - Math.exp(-1 / BUSY_MINUTES)))
+  check('an hour of work just now is all but full', heatOf(usedAt(T, 60), today, T) > 0.97)
+  check('of two used at the same moment, the busier is the hotter', heatOf(usedAt(T, 30), today, T) > heatOf(glance, today, T))
+  near('an hour after a glance, it has faded as recency does',
+    heatOf(glance, today, T + H), heatOf(glance, today, T) * DAILY_DECAY ** (1 / FADE_HOURS))
+  const day15 = at(2026, 10, 15)
+  const twoDaysOn = ['2026-10-15', '2026-10-14', '2026-10-13']
+  check('mostly how recently: a glance just now outshines a full day\'s work two days of use ago',
+    heatOf(usedAt(day15, 1), twoDaysOn, day15) > heatOf(usedAt(T, 480), twoDaysOn, day15))
+  check('…and how much still counts: the same day\'s work one day of use ago outshines it',
+    heatOf(usedAt(T, 480), nextDay, at(2026, 10, 14)) > heatOf(usedAt(at(2026, 10, 14), 1), nextDay, at(2026, 10, 14)))
+  check('a terminal printing all day on its own is cooler than a glance from the user',
+    heatOf({ ...rec([['2026-10-13', 0, 480]]), outputAt: T }, today, T) < heatOf(glance, today, T))
+  eq('a workspace nothing has happened in is not hot at all', heatOf(freshActivity(T), today, T), 0)
+  eq('nor is one with no record', heatOf(undefined, today, T), 0)
+
+  // Cold.
   const days = (n: number): string[] => Array.from({ length: n + 1 }, (_, i) => localDay(at(2026, 10, 13) - i * 86_400_000))
   const used = days(COLD_AFTER)
-  eq(`nothing for ${COLD_AFTER} days of use is cold`, temperatureOf(rec([[used[COLD_AFTER], 5]]), used), 'cold')
-  eq('one day fewer is not', temperatureOf(rec([[used[COLD_AFTER - 1], 5]]), used), 'cool')
-  eq('cold goes by recency, however busy it once was',
-    temperatureOf(rec([[used[COLD_AFTER], 5000]]), used), 'cold')
+  eq(`nothing for ${COLD_AFTER} days of use is cold`, isCold(rec([[used[COLD_AFTER], 5]]), used), true)
+  eq('one day fewer is not', isCold(rec([[used[COLD_AFTER - 1], 5]]), used), false)
+  eq('cold goes by recency, however busy it once was', isCold(rec([[used[COLD_AFTER], 5000]]), used), true)
+  eq('no record is not cold', isCold(undefined, used), false)
   eq('a workspace that has just appeared is not cold, whatever the clock says',
-    temperatureOf(freshActivity(at(2026, 10, 13)), used), 'cool')
-  eq('nor one that was there all along, from the day heat arrived', temperatureOf({ since: used[3], days: [] }, used), 'cool')
-  eq(`…until ${COLD_AFTER} days of use pass with nothing in it`, temperatureOf({ since: used[COLD_AFTER], days: [] }, used), 'cold')
-  eq('a terminal printing keeps it from going cold',
-    temperatureOf(rec([['2026-10-13', 0, 30], [used[COLD_AFTER], 50]]), used), 'cool')
+    isCold(freshActivity(at(2026, 10, 13)), used), false)
+  eq('nor one that was there all along, from the day heat arrived', isCold({ since: used[3], days: [] }, used), false)
+  eq(`…until ${COLD_AFTER} days of use pass with nothing in it`, isCold({ since: used[COLD_AFTER], days: [] }, used), true)
+  eq('a terminal printing keeps it from going cold', isCold(rec([['2026-10-13', 0, 30], [used[COLD_AFTER], 50]]), used), false)
   eq('when anything last happened, whichever kind', lastActiveAt({ since: '2026-10-13', usedAt: 5, outputAt: 9, days: [] }), 9)
   eq('never is null', lastActiveAt(freshActivity(T)), null)
 
   // Ordering.
-  const w = (id: string, temperature: Warmth['temperature'], heat: number, lastActive = 0): Warmth & { id: string } =>
-    ({ id, temperature, heat, lastActive })
-  const sorted = [w('cold-old', 'cold', 900, 1), w('cool', 'cool', 2, 5), w('hot', 'hot', 50, 3),
-    w('cold-new', 'cold', 0, 9), w('tie-a', 'cool', 2, 5), w('warm', 'warm', 9, 1)].sort(compareWarmth)
+  const w = (id: string, cold: boolean, heat: number, lastActive = 0): Warmth & { id: string } =>
+    ({ id, cold, heat, lastActive })
+  const sorted = [w('cold-old', true, 0.9, 1), w('dim', false, 0.1, 5), w('hot', false, 0.9, 3),
+    w('cold-new', true, 0, 9), w('tie-a', false, 0.1, 5), w('warm', false, 0.5, 1)].sort(compareWarmth)
   eq('hottest first, cold last, recent first among the cold, ties as they were',
-    sorted.map((x) => x.id).join(','), 'hot,warm,cool,tie-a,cold-new,cold-old')
+    sorted.map((x) => x.id).join(','), 'hot,warm,dim,tie-a,cold-new,cold-old')
   eq('equal heat goes to the more recent',
-    [w('a', 'cool', 3, 1), w('b', 'cool', 3, 2)].sort(compareWarmth).map((x) => x.id).join(','), 'b,a')
+    [w('a', false, 0.3, 1), w('b', false, 0.3, 2)].sort(compareWarmth).map((x) => x.id).join(','), 'b,a')
 
   // In the order the user chose.
-  const l = (id: string, name: string, temperature: Warmth['temperature'], heat: number, lastActive: number, createdAt: number): Listed =>
-    ({ id, name, temperature, heat, lastActive, createdAt })
+  const l = (id: string, name: string, cold: boolean, heat: number, lastActive: number, createdAt: number): Listed =>
+    ({ id, name, cold, heat, lastActive, createdAt })
   const listed = [
-    l('busy', 'Busy', 'hot', 60, 5_000, 3_000),
-    l('agent', 'agent', 'warm', 20, 9_000, 1_000),
-    l('fresh', 'fresh', 'cool', 0, 0, 9_000),
-    l('idle', 'api10', 'cool', 2, 7_000, 5_000),
-    l('old', 'api2', 'cold', 900, 2_000, 7_000),
-    l('older', 'Zed', 'cold', 50, 1_000, 2_000)
+    l('busy', 'Busy', false, 0.95, 5_000, 3_000),
+    l('agent', 'agent', false, 0.35, 9_000, 1_000),
+    l('fresh', 'fresh', false, 0, 0, 9_000),
+    l('idle', 'api10', false, 0.1, 7_000, 5_000),
+    l('old', 'api2', true, 0, 2_000, 7_000),
+    l('older', 'Zed', true, 0, 1_000, 2_000)
   ]
   const runs = (r: { recent: string[]; cold: string[] }): string => `${r.recent.join(',')} | ${r.cold.join(',')}`
   eq('by heat, the hottest first and the cold below', runs(rankWorkspaces(listed, 'heat')), 'busy,agent,idle,fresh | old,older')
@@ -1254,12 +1302,12 @@ console.log('\nworkspace heat')
   eq('by date added, the newest first, the cold in their places', runs(rankWorkspaces(listed, 'created')), 'fresh,old,idle,busy,older,agent | ')
   eq('by name, numbers as numbers and capitals aside', runs(rankWorkspaces(listed, 'name')), 'agent,old,idle,busy,fresh,older | ')
   eq('the list handed in is left as it was', listed.map((x) => x.id).join(','), 'busy,agent,fresh,idle,old,older')
-  const twins = [l('a', 'same', 'cool', 0, 0, 5), l('b', 'Same', 'cool', 0, 0, 5)]
+  const twins = [l('a', 'same', false, 0, 0, 5), l('b', 'Same', false, 0, 0, 5)]
   eq('added at once, they keep their places', rankWorkspaces(twins, 'created').recent.join(','), 'a,b')
   eq('…either way round', rankWorkspaces([...twins].reverse(), 'created').recent.join(','), 'b,a')
   eq('one name twice, the same', rankWorkspaces([...twins].reverse(), 'name').recent.join(','), 'b,a')
   eq('a time added that is not one counts as the oldest',
-    rankWorkspaces([l('bad', 'x', 'cool', 0, 0, Number.NaN), l('ok', 'y', 'cool', 0, 0, 1)], 'created').recent.join(','), 'ok,bad')
+    rankWorkspaces([l('bad', 'x', false, 0, 0, Number.NaN), l('ok', 'y', false, 0, 0, 1)], 'created').recent.join(','), 'ok,bad')
 
   // Holding the order under the pointer.
   const held = { recent: ['a', 'b', 'c'], cold: ['x', 'y'] }

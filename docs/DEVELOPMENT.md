@@ -17,7 +17,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke` | launch headless, assert the shell mounted, exit non-zero if not |
 | `pnpm git:selftest` | 58 checks against the git binary and a fixture repo |
 | `pnpm search:selftest` | the workspace search engines — ripgrep, git grep, the plain walk — agreeing on a fixture, Chinese columns included |
-| `pnpm panes:selftest` | 509 checks on the split tree, the editor groups and their layout, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one or taking one out without disturbing the rest of it, the Range headers a video element sends, the arithmetic of workspace heat and the other orders the list can be in, and when a terminal is at work |
+| `pnpm panes:selftest` | 526 checks on the split tree, the editor groups and their layout, key chords, the shortcut table, the tab strip, the rules for naming workspace files, adding a folder to one or taking one out without disturbing the rest of it, the Range headers a video element sends, the arithmetic of workspace heat and the other orders the list can be in, and when a terminal is at work |
 | `pnpm perf:check` | asserts the startup budget against a real build (see Plugins) |
 | `pnpm smoke:plugins` | asserts the plugin boundary: the text editor loads, pdf.js does not; an image opens fitted and zooms |
 | `pnpm smoke:video` | records a film in the renderer, plays it from its `rigee-media://` URL, asserts 206 / 416 / 200 for ranges, resuming after a tab switch and in a split copy, the URL dying with the tab, and failures in words. `RIGEE_SMOKE_VIDEO_DIR` also surveys a folder of videos and reports which play; `RIGEE_SHOT` leaves a PNG |
@@ -520,9 +520,9 @@ terminal that got its own pty.
 
 ### Workspace heat
 
-The side bar orders and colours the workspace list by how much each has been used lately. Three
-files: `heat.ts` is the arithmetic and is pure, so `panes:selftest` holds it to its numbers;
-`activity.ts` notices use and output; the side bar draws the result.
+The side bar orders and colours the workspace list by heat: mostly how recently each workspace was
+used, partly how much. Three files: `heat.ts` is the arithmetic and is pure, so `panes:selftest`
+holds it to its numbers; `activity.ts` notices use and output; the side bar draws the result.
 
 - **What is stored is raw, and where.** Minutes per day — `used` and `output` — a few weeks of
   them, in `WorkspaceUiState.activity`, never a score: weighing them differently later is a change
@@ -537,11 +537,23 @@ files: `heat.ts` is the arithmetic and is pure, so `panes:selftest` holds it to 
 - **Age is days of use, not calendar days.** A day counts if the user did something in some
   workspace that day; output alone does not make one, or a program left printing over a holiday
   would age everything else. Do not "simplify" this to wall-clock decay: the list would come back
-  from two weeks away with every workspace cold.
-- **Cold goes by recency, heat by score.** Cold is ten days of use with nothing at all in a
+  from two weeks away with every workspace cold. The one place the clock is used is today: a
+  use's heat fades by the hour from `usedAt` down to `DAILY_DECAY` in `FADE_HOURS` and stops,
+  which is exactly what the first day of use leaves it — so midnight moves nothing, and nothing
+  older than today ever ages by the clock.
+- **Mostly recency, by multiplication.** Heat is how recently, scaled by how much: `recencyOf`
+  times a factor from `LEAST_GLOW` for a glance to 1 for heavy use. However much a workspace was
+  used, it cannot stay lit once it stops being used. The first version scored minutes alone and
+  bucketed them into hot, warm and cool; a few busy days held a workspace hot for most of a week,
+  and the colours looked as if they never changed.
+- **A colour, not buckets.** Heat reaches the page as `--heat`, 0 to 1 to two places, on the row,
+  and `theme.css` mixes the icon from grey to `--heat-hot` by it — so a row is redrawn only when
+  the colour could show the difference. The filled folder and the brighter name come in over the
+  top half only, for the workspaces in use now.
+- **Cold goes by recency, and is a rule.** Cold is ten days of use with nothing at all in a
   workspace, however busy it once was — the one thing the side bar offers to remove, so its reason
-  has to be one anybody can check. A workspace with no record is cool, never cold, which is how the
-  ones that predate heat survive the upgrade.
+  has to be one anybody can check, where "its heat fell below a twentieth" is not. A workspace with
+  no record is unlit, never cold, which is how the ones that predate heat survive the upgrade.
 - **The list scrolls.** It is capped at 220 px, so the cold run is usually below its fold. That is
   why *N cold* is in the header, and why `smoke:heat` scrolls a row into view before clicking it —
   a point below the fold is on the explorer, and a click there switches nothing.

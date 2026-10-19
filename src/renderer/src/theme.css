@@ -65,13 +65,12 @@
   --kind-web: #f0a45d;
 
   /*
-   * --- workspace heat: one hue stepped in lightness, so the order reads without a legend ---
+   * --- workspace heat: one hue, as much of it as a workspace's heat ---
    *
-   * Warm and hot only; a cool workspace keeps the faint grey every icon had, so the colour picks
-   * out the ones in use rather than tinting the whole list. Both clear 3:1 on the panel and 2:1 on
-   * the selected row, measured.
+   * Mixed into the faint grey every icon had, from none of it at heat 0 to all of it at 1, so the
+   * colour picks out the ones in use and fades with them rather than tinting the whole list. At
+   * full strength it clears 3:1 on the panel and 2:1 on the selected row, measured.
    */
-  --heat-warm: #c98a52;
   --heat-hot: #f5a55c;
 
   /* --- a terminal finished while the user was elsewhere: the terminal green, solid, wanting a look --- */
@@ -806,29 +805,28 @@ textarea:focus {
   display: none;
 }
 
-/* A workspace's heat, on its icon (see heat.ts). */
+/* A workspace's heat, on its icon (see heat.ts): `--heat`, 0 to 1, set on its row. Mixed in
+   oklab, so the grey warms evenly instead of going through mud on its way to orange. */
 .heat__icon {
   display: grid;
   place-items: center;
-  color: var(--fg-faint);
+  color: color-mix(in oklab, var(--heat-hot) calc(var(--heat, 0) * 100%), var(--fg-faint));
 }
 
-.heat--warm .heat__icon {
-  color: var(--heat-warm);
+/* The hottest are also a filled folder and a brighter name: at 13px two near shades of one hue
+   are a close call, and a shape and a weight of ink are not. Both come in over the top half of
+   heat only — `--heat-top`, 0 at half and 1 at full — so a glance just now is still an outline.
+   Folders only — a terminal glyph has no inside. */
+.heat {
+  --heat-top: max(0, var(--heat, 0) * 2 - 1);
 }
 
-.heat--hot .heat__icon {
-  color: var(--heat-hot);
+.heat .heat__icon--folder svg {
+  fill: color-mix(in srgb, var(--heat-hot) calc(var(--heat-top) * 38%), transparent);
 }
 
-/* Hot is also a filled folder and a brighter name: at 13px the two steps of one hue are a close
-   call, and a shape and a weight of ink are not. Folders only — a terminal glyph has no inside. */
-.heat--hot .heat__icon--folder svg {
-  fill: color-mix(in srgb, var(--heat-hot) 38%, transparent);
-}
-
-.heat--hot .row__label {
-  color: var(--fg-bright);
+.heat:not(.row--selected) .row__label {
+  color: color-mix(in srgb, var(--fg-bright) calc(var(--heat-top) * 100%), var(--fg));
 }
 
 /* Cold rows fade, which with the divider above them means cold is never told by colour alone.

@@ -19,15 +19,14 @@ import {
   activityClock,
   heatOf,
   holdRanking,
+  isCold,
   lastActiveAt,
   localDay,
   longAgo,
   rankWorkspaces,
   shortAgo,
-  temperatureOf,
   type Listed,
   type Ranking,
-  type Temperature,
   type Warmth
 } from '../heat'
 import { describePanes, terminalPanes } from '../paneWork'
@@ -62,10 +61,10 @@ setTimeout(() => { void loadColdReview() }, 3000)
  * which project you are in is context for every view, not a view of its own.
  *
  * Ordered and coloured by heat (heat.ts): Scratch first, where it always was, then the workspaces
- * most in use lately, their icons amber when warm and orange when hot; then, faded and below a
- * divider, the cold ones — nothing in them for ten days of use — with a way to clear them out.
- * The sort button in the header orders it by when anything last happened instead, by when each
- * was added, or by name; the colours stay whatever the order.
+ * used most lately, each icon as orange as its heat and fading as the workspace goes unused; then,
+ * faded and below a divider, the cold ones — nothing in them for ten days of use — with a way to
+ * clear them out. The sort button in the header orders it by when anything last happened instead,
+ * by when each was added, or by name; the colours stay whatever the order.
  * Each row also counts its terminals at work and those finished since the user last looked
  * (paneWork.ts), and each count goes to the terminal it counts.
  */
@@ -314,7 +313,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
 
   const warmth = useMemo(() => {
     const clock = activityClock(Object.values(activity), localDay(now))
-    return new Map(workspaces.map((w) => [w.id, warmthOf(activity[w.id], clock)]))
+    return new Map(workspaces.map((w) => [w.id, warmthOf(activity[w.id], clock, now)]))
   }, [workspaces, activity, now])
   // Every workspace but Scratch, which stays first, where it always was, whatever the order.
   const listed = useMemo(
@@ -331,7 +330,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const byId = new Map(workspaces.map((w) => [w.id, w]))
   const scratch = byId.get(SCRATCH_WORKSPACE_ID)
   // Counted from the rows themselves: one clicked while the order is held warms up where it is.
-  const stillCold = ranking.cold.filter((id) => warmth.get(id)?.temperature === 'cold').length
+  const stillCold = ranking.cold.filter((id) => warmth.get(id)?.cold).length
   const panes = useMemo(() => {
     const lists = paneList.split(';')
     return new Map(workspaces.map((w, i) => [w.id, lists[i] ? lists[i].split(',') : []]))
@@ -577,12 +576,14 @@ function WorkspaceRow({
   onRemove: () => void
 }): React.ReactElement {
   const scratch = w.id === SCRATCH_WORKSPACE_ID
-  // Scratch cannot be removed, so it is never offered as cold; quiet is the most it gets.
-  const temperature = scratch && warmth.temperature === 'cold' ? 'cool' : warmth.temperature
+  // Scratch cannot be removed, so it is never offered as cold; unlit is the most it gets.
+  const cold = !scratch && warmth.cold
   return (
     <div
-      className={`row row--clickable heat--${temperature}${selected ? ' row--selected' : ''}${working.length > 0 ? ' row--working' : ''}`}
-      title={describe(w, temperature, activity, now)}
+      className={`row row--clickable heat${cold ? ' heat--cold' : ''}${selected ? ' row--selected' : ''}${working.length > 0 ? ' row--working' : ''}`}
+      // To two places: the colour cannot show more, and the row is not redrawn for less.
+      style={{ '--heat': warmth.heat.toFixed(2) } as React.CSSProperties}
+      title={describe(w, cold, activity, now)}
       onClick={onSelect}
       onContextMenu={(e) => {
         e.preventDefault()
@@ -639,17 +640,17 @@ function WorkspaceRow({
   )
 }
 
-function warmthOf(activity: WorkspaceActivity | undefined, clock: readonly string[]): Warmth {
+function warmthOf(activity: WorkspaceActivity | undefined, clock: readonly string[], now: number): Warmth {
   return {
-    temperature: temperatureOf(activity, clock),
-    heat: heatOf(activity, clock),
+    cold: isCold(activity, clock),
+    heat: heatOf(activity, clock, now),
     lastActive: lastActiveAt(activity) ?? 0
   }
 }
 
 /** Each order as the sort menu offers it, and as the sort button's tooltip says the list is in it. */
 const SORTS: Record<WorkspaceSort, { label: string; title: string }> = {
-  heat: { label: 'Sort by Heat', title: 'Sorted by heat: the busiest lately first' },
+  heat: { label: 'Sort by Heat', title: 'Sorted by heat: the most recently, and most, used first' },
   recent: { label: 'Sort by Last Active', title: 'Sorted by when anything last happened in each, the latest first' },
   created: { label: 'Sort by Date Added', title: 'Sorted by when each was added, the newest first' },
   name: { label: 'Sort by Name', title: 'Sorted by name' }
@@ -668,22 +669,16 @@ function heightOf(stored: unknown): number | undefined {
   return typeof stored === 'number' && Number.isFinite(stored) && stored > 0 ? Math.max(LIST_MIN, stored) : undefined
 }
 
-const TEMPERATURE: Record<Temperature, string> = {
-  hot: 'Hot — busy lately',
-  warm: 'Warm — in use lately',
-  cool: 'Cool — quiet lately',
-  cold: `Cold — nothing in your last ${COLD_AFTER} days with Rigee`
-}
-
-/** A row's tooltip: what its colour means for it, and the times behind that. */
-function describe(
-  w: Workspace,
-  temperature: Temperature,
-  activity: WorkspaceActivity | undefined,
-  now: number
-): string {
-  const lines = [w.name, TEMPERATURE[temperature]]
+/**
+ * A row's tooltip: what its colour is made of — when it was last used, mostly, and how much today —
+ * and why it is cold, if it is.
+ */
+function describe(w: Workspace, cold: boolean, activity: WorkspaceActivity | undefined, now: number): string {
+  const lines = [w.name]
+  if (cold) lines.push(`Cold — nothing in your last ${COLD_AFTER} days with Rigee`)
   if (activity?.usedAt) lines.push(`Last used ${longAgo(activity.usedAt, now)}`)
+  const today = activity?.days.find((d) => d.day === localDay(now))?.used ?? 0
+  if (today > 0) lines.push(`Used ${today === 1 ? '1 minute' : `${today} minutes`} today`)
   if (activity?.outputAt) lines.push(`Terminal output ${longAgo(activity.outputAt, now)}`)
   if (!activity?.usedAt && !activity?.outputAt) lines.push('Nothing recorded yet')
   if (w.id === SCRATCH_WORKSPACE_ID) {

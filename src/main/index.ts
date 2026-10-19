@@ -4437,8 +4437,8 @@ function plantHeatDocument(dir: string): void {
 }
 
 /**
- * End-to-end check of workspace heat: the side bar ordered and coloured by how much each workspace
- * has been used, the order held still while the pointer is over it, use and terminal output each
+ * End-to-end check of workspace heat: the side bar ordered and coloured by how recently, and how
+ * much, each workspace has been used, the order held still while the pointer is over it, use and terminal output each
  * counted — output in a workspace nobody is looking at, too — and the cold ones cleared out through
  * their checklist, with what it all comes to read back from disk.
  *
@@ -4486,7 +4486,11 @@ async function runHeatSmoke(): Promise<void> {
     })
     const rows = () => [...document.querySelectorAll('.workspace-list .row')]
     const row = (label) => rows().find(r => r.querySelector('.row__label').textContent === label)
-    const heat = (label) => (row(label)?.className.match(/heat--(\\w+)/) || [])[1]
+    // A row's heat as drawn: 'cold', or what its colour is mixed by, 0 to 1.
+    const heat = (label) => {
+      const r = row(label)
+      return !r ? undefined : r.classList.contains('heat--cold') ? 'cold' : Number(r.style.getPropertyValue('--heat'))
+    }
     const meta = (label) => row(label)?.querySelector('.row__meta')?.textContent
     const divider = () => document.querySelector('.workspace-list .heat-divider')?.textContent || ''
     // The list as it reads down the side bar, the divider as a bar.
@@ -4518,7 +4522,7 @@ async function runHeatSmoke(): Promise<void> {
 
   try {
     // --- the workspaces there were before heat -------------------------------------------------
-    const booted = await js<{ ok: boolean; stage?: string; today?: string; before?: unknown; garbled?: unknown; heats?: string[]; divider?: string }>(`(async () => {
+    const booted = await js<{ ok: boolean; stage?: string; today?: string; before?: unknown; garbled?: unknown; heats?: Array<number | string>; divider?: string }>(`(async () => {
       ${helpers}
       if (!(await until(() => store.getState().ready && row('garbled'), 15000))) return { ok: false, stage: 'never-ready' }
       await sleep(300)
@@ -4530,13 +4534,13 @@ async function runHeatSmoke(): Promise<void> {
     trail.push(`before heat, read back as ${JSON.stringify(booted.before)}; the garbled one as ${JSON.stringify(booted.garbled)}`)
     if (JSON.stringify(booted.before) !== fresh) return finish(false, 'a-workspace-from-before-heat-did-not-start-today')
     if (JSON.stringify(booted.garbled) !== fresh) return finish(false, 'a-garbled-record-was-not-replaced')
-    if (booted.heats?.join() !== 'cool,cool' || booted.divider) {
+    if (booted.heats?.join() !== '0,0' || booted.divider) {
       return finish(false, 'a-workspace-from-before-heat-came-up-cold', booted)
     }
-    trail.push('neither came up cold')
+    trail.push('neither came up cold, nor lit')
 
     // --- ordered and coloured --------------------------------------------------------------------
-    const planted = await js<{ layout: string; heats: Record<string, string>; metas: Record<string, string>; divider: string; hint: string }>(`(async () => {
+    const planted = await js<{ layout: string; heats: Record<string, number | string>; metas: Record<string, string>; divider: string; hint: string }>(`(async () => {
       ${helpers}
       const now = Date.now()
       const s = store.getState()
@@ -4548,7 +4552,7 @@ async function runHeatSmoke(): Promise<void> {
       for (let i = 1; i <= 11; i++) hotDays.push({ day: day(i), used: 30, output: 0 })
       store.setState((st) => ({ activityByWorkspace: { ...st.activityByWorkspace,
         'ws-hot': { since: day(11), usedAt: now - 5.5 * 60000, days: hotDays },
-        'ws-warm': { since: day(0), usedAt: now - 2.5 * 3600000, days: [{ day: day(0), used: 12, output: 0 }] },
+        'ws-warm': { since: day(0), usedAt: now - 1.5 * 3600000, days: [{ day: day(0), used: 20, output: 0 }] },
         'ws-agent': { since: day(0), outputAt: now - 3.5 * 60000, days: [{ day: day(0), used: 0, output: 300 }] },
         'ws-cool': { since: day(3), usedAt: now - 3.5 * DAY, days: [{ day: day(3), used: 2, output: 0 }] },
         'ws-cold': { since: day(11), usedAt: now - 11.5 * DAY, days: [{ day: day(11), used: 60, output: 0 }] },
@@ -4560,16 +4564,23 @@ async function runHeatSmoke(): Promise<void> {
         heats: Object.fromEntries(labels.map(l => [l, heat(l)])), metas: Object.fromEntries(labels.map(l => [l, meta(l)])) }
     })()`)
     trail.push(`the list: ${planted.layout}`)
-    if (planted.layout !== 'Scratch hot agent warm cool before garbled new | cold stale') return finish(false, 'not-ordered-by-heat', planted)
-    const wanted: Record<string, string> = {
-      Scratch: 'cool', hot: 'hot', agent: 'warm', warm: 'warm', cool: 'cool', before: 'cool', garbled: 'cool', new: 'cool', cold: 'cold', stale: 'cold'
+    if (planted.layout !== 'Scratch hot warm agent cool before garbled new | cold stale') return finish(false, 'not-ordered-by-heat', planted)
+    // Mostly how recently, partly how much: hot used minutes ago after eleven busy days; warm an
+    // hour and a half ago; agent only printing, minutes ago; cool a couple of minutes three days
+    // of use ago; nothing ever in the rest.
+    const between = (lo: number, hi: number) => (h: number | string | undefined): boolean => typeof h === 'number' && h > lo && h < hi
+    const wanted: Record<string, (h: number | string | undefined) => boolean> = {
+      Scratch: (h) => h === 0, hot: between(0.95, 1.01), warm: between(0.5, 0.8), agent: between(0.2, 0.45),
+      cool: between(0, 0.2), before: (h) => h === 0, garbled: (h) => h === 0, new: (h) => h === 0,
+      cold: (h) => h === 'cold', stale: (h) => h === 'cold'
     }
-    const wrong = Object.entries(wanted).filter(([label, t]) => planted.heats[label] !== t)
-    if (wrong.length > 0) return finish(false, 'wrong-temperatures', { wrong, heats: planted.heats })
-    trail.push('an agent printing all day on its own is warm, not hot')
+    const wrong = Object.entries(wanted).filter(([label, ok]) => !ok(planted.heats[label]))
+    trail.push(`heats: ${JSON.stringify(planted.heats)}`)
+    if (wrong.length > 0) return finish(false, 'wrong-heats', { wrong: wrong.map(([label]) => label), heats: planted.heats })
+    trail.push('an agent printing on its own is lit, but less than the user lights one up')
     const times = ['hot', 'agent', 'warm', 'cool', 'new', 'cold', 'stale'].map((l) => `${l} ${planted.metas[l] || '—'}`).join(', ')
     trail.push(`last active: ${times}`)
-    if (times !== 'hot 5m, agent 3m, warm 2h, cool 3d, new —, cold 11d, stale 13d') return finish(false, 'wrong-times', planted.metas)
+    if (times !== 'hot 5m, agent 3m, warm 1h, cool 3d, new —, cold 11d, stale 13d') return finish(false, 'wrong-times', planted.metas)
     if (!planted.divider.includes('Cold · 2')) return finish(false, 'no-cold-divider', planted.divider)
     if (planted.hint !== '2 cold') return finish(false, 'no-cold-hint-in-the-header', planted.hint)
     trail.push(`the header says ${planted.hint}, the list scrolling or not`)
@@ -4585,21 +4596,21 @@ async function runHeatSmoke(): Promise<void> {
     if (!coolAt) return finish(false, 'no-cool-row')
     pointTo(coolAt)
     await sleep(250)
-    const underPointer = await js<{ layout: string; heat: string }>(`(async () => {
+    const underPointer = await js<{ layout: string; heat: number | string }>(`(async () => {
       ${helpers}
       const a = activity('ws-cool')
       store.getState().setActivity('ws-cool', { ...a, usedAt: Date.now(), days: [{ day: day(0), used: 500, output: 0 }, ...a.days] })
       await sleep(400)
       return { layout: layout().join(' '), heat: heat('cool') }
     })()`)
-    trail.push(`with the pointer on it, cool turned ${underPointer.heat} and the list stayed: ${underPointer.layout}`)
-    if (underPointer.heat !== 'hot') return finish(false, 'heat-did-not-change-under-the-pointer', underPointer)
+    trail.push(`with the pointer on it, cool lit to ${underPointer.heat} and the list stayed: ${underPointer.layout}`)
+    if (typeof underPointer.heat !== 'number' || underPointer.heat < 0.95) return finish(false, 'heat-did-not-change-under-the-pointer', underPointer)
     if (underPointer.layout !== planted.layout) return finish(false, 'the-list-moved-under-the-pointer', underPointer)
     pointTo(away)
     await sleep(400)
     const resorted = await layout()
     trail.push(`pointer gone, the list re-sorted: ${resorted}`)
-    if (resorted !== 'Scratch cool hot agent warm before garbled new | cold stale') return finish(false, 'did-not-re-sort-once-the-pointer-left', resorted)
+    if (resorted !== 'Scratch cool hot warm agent before garbled new | cold stale') return finish(false, 'did-not-re-sort-once-the-pointer-left', resorted)
 
     // --- a cold workspace, clicked --------------------------------------------------------------
     const coldAt = await rowCentre('cold')
@@ -4609,7 +4620,7 @@ async function runHeatSmoke(): Promise<void> {
     wc.sendInputEvent({ type: 'mouseDown', x: coldAt.x, y: coldAt.y, button: 'left', clickCount: 1 })
     wc.sendInputEvent({ type: 'mouseUp', x: coldAt.x, y: coldAt.y, button: 'left', clickCount: 1 })
     await sleep(400)
-    const clicked = await js<{ active: string; today: unknown; usedAgo: number; scratchUsed: boolean; layout: string; heat: string; selected: boolean; divider: string }>(`(() => {
+    const clicked = await js<{ active: string; today: unknown; usedAgo: number; scratchUsed: boolean; layout: string; heat: number | string; selected: boolean; divider: string }>(`(() => {
       ${helpers}
       const a = activity('ws-cold')
       return { active: store.getState().activeWorkspaceId, today: a.days[0], usedAgo: Date.now() - a.usedAt,
@@ -4622,15 +4633,16 @@ async function runHeatSmoke(): Promise<void> {
       return finish(false, 'switching-was-not-counted-as-use', clicked)
     }
     if (clicked.scratchUsed) return finish(false, 'the-press-in-the-list-counted-for-the-workspace-left')
-    if (clicked.heat !== 'cool' || !clicked.selected) return finish(false, 'a-clicked-cold-workspace-did-not-warm', clicked)
+    // Used just now, if only for a moment: at least a glance's heat, however long it was cold.
+    if (typeof clicked.heat !== 'number' || clicked.heat < 0.5 || !clicked.selected) return finish(false, 'a-clicked-cold-workspace-did-not-warm', clicked)
     if (clicked.layout !== resorted) return finish(false, 'the-clicked-row-moved-under-the-pointer', clicked)
     if (!clicked.divider.includes('Cold · 1')) return finish(false, 'divider-still-counts-the-clicked-one', clicked.divider)
-    trail.push(`it warmed where it was, under the pointer: ${clicked.layout}`)
+    trail.push(`it lit to ${clicked.heat} where it was, under the pointer: ${clicked.layout}`)
     pointTo(away)
     await sleep(400)
     const promoted = await layout()
     trail.push(`pointer gone: ${promoted}`)
-    if (promoted !== 'Scratch cool hot agent warm cold before garbled new | stale') return finish(false, 'clicked-workspace-did-not-move-up', promoted)
+    if (promoted !== 'Scratch cool hot warm cold agent before garbled new | stale') return finish(false, 'clicked-workspace-did-not-move-up', promoted)
 
     // --- a minute counts once -----------------------------------------------------------------
     const usedBefore = await js<number>(`window.__rigee.store.getState().activityByWorkspace['ws-cold'].days[0].used`)
@@ -4711,7 +4723,7 @@ async function runHeatSmoke(): Promise<void> {
     if (byName.offered !== 'Sort by Heat ✓, Sort by Last Active, Sort by Date Added, Sort by Name') return finish(false, 'sort-menu-wrong', byName)
     trail.push(`by name: ${byName.layout}`)
     if (byName.layout !== 'Scratch agent before chatty cold cool garbled hot new quiet stale warm') return finish(false, 'not-sorted-by-name', byName)
-    const faded = await js<{ heat: string; hint: string }>(`(() => { ${helpers}; return { heat: heat('stale'), hint: document.querySelector('.heat-hint')?.textContent || '' } })()`)
+    const faded = await js<{ heat: number | string; hint: string }>(`(() => { ${helpers}; return { heat: heat('stale'), hint: document.querySelector('.heat-hint')?.textContent || '' } })()`)
     if (faded.heat !== 'cold' || faded.hint !== '1 cold') return finish(false, 'sorted-by-name-the-cold-one-lost-its-heat', faded)
     trail.push('stale keeps its place among the names, faded, and the header still says 1 cold')
     if (!(await sortOnDisk('name'))) return finish(false, 'the-order-was-not-saved', readDoc().settings)

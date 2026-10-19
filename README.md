@@ -39,9 +39,9 @@ running your own shell.
   *Workspace*, above the repos — because that folder is the workspace's own. The tree does to
   files what VS Code's does: new, rename, cut, copy, paste, delete, drag in from Finder or around
   the tree — see [the explorer](#the-explorer).
-  The list is ordered by [heat](#workspace-heat): the workspaces you have been busiest in come
-  first, orange when hot and amber when warm, and the ones you have not touched in a while fade
-  out below a *Cold* divider, with a checklist for removing them. The sort button in its header
+  The list is ordered by [heat](#workspace-heat): the workspaces you have been in most recently
+  come first, each icon as orange as it is hot and fading as it goes unused, and the ones you have
+  not touched in a while fade out below a *Cold* divider, with a checklist for removing them. The sort button in its header
   orders it instead by when anything last happened in each, by when each was added, or by name.
   Each row also counts the [terminals at work](#terminals-at-work) in it — an agent or a build
   printing — and, in green, the ones that have finished since you last looked; click a count to go
@@ -116,7 +116,7 @@ an app launched from Finder inherits almost none of it.
 | A folder added to a saved workspace goes into its `.code-workspace` file, and one removed comes out of it, comments and settings kept | works |
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
 | A saved workspace's explorer starts with that folder, marked out from the repos below it | works |
-| Workspace heat — the list ordered by how much each workspace has been used lately, hot and warm ones coloured, with how long since anything happened in each | works |
+| Workspace heat — the list ordered by how recently, and how much, each workspace has been used, its colour fading as it goes unused, with how long since anything happened in each | works |
 | The workspace list sorted another way from its header — by last activity, by date added or by name — and kept in that order | works |
 | The line between the workspace list and the panel below it, dragged to give either more room, and where it was left kept | works |
 | Cold workspaces — nothing in them for ten days of use — faded under their own divider, with a checklist to remove them | works |
@@ -319,30 +319,38 @@ it grows. Pictures from the web are not fetched until you press *Show remote ima
 
 ## Workspace heat
 
-The workspace list shows at a glance where the work is. Each workspace has a heat — how much it has
-been used lately — and the list is ordered by it, with Scratch always first:
+The workspace list shows at a glance where the work is. Each workspace has a heat — mostly how
+recently you were in it, partly how much you have used it lately — and the list is ordered by it,
+with Scratch always first. A workspace's icon is as orange as it is hot, so the colour fades as
+the workspace goes unused:
 
 | | |
 |---|---|
-| **Hot** — orange, filled | about an hour of use today, or more spread over the last few days |
-| **Warm** — amber | ten minutes or so today, or an agent busy in it |
-| **Cool** — grey | little use lately |
+| **Orange**, filled, a brighter name | the workspace you are working in, or were a moment ago |
+| fading through amber to grey | the longer since you were in it: by the hour once you leave, then by the day of use |
 | **Cold** — faded, below a divider | nothing at all in it for ten days of use |
 
-On the right of each row is how long since anything happened there — `5m`, `3h`, `2d`, `3w` — and
-hovering a row says what its heat is made of.
+On the right of each row is how long since anything happened there — `5m`, `3h`, `2d`, `3w` — which
+is most of what its colour says, and hovering a row says when you last used it and for how long
+today.
 
-What counts is a minute in which you did something in the workspace: switched to it, typed, clicked
-or scrolled in it. A minute in which its terminals printed in earnest — an agent at work or a
-build, even while you are in another workspace — counts for a tenth as much, and all of that
-together can make a workspace warm but never hot: an agent keeps its workspace from going cold, but
-only you make one hot. A shell drawing its prompt does not count. Each day of use is worth a
-quarter less than the one after it.
+Once you leave a workspace its heat fades with the clock: an hour later it has 0.88 of what it had,
+four hours later 0.6, which is as far as a day of use takes it, and there it stays until the next
+one. Each day of use after that leaves 0.6 of what was left. How much you have used it lately
+decides the rest: a glance just now lights a workspace about half as much as heavy use does, so it
+outshines a full day's work two days of use ago, though not yesterday's.
 
-Time is counted in **days you used Rigee**, not calendar days, so a weekend or a holiday changes
-nothing — you do not come back to a list of cold workspaces. Workspaces that existed before heat
-did start counting from the day you upgrade, so none of them is cold until ten days of use have
-gone by without it.
+What counts as use is a minute in which you did something in the workspace: switched to it, typed,
+clicked or scrolled in it. A minute in which its terminals printed in earnest — an agent at work or
+a build, even while you are in another workspace — counts too, but lights a workspace at most four
+tenths as much as you do: an agent keeps its workspace from going cold, but only you make one hot.
+A shell drawing its prompt does not count.
+
+Days are counted in **days you used Rigee**, not calendar days, so a weekend or a holiday changes
+nothing — you do not come back to a list of cold workspaces, and a weekend dims Friday's work no
+more than a night would. Only within a day does heat go by the clock. Workspaces that existed before
+heat did start counting from the day you upgrade, so none of them is cold until ten days of use
+have gone by without it.
 
 Heat is the list's order until you choose another from the sort button in its header: *Last Active*
 — when anything last happened in each, so the times down the right read in order — *Date Added*,
