@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { platform } from '../ipc'
 import { useApp } from '../store'
 import { reason, saveWorkspaceFile, stopRemindingToSave } from '../workspaces'
+import { renameWorkspace, workspaceFileRename } from '../workspaceRename'
 import type { Workspace } from '@shared/types'
 import { namedWorkspaceFile, workspaceNameProblem } from '@shared/workspaceFiles'
 
@@ -106,6 +107,99 @@ export function SaveAsForm({
         </button>
       </div>
       {footer}
+    </div>
+  )
+}
+
+/**
+ * "Rename Workspace…": the new name, and where the workspace's file will be once it is renamed with
+ * it — main's answer as the name is typed, so a name already taken is refused before Rename is
+ * pressed, and a folder that goes too is there to see. A workspace never saved has no file, and the
+ * form says only its name changes. In the side bar where the save form is, for the same reason:
+ * nothing is ever drawn over it.
+ */
+export function RenameForm({ workspace, onDone }: { workspace: Workspace; onDone: () => void }): React.ReactElement {
+  const [name, setName] = useState(workspace.name)
+  /** Main's refusal of the name as it stands, or of the rename when it was tried. */
+  const [refused, setRefused] = useState<string | null>(null)
+  const [target, setTarget] = useState(workspace.filePath ?? null)
+  const [busy, setBusy] = useState(false)
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    input.current?.focus()
+    input.current?.select()
+  }, [])
+
+  const unchanged = name === workspace.name
+  const problem = unchanged ? null : workspaceNameProblem(name)
+
+  // Asked a moment after typing stops, and only the answer for the name still in the box counts.
+  useEffect(() => {
+    if (!workspace.filePath || unchanged || problem) {
+      setTarget(workspace.filePath ?? null)
+      return
+    }
+    let current = true
+    const timer = setTimeout(() => {
+      workspaceFileRename(workspace, name, false).then(
+        (moves) => { if (current) setTarget(moves[0]?.to ?? workspace.filePath ?? null) },
+        (e: unknown) => { if (current) setRefused(reason(e)) }
+      )
+    }, 120)
+    return () => {
+      current = false
+      clearTimeout(timer)
+    }
+  }, [workspace, name, unchanged, problem])
+
+  const rename = (): void => {
+    if (problem || busy) return
+    setBusy(true)
+    renameWorkspace(workspace.id, name).then(onDone, (e: unknown) => {
+      setRefused(reason(e))
+      setBusy(false)
+    })
+  }
+
+  const said = problem ?? refused
+  return (
+    <div className="saveas menu menu--inline" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="saveas__title">Rename “{workspace.name}”</div>
+      <input
+        ref={input}
+        value={name}
+        spellCheck={false}
+        onChange={(e) => {
+          setName(e.target.value)
+          setRefused(null)
+        }}
+        onKeyDown={(e) => {
+          // Enter mid-composition picks a candidate in the input method; it does not rename.
+          if (e.nativeEvent.isComposing) return
+          if (e.key === 'Enter' && !said) {
+            e.preventDefault()
+            rename()
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            onDone()
+          }
+        }}
+      />
+      {said ? (
+        <div className="saveas__error">{said}</div>
+      ) : target ? (
+        <div className="saveas__path" title={target}>{target}</div>
+      ) : (
+        <div className="saveas__note">Not saved yet, so there is no workspace file: only its name changes.</div>
+      )}
+      <div className="saveas__actions">
+        <span style={{ flex: 1 }} />
+        <button className="btn" onClick={onDone}>Cancel</button>
+        <button className="btn btn--primary" disabled={!!said || busy} onClick={rename}>
+          Rename
+        </button>
+      </div>
     </div>
   )
 }

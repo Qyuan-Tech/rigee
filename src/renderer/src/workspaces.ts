@@ -13,7 +13,8 @@ import { workspaceFileDir } from '@shared/workspaceFiles'
 
 /**
  * The workspace model's own operations: opening folders as a workspace, adding folders to one and
- * taking them out, saving one as a `.code-workspace` file — and where its terminals start.
+ * taking them out, saving one as a `.code-workspace` file — and where its terminals start. Renaming
+ * one is in `workspaceRename.ts`, which comes with the form that is its one way in.
  *
  * In one place because there are several ways in. The side bar's + menu, the menu a workspace
  * opens when right-clicked, a folder dropped on the explorer or right-clicked there, and the prompt

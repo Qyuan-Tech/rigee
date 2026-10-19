@@ -249,6 +249,25 @@ export interface IpcRequests {
    * the file as it does. Folders it does not name are ignored.
    */
   'workspace:removeFoldersFromFile': (args: { file: string; paths: string[] }) => void
+  /**
+   * Rename a saved workspace's `.code-workspace` file to go with a new name for the workspace — and
+   * the folder it is in too, when the file is filed under the workspace files folder as
+   * `<name>/<name>.code-workspace`. Returns where the file is now and what moved, the file first,
+   * for tabs to follow. With `apply` false nothing is touched, and the answer is what would happen —
+   * for the rename form to show as the name is typed.
+   *
+   * Rejects with a message fit to show: a name that will not do or is taken, a file that has gone,
+   * or unsaved changes in something that would move. It never replaces anything, and never asks.
+   */
+  'workspace:renameWorkspaceFile': (args: {
+    file: string
+    name: string
+    /** The folders of every workspace: a folder holding one of them stays put, and only the file is renamed. */
+    keep: string[]
+    /** Files with unsaved changes: nothing holding one is moved. */
+    unsaved: string[]
+    apply: boolean
+  }) => { file: string; moves: { from: string; to: string }[] }
 
   // --- clipboard -------------------------------------------------------
   /**
@@ -395,6 +414,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'workspace:saveWorkspaceFile',
   'workspace:addFoldersToFile',
   'workspace:removeFoldersFromFile',
+  'workspace:renameWorkspaceFile',
   'clipboard:write',
   'clipboard:read',
   'fs:list',

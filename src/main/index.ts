@@ -5,6 +5,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   rmSync,
   mkdirSync,
   readdirSync,
@@ -34,6 +35,7 @@ import {
   addFoldersToWorkspaceFile,
   parseWorkspaceFile,
   removeFoldersFromWorkspaceFile,
+  renamedWorkspaceFile,
   resolveWorkspaceFilesDir,
   serializeWorkspaceFile
 } from './workspaceFile'
@@ -3052,6 +3054,13 @@ async function runTabsSmoke(): Promise<void> {
  * And a saved workspace's tree is headed by its own folder, the one its file is in: marked as the
  * workspace's and divided from the repos, it lists the file and keeps up with the disk like any
  * other, opens on first sight with them, and is shown once when the file lists it too.
+ * Rename Workspace…, from the same menu: one never saved only changes its name, as its form says.
+ * A saved one's form says where the file will go as the name is typed, refusing a name already
+ * filed before Rename can be pressed; renamed, its file and folder go together, the file's text as
+ * it was, the other workspace opened on the same file follows without taking the name, a tab on the
+ * file follows, and a new terminal starts in the renamed folder. A change of case renames too.
+ * Main refuses a file that has gone, unsaved changes in what would move and a name that climbs; a
+ * file saved in a repo is renamed where it is, and the repo stays as it was.
  *
  * With RIGEE_SHOT_DIR set it also photographs the General page, the name form, the head of the
  * explorer and the question a new terminal asks, which are reviewed by looking at them.
@@ -3538,8 +3547,8 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     })()`)
     if (!added.ok) return finish(false, added.stage ?? 'menu-add-folder', added.labels)
     trail.push(`a saved workspace's menu offered ${added.labels?.join(', ')}`)
-    if (!added.labels?.includes('Add Folder to Workspace…') || !added.labels.includes('Save Workspace As…')) {
-      return finish(false, 'menu-lacks-add-folder-or-save-as', added.labels)
+    if (!['Add Folder to Workspace…', 'Save Workspace As…', 'Rename Workspace…'].every((l) => added.labels?.includes(l))) {
+      return finish(false, 'menu-lacks-add-folder-save-as-or-rename', added.labels)
     }
     let grown = ''
     for (let i = 0; i < 30 && !grown.includes('repo-c'); i++) {
@@ -3624,9 +3633,160 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     if (!named.ok) return finish(false, named.stage ?? 'menu-save-as')
     trail.push(`Save Workspace As… from the menu offered "${named.initial}"; on Scratch greyed: ${named.scratch?.join(', ')}`)
     if (named.initial !== 'repo-a') return finish(false, 'menu-save-as-named-the-wrong-workspace', named.initial)
-    if (!named.scratch?.includes('Add Folder to Workspace…') || !named.scratch.includes('Remove Workspace')) {
+    if (!['Add Folder to Workspace…', 'Rename Workspace…', 'Remove Workspace'].every((l) => named.scratch?.includes(l))) {
       return finish(false, 'scratch-offers-what-it-cannot-do', named.scratch)
     }
+
+    // --- right-click: Rename Workspace… ------------------------------------------------------------
+    // Never saved, only the name changes, and the form says so.
+    const plain = await js<{ ok: boolean; stage?: string; initial?: string; note?: string; filePath?: unknown }>(`(async () => {
+      ${helpers}
+      menus.answer = () => 'rename'
+      row('explore').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const input = await until(() => document.querySelector('.menu--inline.saveas input'))
+      menus.answer = null
+      if (!input) return { ok: false, stage: 'rename-showed-no-form' }
+      const initial = input.value
+      const note = document.querySelector('.saveas__note')?.textContent || ''
+      type(input, 'explorations')
+      await sleep(150)
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-explore' && w.name === 'explorations'))
+      if (!ws) return { ok: false, stage: 'unsaved-workspace-not-renamed', initial, note }
+      if (!(await until(() => !document.querySelector('.menu--inline.saveas')))) return { ok: false, stage: 'rename-form-stayed-open' }
+      return { ok: true, initial, note, filePath: ws.filePath ?? null }
+    })()`)
+    if (!plain.ok) return finish(false, plain.stage ?? 'rename-unsaved', plain)
+    trail.push(`renaming "${plain.initial}", never saved, said "${plain.note}"; it is "explorations" now, still without a file`)
+    if (plain.initial !== 'explore' || !plain.note || plain.filePath !== null) return finish(false, 'renaming-an-unsaved-workspace-went-wrong', plain)
+
+    // Saved by name: the form says where the file goes as the name is typed, refusing one already
+    // filed before Rename can be pressed. Renamed, the file and its folder go together, the file's
+    // text as it was — the hand-written comment too; the other workspace opened on the same file
+    // follows it without taking the name; a tab on the file follows it.
+    const renamedFile = join(filed, 'renamed', 'renamed.code-workspace')
+    const textBefore = readFileSync(target, 'utf8')
+    const asked = await js<{ ok: boolean; stage?: string; initial?: string; shown?: string; taken?: string; disabled?: boolean; bad?: string; to?: string }>(`(async () => {
+      ${helpers}
+      store.getState().openTab('ws-files', {
+        id: 'tab-workspace-file', kind: 'editor', title: 'myworkspace.code-workspace', pinned: false,
+        filePath: ${JSON.stringify(target)}, repoId: null, readOnly: false,
+        viewType: window.__rigee.plugins.resolveViewType(${JSON.stringify(target)})
+      })
+      menus.answer = () => 'rename'
+      row('myworkspace').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const input = await until(() => document.querySelector('.menu--inline.saveas input'))
+      menus.answer = null
+      if (!input) return { ok: false, stage: 'rename-showed-no-form' }
+      const initial = input.value
+      const shown = document.querySelector('.saveas__path')?.textContent || ''
+      type(input, 'second')
+      const taken = (await until(() => document.querySelector('.saveas__error')?.textContent)) || ''
+      const disabled = button(document.querySelector('.menu--inline.saveas'), 'Rename')?.disabled
+      type(input, 'my/bad')
+      await sleep(150)
+      const bad = document.querySelector('.saveas__error')?.textContent || ''
+      type(input, 'renamed')
+      const to = await until(() => {
+        const path = document.querySelector('.saveas__path')?.textContent
+        return path && path.includes('renamed') ? path : null
+      })
+      if (!to) return { ok: false, stage: 'rename-form-never-said-where-the-file-goes', initial, shown, taken, bad }
+      return { ok: true, initial, shown, taken, disabled, bad, to }
+    })()`)
+    if (!asked.ok) return finish(false, asked.stage ?? 'rename-form', asked)
+    trail.push(`the rename form started at "${asked.initial}", showing ${asked.shown}; "second" got "${asked.taken}"; "my/bad" got "${asked.bad}"; "renamed" would go to ${asked.to}`)
+    if (asked.initial !== 'myworkspace' || asked.shown !== target) return finish(false, 'rename-form-started-wrong', asked)
+    if (!asked.taken?.includes('already') || !asked.disabled) return finish(false, 'a-taken-name-was-not-refused-before-rename', asked)
+    if (!asked.bad) return finish(false, 'a-separator-in-the-new-name-was-not-refused', asked)
+    if (asked.to !== renamedFile) return finish(false, 'rename-form-shows-the-wrong-place', asked)
+    await shoot('rename-form')
+
+    const done = await js<{ ok: boolean; stage?: string; ws?: { name: string; filePath?: string | null }; reopened?: { name?: string; filePath?: string | null }; tab?: string | null }>(`(async () => {
+      ${helpers}
+      document.querySelector('.menu--inline.saveas input').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-files' && w.name === 'renamed'))
+      if (!ws) return { ok: false, stage: 'saved-workspace-not-renamed' }
+      if (!(await until(() => !document.querySelector('.menu--inline.saveas')))) return { ok: false, stage: 'rename-form-stayed-open' }
+      const reopened = store.getState().workspaces.find(w => w.id === 'ws-reopened')
+      const tab = store.getState().rowsByWorkspace['ws-files'].groups.flatMap(g => g.tabs).find(t => t.id === 'tab-workspace-file')
+      return { ok: true, ws: { name: ws.name, filePath: ws.filePath }, reopened: { name: reopened?.name, filePath: reopened?.filePath }, tab: tab?.filePath ?? null }
+    })()`)
+    if (!done.ok) return finish(false, done.stage ?? 'rename', done)
+    trail.push(`renamed: ${JSON.stringify(done.ws)}; the other entry on its file ${JSON.stringify(done.reopened)}; the file's tab ${done.tab}`)
+    if (done.ws?.filePath !== renamedFile) return finish(false, 'renamed-workspace-points-at-the-wrong-file', done)
+    if (!existsSync(renamedFile) || existsSync(dirname(target))) return finish(false, 'file-and-folder-not-renamed-together', readdirSync(filed))
+    if (readFileSync(renamedFile, 'utf8') !== textBefore) return finish(false, 'renaming-changed-what-is-in-the-file')
+    if (done.reopened?.filePath !== renamedFile || done.reopened.name !== 'reopened') return finish(false, 'the-other-entry-did-not-follow-or-took-the-name', done.reopened)
+    if (done.tab !== renamedFile) return finish(false, 'a-tab-on-the-file-did-not-follow-it', done.tab)
+    trail.push(`on disk: ${readdirSync(filed).join(', ')}; the file's text, comment and all, as it was`)
+
+    // A change of case only, which disks that ignore case see as the same name: renamed all the same.
+    const recased = await js<{ ok: boolean; stage?: string; filePath?: string | null }>(`(async () => {
+      ${helpers}
+      menus.answer = () => 'rename'
+      row('renamed').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const input = await until(() => document.querySelector('.menu--inline.saveas input'))
+      menus.answer = null
+      if (!input) return { ok: false, stage: 'rename-showed-no-form' }
+      type(input, 'Renamed')
+      if (!(await until(() => document.querySelector('.saveas__path')?.textContent?.includes('Renamed')))) {
+        return { ok: false, stage: 'a-change-of-case-was-refused', said: document.querySelector('.saveas__error')?.textContent }
+      }
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      const ws = await until(() => store.getState().workspaces.find(w => w.id === 'ws-files' && w.name === 'Renamed'))
+      return ws ? { ok: true, filePath: ws.filePath } : { ok: false, stage: 'a-change-of-case-did-not-rename' }
+    })()`)
+    if (!recased.ok) return finish(false, recased.stage ?? 'recase', recased)
+    const recasedDir = join(filed, 'Renamed')
+    const listed = { filed: readdirSync(filed), own: readdirSync(recasedDir) }
+    trail.push(`a change of case: ${recased.filePath}, the files folder holding ${listed.filed.join(', ')} and its own ${listed.own.join(', ')}`)
+    if (recased.filePath !== join(recasedDir, 'Renamed.code-workspace')) return finish(false, 'recased-workspace-points-at-the-wrong-file', recased)
+    if (!listed.filed.includes('Renamed') || listed.filed.includes('renamed') || !listed.own.includes('Renamed.code-workspace')) {
+      return finish(false, 'the-case-did-not-change-on-disk', listed)
+    }
+    const recasedTerminal = await js<{ ok: boolean; stage?: string; paneId?: string }>(`(async () => {
+      ${helpers}
+      store.getState().setActiveWorkspace('ws-files')
+      await sleep(300)
+      const tab = await newTerminal()
+      if (!tab) return { ok: false, stage: 'no-terminal-tab' }
+      const paneId = await startedPane(tab)
+      return paneId ? { ok: true, paneId } : { ok: false, stage: 'terminal-never-started' }
+    })()`)
+    if (!recasedTerminal.ok) return finish(false, recasedTerminal.stage ?? 'renamed-terminal')
+    const renamedAt = await whereIs(recasedTerminal.paneId)
+    trail.push(`a new terminal in it starts in ${renamedAt}`)
+    if (renamedAt !== realpathSync(recasedDir)) return finish(false, 'renamed-workspace-terminal-not-in-its-new-folder', renamedAt)
+
+    // Main's side: what the form would not let through, and a file saved somewhere that is not the
+    // workspace files folder, renamed where it is with its folder left alone — here, a repo.
+    const recasedFile = join(recasedDir, 'Renamed.code-workspace')
+    const insideFile = join(repos[1]!, 'inside.code-workspace')
+    const outsideFile = join(repos[1]!, 'outside.code-workspace')
+    writeFileSync(insideFile, serializeWorkspaceFile(folders, insideFile), 'utf8')
+    const refusals = await js<{ gone: unknown; unsaved: unknown; climb: unknown; elsewhere: unknown }>(`(async () => {
+      const rename = (args) => window.rigee.invoke('workspace:renameWorkspaceFile', { keep: [], unsaved: [], apply: true, ...args })
+        .then((answer) => answer, (e) => String(e && e.message || e))
+      return {
+        gone: await rename({ file: '/nonexistent-rigee-smoke/gone/gone.code-workspace', name: 'went' }),
+        unsaved: await rename({ file: ${JSON.stringify(recasedFile)}, name: 'other', unsaved: [${JSON.stringify(recasedFile)}] }),
+        climb: await rename({ file: ${JSON.stringify(recasedFile)}, name: '../escape' }),
+        elsewhere: await rename({ file: ${JSON.stringify(insideFile)}, name: 'outside', keep: ${JSON.stringify(repos)} })
+      }
+    })()`)
+    trail.push(`main refused a file gone: ${JSON.stringify(refusals.gone)}; unsaved changes: ${JSON.stringify(refusals.unsaved)}; ../escape: ${JSON.stringify(refusals.climb)}`)
+    if (typeof refusals.gone !== 'string' || !refusals.gone.includes('no longer in')) return finish(false, 'renaming-a-file-that-has-gone-was-not-refused', refusals)
+    if (typeof refusals.unsaved !== 'string' || !refusals.unsaved.includes('unsaved changes') || !existsSync(recasedFile)) {
+      return finish(false, 'renaming-over-unsaved-changes-was-not-refused', refusals)
+    }
+    if (typeof refusals.climb !== 'string' || existsSync(join(filed, '..', 'escape'))) return finish(false, 'a-climbing-name-was-not-refused', refusals)
+    trail.push(`a file saved in a repo: ${JSON.stringify(refusals.elsewhere)}`)
+    if (JSON.stringify(refusals.elsewhere) !== JSON.stringify({ file: outsideFile, moves: [{ from: insideFile, to: outsideFile }] })) {
+      return finish(false, 'a-file-saved-elsewhere-was-not-renamed-alone', refusals.elsewhere)
+    }
+    if (!existsSync(outsideFile) || existsSync(insideFile) || !existsSync(repos[1]!)) return finish(false, 'renaming-a-file-in-a-repo-moved-the-repo')
 
     // Last, because it turns the reminder back on to have something to photograph.
     if (process.env.RIGEE_SHOT_DIR) {
@@ -7624,6 +7784,50 @@ function registerHandlers(): void {
     editWorkspaceFile(file, (text) => removeFoldersFromWorkspaceFile(text, file, paths))
   })
 
+  handle('workspace:renameWorkspaceFile', ({ file, name, keep, unsaved, apply }) => {
+    // Checked here whatever the rename form said: the name becomes a path segment, and one that
+    // could climb out of its folder must never reach the filesystem.
+    const problem = workspaceNameProblem(name)
+    if (problem) throw new Error(problem)
+    if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
+    const from = resolve(file)
+    const filesDir = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
+    const plan = renamedWorkspaceFile(from, name, filesDir, keep.map((path) => resolve(path)))
+    // In two steps: the file renamed where it is, then the folder it is in, if that goes too. The
+    // same name changes neither.
+    const inPlace = join(dirname(from), basename(plan.file))
+    if (inPlace === from) return { file: from, moves: [] }
+    try {
+      lstatSync(from)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(from)} is no longer in ${dirname(from)}`)
+      throw err
+    }
+    // What moved, for tabs to follow: the file to where it ends up, then the rest of its folder.
+    const moves = [{ from, to: plan.file }, ...(plan.folder ? [plan.folder] : [])]
+    const held = unsaved.map((path) => resolve(path)).find((path) => moves.some((m) => path === m.from || path.startsWith(m.from + sep)))
+    if (held) throw new Error(`${basename(held)} has unsaved changes. Save or undo them first.`)
+    refuseTaken(from, inPlace, `A workspace file called “${basename(inPlace)}” is already in ${dirname(from)}.`)
+    if (plan.folder) refuseTaken(plan.folder.from, plan.folder.to, `A folder called “${name}” is already in ${dirname(plan.folder.to)}.`)
+    if (!apply) return { file: plan.file, moves }
+
+    try {
+      renameSync(from, inPlace)
+    } catch (err) {
+      throw new Error(`${basename(from)} could not be renamed: ${renameReason(err)}`)
+    }
+    if (plan.folder) {
+      try {
+        renameSync(plan.folder.from, plan.folder.to)
+      } catch (err) {
+        // Put back, rather than leave a file renamed in a folder that was not: they go together.
+        try { renameSync(inPlace, from) } catch { /* then it stays renamed; the reason below still stands */ }
+        throw new Error(`${basename(plan.folder.from)} could not be renamed: ${renameReason(err)}`)
+      }
+    }
+    return { file: plan.file, moves }
+  })
+
   // --- clipboard ---------------------------------------------------------
   handle('clipboard:write', ({ text }) => clipboard.writeText(text))
   // `clipboard.selection` is Electron 44's PRIMARY selection, and exists on Linux only.
@@ -7685,6 +7889,36 @@ function editWorkspaceFile(file: string, edit: (text: string) => string): void {
   const next = edit(text)
   // In place rather than tmp-and-rename, as saving one is: a workspace file kept as a symlink stays one.
   if (next !== text) writeFileSync(file, next, 'utf8')
+}
+
+/**
+ * Refuse to rename onto something already there — `rename` would replace a file without a word —
+ * unless it is this same entry in another case, which is how renaming `Foo` to `foo` looks on the
+ * disks that ignore case, the default on macOS and Windows.
+ */
+function refuseTaken(path: string, target: string, taken: string): void {
+  const there = lstatSync(target, { throwIfNoEntry: false })
+  if (!there) return
+  const here = lstatSync(path)
+  const recased = there.ino === here.ino && there.dev === here.dev && target.toLowerCase() === path.toLowerCase()
+  if (!recased) throw new Error(taken)
+}
+
+/** Why a rename failed, in words: the system's reason without the syscall and the paths. */
+function renameReason(err: unknown): string {
+  switch ((err as NodeJS.ErrnoException | null)?.code) {
+    case 'EACCES':
+    case 'EPERM':
+      return 'permission denied.'
+    case 'EBUSY':
+      return 'it is in use by another program.'
+    case 'EROFS':
+      return 'the disk is read-only.'
+    case 'ENAMETOOLONG':
+      return 'the name is too long.'
+    default:
+      return err instanceof Error ? err.message : String(err)
+  }
 }
 
 /** The question a save dialog asks before it overwrites a file, for a save that has no dialog. */

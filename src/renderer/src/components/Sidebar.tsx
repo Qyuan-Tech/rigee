@@ -31,7 +31,7 @@ import {
 } from '../heat'
 import { describePanes, terminalPanes } from '../paneWork'
 import { revealPane } from '../terminals'
-import { SaveAsForm } from './LazySaveWorkspace'
+import { RenameForm, SaveAsForm } from './LazySaveWorkspace'
 import { Splitter } from './Splitter'
 import {
   SCRATCH_WORKSPACE_ID,
@@ -105,6 +105,8 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
    * itself without being switched to.
    */
   const [naming, setNaming] = useState<WorkspaceId | null>(null)
+  /** Which workspace the rename form is for: the right-clicked one, or the active one from the + menu. */
+  const [renaming, setRenaming] = useState<WorkspaceId | null>(null)
   /**
    * The order the list had when the pointer came over it, kept until the pointer leaves, so that
    * nothing moves under it. See `holdRanking`. With the sort it was in: an order held from before
@@ -125,14 +127,17 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     }
   }, [menuOpen])
 
-  // A click anywhere else puts the name form away, as it does the menu. Keys do not: they are
-  // what is typed into it.
+  // A click anywhere else puts a name form away, as it does the menu. Keys do not: they are what
+  // is typed into it.
   useEffect(() => {
-    if (!naming) return
-    const dismiss = (): void => setNaming(null)
+    if (!naming && !renaming) return
+    const dismiss = (): void => {
+      setNaming(null)
+      setRenaming(null)
+    }
     window.addEventListener('mousedown', dismiss)
     return () => window.removeEventListener('mousedown', dismiss)
-  }, [naming])
+  }, [naming, renaming])
 
   // The checklist goes the same way, and with Escape: nothing in it is typed into.
   useEffect(() => {
@@ -208,11 +213,20 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
       const s = useApp.getState()
       const ws = s.workspaces.find((w) => w.id === workspaceId)
       if (!ws || ws.folders.length === 0) return
-      if (s.settings.workspaceFilesDir) setNaming(ws.id)
-      else void save(ws.id, ws.name, 'pick')
+      if (s.settings.workspaceFilesDir) {
+        setRenaming(null)
+        setNaming(ws.id)
+      } else void save(ws.id, ws.name, 'pick')
     },
     [save]
   )
+
+  /** "Rename Workspace…": the form, under the header as the save form is. Not for Scratch. */
+  const startRename = useCallback((workspaceId: WorkspaceId) => {
+    if (workspaceId === SCRATCH_WORKSPACE_ID) return
+    setNaming(null)
+    setRenaming(workspaceId)
+  }, [])
 
   /**
    * Add a folder to a workspace — and, when the workspace has been saved, to its file, so that
@@ -267,14 +281,16 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
       const choice = await popupMenu([
         { kind: 'item', id: 'add-folder', label: 'Add Folder to Workspace…', enabled: !scratch },
         { kind: 'item', id: 'save-as', label: 'Save Workspace As…', enabled: w.folders.length > 0 },
+        { kind: 'item', id: 'rename', label: 'Rename Workspace…', enabled: !scratch },
         { kind: 'separator' },
         { kind: 'item', id: 'remove', label: 'Remove Workspace', enabled: !scratch }
       ])
       if (choice === 'add-folder') void addFolder(w.id)
       else if (choice === 'save-as') saveWorkspaceAs(w.id)
+      else if (choice === 'rename') startRename(w.id)
       else if (choice === 'remove') void removeWorkspace(w.id)
     },
-    [addFolder, saveWorkspaceAs, removeWorkspace]
+    [addFolder, saveWorkspaceAs, startRename, removeWorkspace]
   )
 
   /**
@@ -310,6 +326,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
 
   const activeWorkspace = workspaces.find((w) => w.id === activeId)
   const namingWorkspace = workspaces.find((w) => w.id === naming)
+  const renamingWorkspace = workspaces.find((w) => w.id === renaming)
 
   const warmth = useMemo(() => {
     const clock = activityClock(Object.values(activity), localDay(now))
@@ -412,9 +429,17 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
               onWorkspaceFile={() => { setMenuOpen(false); void openWorkspaceFile() }}
               onAddFolder={() => { setMenuOpen(false); if (activeId) void addFolder(activeId) }}
               onSaveAs={() => { setMenuOpen(false); if (activeId) saveWorkspaceAs(activeId) }}
+              onRename={() => { setMenuOpen(false); if (activeId) startRename(activeId) }}
               canAddFolder={activeId !== null && activeId !== SCRATCH_WORKSPACE_ID}
               canSave={(activeWorkspace?.folders.length ?? 0) > 0}
             />
+          )}
+
+          {renamingWorkspace && (
+            <Suspense fallback={null}>
+              {/* A fresh form for each workspace, as the save form is. */}
+              <RenameForm key={renamingWorkspace.id} workspace={renamingWorkspace} onDone={() => setRenaming(null)} />
+            </Suspense>
           )}
 
           {namingWorkspace && workspaceFilesDir && (
@@ -504,6 +529,7 @@ function OpenMenu({
   onWorkspaceFile,
   onAddFolder,
   onSaveAs,
+  onRename,
   canAddFolder,
   canSave
 }: {
@@ -511,6 +537,8 @@ function OpenMenu({
   onWorkspaceFile: () => void
   onAddFolder: () => void
   onSaveAs: () => void
+  onRename: () => void
+  /** Whether the active workspace is one that takes folders, and so a name of its own: not Scratch. */
   canAddFolder: boolean
   canSave: boolean
 }): React.ReactElement {
@@ -532,6 +560,9 @@ function OpenMenu({
       </button>
       <button className="menu__item" disabled={!canSave} onClick={onSaveAs}>
         <span>Save Workspace As…</span>
+      </button>
+      <button className="menu__item" disabled={!canAddFolder} onClick={onRename}>
+        <span>Rename Workspace…</span>
       </button>
     </div>
   )

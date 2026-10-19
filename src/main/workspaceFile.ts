@@ -16,7 +16,7 @@
  * malformed workspace file should produce a diagnosable error rather than a half-loaded window.
  */
 
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export interface WorkspaceFileFolder {
   path: string
@@ -121,6 +121,37 @@ export function resolveWorkspaceFilesDir(raw: string | undefined, home: string):
   if (!dir) return null
   const expanded = dir === '~' ? home : /^~[\\/]/.test(dir) ? join(home, dir.slice(2)) : dir
   return isAbsolute(expanded) ? resolve(expanded) : null
+}
+
+/**
+ * Where renaming a workspace to `name` takes its `.code-workspace` file — and the folder the file is
+ * in, when that goes too.
+ *
+ * The file always: a saved workspace is called what its file is called. Its folder only when the
+ * file is filed the way a save by name files it, `<files folder>/<old>/<old>.code-workspace`: that
+ * folder was made for the workspace and named after it, and becomes `<files folder>/<name>/`, as a
+ * save under the new name would have made it. A file anywhere else stays in its folder, which is
+ * somebody else's — a repo it was saved into, say. So does one whose folder holds a path in `keep`,
+ * a workspace's folder, which would go with it.
+ *
+ * Paths absolute and resolved, as main has them; `filesDir` as `resolveWorkspaceFilesDir` gives it.
+ */
+export function renamedWorkspaceFile(
+  file: string,
+  name: string,
+  filesDir: string | null,
+  keep: readonly string[]
+): { file: string; folder: { from: string; to: string } | null } {
+  const extension = '.code-workspace'
+  const dir = dirname(file)
+  const stem = basename(file).slice(0, -extension.length)
+  const filed = filesDir !== null && dirname(dir) === filesDir && basename(dir) === stem
+  const holds = keep.some((path) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep))
+  if (filed && !holds) {
+    const to = join(filesDir, name)
+    return { file: join(to, `${name}${extension}`), folder: { from: dir, to } }
+  }
+  return { file: join(dir, `${name}${extension}`), folder: null }
 }
 
 /**

@@ -78,6 +78,7 @@ import {
   addFoldersToWorkspaceFile,
   parseWorkspaceFile,
   removeFoldersFromWorkspaceFile,
+  renamedWorkspaceFile,
   resolveWorkspaceFilesDir,
   serializeWorkspaceFile
 } from '../src/main/workspaceFile.ts'
@@ -607,6 +608,29 @@ console.log('\nnamed workspace files')
   eq('an absolute path is kept, tidied', resolveWorkspaceFilesDir('/w/./x/', '/home/me'), '/w/x')
   eq('a relative one is refused, not resolved against wherever the app started',
     resolveWorkspaceFilesDir('ws', '/home/me'), null)
+
+  // Renamed: the file always, and its folder when a save by name made that folder for it.
+  const W = '/home/me/Workspaces'
+  const renamed = (file: string, name: string, keep: string[] = [], dir: string | null = W): string =>
+    JSON.stringify(renamedWorkspaceFile(file, name, dir, keep))
+  eq('filed by name, its folder is renamed with it', renamed(`${W}/old/old.code-workspace`, 'new'),
+    JSON.stringify({ file: `${W}/new/new.code-workspace`, folder: { from: `${W}/old`, to: `${W}/new` } }))
+  eq('saved anywhere else, only the file: a folder named after it may be a repo',
+    renamed('/home/me/code/rigee/rigee.code-workspace', 'shell'),
+    JSON.stringify({ file: '/home/me/code/rigee/shell.code-workspace', folder: null }))
+  eq('under the files folder but not in one of its own name, only the file',
+    renamedWorkspaceFile(`${W}/shared/a.code-workspace`, 'b', W, []).folder, null)
+  eq('in one of its own name but deeper down, only the file',
+    renamedWorkspaceFile(`${W}/x/old/old.code-workspace`, 'new', W, []).folder, null)
+  eq('with no files folder in Settings, only the file', renamedWorkspaceFile(`${W}/old/old.code-workspace`, 'new', null, []).folder, null)
+  eq('a folder holding one of the workspace\'s folders stays where it is',
+    renamedWorkspaceFile(`${W}/old/old.code-workspace`, 'new', W, [`${W}/old/repo`]).folder, null)
+  eq('…as does one the workspace lists itself', renamedWorkspaceFile(`${W}/old/old.code-workspace`, 'new', W, [`${W}/old`]).folder, null)
+  check('…but not for a folder that only starts with the same letters',
+    renamedWorkspaceFile(`${W}/old/old.code-workspace`, 'new', W, [`${W}/older`]).folder !== null)
+  eq('the extension comes out as it is spelled', renamedWorkspaceFile('/a/b/x.Code-Workspace', 'y', null, []).file, '/a/b/y.code-workspace')
+  eq('a change of case is a rename like any other', renamed(`${W}/old/old.code-workspace`, 'Old'),
+    JSON.stringify({ file: `${W}/Old/Old.code-workspace`, folder: { from: `${W}/old`, to: `${W}/Old` } }))
 }
 
 console.log('\nshortcuts: parsing Ghostty syntax')

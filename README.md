@@ -33,8 +33,10 @@ running your own shell.
 - **Left** — workspaces and a file tree. A workspace is a named set of folders, like a VS Code
   multi-root workspace. Choose a workspace files folder in Settings and *Save Workspace As…* asks
   only for a name, filing it as `<folder>/<name>/<name>.code-workspace`. Right-click a workspace to
-  add a folder to it or save it, or a folder at the top of its file tree to take that folder out of
-  it; a saved workspace's file keeps up either way.
+  add a folder to it, save it or rename it, or a folder at the top of its file tree to take that
+  folder out of it; a saved workspace's file keeps up either way. Renamed, a saved workspace's
+  `.code-workspace` file is renamed with it — and, when it was filed by name, the folder it is in —
+  so the name in the list is still the file's; a file saved anywhere else is renamed where it is.
   A saved workspace's file tree starts with the folder its file is in — tinted and tagged
   *Workspace*, above the repos — because that folder is the workspace's own. The tree does to
   files what VS Code's does: new, rename, cut, copy, paste, delete, drag in from Finder or around
@@ -111,7 +113,8 @@ an app launched from Finder inherits almost none of it.
 | Video player — MP4, MOV, M4V, WebM, MKV, Ogg (H.264, HEVC, AV1, VP8, VP9); streamed from disk, so a long film starts at once and seeks anywhere — the [video plugin](https://github.com/Qyuan-Tech/rigee-plugin-video) | works |
 | Markdown preview — right-click a `.md` for *Open Preview*: GitHub-flavoured, code coloured, redrawn as the file changes on disk, pictures from the web only when asked — the [Markdown plugin](https://github.com/Qyuan-Tech/rigee-plugin-markdown) | works |
 | Workspace files folder — set once in Settings, then Save Workspace As… asks only for a name | works |
-| Right-click a workspace — Add Folder to Workspace, Save Workspace As, Remove | works |
+| Right-click a workspace — Add Folder to Workspace, Save Workspace As, Rename, Remove | works |
+| Rename a workspace — a saved one's `.code-workspace` file renamed with it, and the folder it was filed in by name, its tabs following | works |
 | Right-click a folder at the top of the explorer — Remove Folder from Workspace, leaving it on disk | works |
 | A folder added to a saved workspace goes into its `.code-workspace` file, and one removed comes out of it, comments and settings kept | works |
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |

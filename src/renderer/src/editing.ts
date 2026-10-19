@@ -170,6 +170,12 @@ export function unsavedFiles(paths: readonly string[]): string[] {
   return dirtyPaths().filter((file) => paths.some((path) => covers(path, file)))
 }
 
+/** Where `path` is after these moves: by the first that covers it, or where it was. */
+export function movedPath(moves: readonly FileMove[], path: string): string {
+  const move = moves.find((m) => covers(m.from, path))
+  return move ? move.to + path.slice(move.from.length) : path
+}
+
 /**
  * The file tree renamed or moved these, so every tab showing one follows it, in every workspace.
  * Its title is the new name, and its viewer is picked again: a file renamed to `.pdf` is a PDF. A
@@ -184,9 +190,8 @@ export function filesMoved(moves: readonly FileMove[]): void {
   for (const [workspaceId, row] of Object.entries(s.rowsByWorkspace)) {
     for (const tab of allTabs(row)) {
       if (tab.kind !== 'editor') continue
-      const move = moves.find((m) => covers(m.from, tab.filePath))
-      if (!move) continue
-      const filePath = move.to + tab.filePath.slice(move.from.length)
+      const filePath = movedPath(moves, tab.filePath)
+      if (filePath === tab.filePath) continue
       const viewType = holdsEdits(tab.viewType) ? (resolveViewType(filePath) ?? undefined) : tab.viewType
       s.updateTab(workspaceId, tab.id, { filePath, title: editorTabTitle(filePath, viewType), viewType })
     }

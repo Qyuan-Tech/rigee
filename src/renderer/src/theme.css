@@ -2008,7 +2008,8 @@ textarea:focus {
 
 /* The whole path, wrapped rather than cut short: which folder it lands in is the point. */
 .saveas__path,
-.saveas__error {
+.saveas__error,
+.saveas__note {
   margin-top: 6px;
   font-size: 11px;
   line-height: 1.5;
@@ -2018,6 +2019,10 @@ textarea:focus {
 
 .saveas__path {
   font-family: var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.saveas__note {
   color: var(--fg-faint);
 }
 
