@@ -1,6 +1,7 @@
 /**
  * Workspace heat: how much each workspace has been used lately, worked out from its activity
- * record, for the side bar to colour the list by and order it by.
+ * record, for the side bar to colour the list by and order it by — unless the user has it ordered
+ * by when anything last happened in each, by when each was added, or by name (`rankWorkspaces`).
  *
  * Pure, as `groups.ts` and `tabs.ts` are, so `pnpm panes:selftest` can hold it to its numbers:
  * everything in here fails quietly. A decay that ran on the calendar would greet somebody back
@@ -18,7 +19,7 @@
  * which is the only sense in which it is a reason to remove anything.
  */
 
-import type { ActivityDay, WorkspaceActivity } from '@shared/types'
+import type { ActivityDay, WorkspaceActivity, WorkspaceSort } from '@shared/types'
 
 export type Temperature = 'hot' | 'warm' | 'cool' | 'cold'
 
@@ -156,11 +157,52 @@ export function compareWarmth(a: Warmth, b: Warmth): number {
   return b.lastActive - a.lastActive
 }
 
-/** The side bar's two runs of workspaces, by id: those used lately, hottest first, then the cold. */
+/**
+ * The side bar's two runs of workspaces, by id: those used lately, hottest first, then the cold.
+ * Ordered by date added or by name, every workspace is in the first and the second is empty.
+ */
 export interface Ranking {
   recent: string[]
   cold: string[]
 }
+
+/** A workspace as the side bar orders it: its warmth, and what the other orders go by. */
+export interface Listed extends Warmth {
+  id: string
+  name: string
+  /** When it was added, epoch ms, as the workspace records it. */
+  createdAt: number
+}
+
+/**
+ * The side bar's two runs, in the order the user chose.
+ *
+ * By heat or by when anything last happened, the cold ones go below their divider: both are orders
+ * by use, and a workspace passed over for ten days of use is at the end of either. By date added or
+ * by name the list is one run, a cold workspace in its place and only faded, because an order chosen
+ * for staying put must not move a workspace for going cold. Ties keep their places throughout.
+ */
+export function rankWorkspaces(listed: readonly Listed[], sort: WorkspaceSort): Ranking {
+  if (sort === 'created' || sort === 'name') {
+    return { recent: [...listed].sort(sort === 'created' ? newestAdded : byName).map((w) => w.id), cold: [] }
+  }
+  const sorted = [...listed].sort(sort === 'recent' ? latestActive : compareWarmth)
+  return {
+    recent: sorted.filter((w) => w.temperature !== 'cold').map((w) => w.id),
+    cold: sorted.filter((w) => w.temperature === 'cold').map((w) => w.id)
+  }
+}
+
+/** The most recently active first, and never last: the times down the right of the rows, in order. */
+const latestActive = (a: Warmth, b: Warmth): number => b.lastActive - a.lastActive
+
+/** The newest first. A time that is not one, from a hand-edited document, counts as the oldest. */
+const newestAdded = (a: Listed, b: Listed): number => epochMs(b.createdAt) - epochMs(a.createdAt)
+const epochMs = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+/** As a person files them: `api2` before `api10`, and `Rigee` beside `rigee`. */
+const names = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+const byName = (a: Listed, b: Listed): number => names.compare(a.name, b.name)
 
 /**
  * The workspaces in `live`, placed as they were in `held` — the list as it stood when the pointer

@@ -286,6 +286,15 @@ export const SplitDownIcon = (p: Props): React.ReactElement => (
   </Svg>
 )
 
+/** Bars shortening beside a downward arrow: the order of a list. Shell-only — the list is the workspaces. */
+export const SortIcon = (p: Props): React.ReactElement => (
+  <Svg {...p}>
+    <path d="M4.5 3v9.5" />
+    <path d="m2.5 10.5 2 2 2-2" />
+    <path d="M8.5 4h5M8.5 8h3.5M8.5 12h2" />
+  </Svg>
+)
+
 /**
  * The icons a plugin manifest may ask for, by name.
  *

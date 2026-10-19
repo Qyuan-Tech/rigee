@@ -2,10 +2,12 @@ import { rpc } from './ipc'
 import { nextWorkspaceId, useApp } from './store'
 import {
   SCRATCH_WORKSPACE_ID,
+  WORKSPACE_SORTS,
   type AppSettings,
   type Workspace,
   type WorkspaceFolder,
-  type WorkspaceId
+  type WorkspaceId,
+  type WorkspaceSort
 } from '@shared/types'
 import { workspaceFileDir } from '@shared/workspaceFiles'
 
@@ -207,6 +209,21 @@ export function remindsToSave(ws: Workspace, settings: AppSettings): boolean {
 /** Stop asking. Kept in Settings, where the General page can turn it back on. */
 export function stopRemindingToSave(): void {
   const settings: AppSettings = { ...useApp.getState().settings, remindToSaveWorkspace: false }
+  useApp.getState().setSettings(settings)
+  void rpc['state:saveSettings']({ settings })
+}
+
+/** The order the side bar keeps the workspace list in. One this build does not know is heat. */
+export function workspaceSort(settings: AppSettings): WorkspaceSort {
+  const sort = settings.workspaceSort
+  return sort && (WORKSPACE_SORTS as readonly string[]).includes(sort) ? sort : 'heat'
+}
+
+/** Keep the list in this order from now on. Heat is the default, so it is stored as nothing. */
+export function setWorkspaceSort(sort: WorkspaceSort): void {
+  const settings: AppSettings = { ...useApp.getState().settings }
+  if (sort === 'heat') delete settings.workspaceSort
+  else settings.workspaceSort = sort
   useApp.getState().setSettings(settings)
   void rpc['state:saveSettings']({ settings })
 }

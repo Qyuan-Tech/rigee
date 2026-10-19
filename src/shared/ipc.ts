@@ -121,7 +121,18 @@ export type PluginInstallResult =
  * menu, which gets back the `id` of the row picked.
  */
 export type ContextMenuItem =
-  | { kind: 'item'; id: string; label: string; enabled?: boolean; accelerator?: string }
+  | {
+      kind: 'item'
+      id: string
+      label: string
+      enabled?: boolean
+      accelerator?: string
+      /**
+       * Drawn ticked or not, for a row that is one of several choices — the order of the workspace
+       * list. Absent for a command, which has no state to show.
+       */
+      checked?: boolean
+    }
   | { kind: 'separator' }
 
 /** renderer -> main -> renderer. Every one of these is awaited. */

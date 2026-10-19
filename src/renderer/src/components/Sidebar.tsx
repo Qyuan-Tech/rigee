@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { rpc } from '../ipc'
-import { CloseIcon, CollapseLeftIcon, FolderIcon, PlusIcon, TerminalIcon } from '../icons'
+import { CloseIcon, CollapseLeftIcon, FolderIcon, PlusIcon, SortIcon, TerminalIcon } from '../icons'
 import { popupMenu } from '../contextMenu'
 import { closeTabsSafely } from '../editing'
 import { allTabs } from '../groups'
@@ -10,19 +10,22 @@ import {
   openAsWorkspace,
   persistWorkspaces,
   reason,
-  saveWorkspaceFile
+  saveWorkspaceFile,
+  setWorkspaceSort,
+  workspaceSort
 } from '../workspaces'
 import {
   COLD_AFTER,
   activityClock,
-  compareWarmth,
   heatOf,
   holdRanking,
   lastActiveAt,
   localDay,
   longAgo,
+  rankWorkspaces,
   shortAgo,
   temperatureOf,
+  type Listed,
   type Ranking,
   type Temperature,
   type Warmth
@@ -30,11 +33,14 @@ import {
 import { describePanes, terminalPanes } from '../paneWork'
 import { revealPane } from '../terminals'
 import { SaveAsForm } from './LazySaveWorkspace'
+import { Splitter } from './Splitter'
 import {
   SCRATCH_WORKSPACE_ID,
+  WORKSPACE_SORTS,
   type Workspace,
   type WorkspaceActivity,
-  type WorkspaceId
+  type WorkspaceId,
+  type WorkspaceSort
 } from '@shared/types'
 
 /**
@@ -47,7 +53,7 @@ const ColdReview = lazy(() => loadColdReview().then((m) => ({ default: m.ColdRev
 setTimeout(() => { void loadColdReview() }, 3000)
 
 /**
- * The workspace list, and nothing else.
+ * The workspace list, and the divider under it that sets how tall it is.
  *
  * The file tree that used to sit under it is a plugin now (plugins/explorer). What is left is
  * the workspace model's own UI — opening folders and `.code-workspace` files, switching between
@@ -58,6 +64,8 @@ setTimeout(() => { void loadColdReview() }, 3000)
  * Ordered and coloured by heat (heat.ts): Scratch first, where it always was, then the workspaces
  * most in use lately, their icons amber when warm and orange when hot; then, faded and below a
  * divider, the cold ones — nothing in them for ten days of use — with a way to clear them out.
+ * The sort button in the header orders it by when anything last happened instead, by when each
+ * was added, or by name; the colours stay whatever the order.
  * Each row also counts its terminals at work and those finished since the user last looked
  * (paneWork.ts), and each count goes to the terminal it counts.
  */
@@ -84,7 +92,13 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   )
   const workingPanes = useApp((s) => s.workingPanes)
   const unseenPanes = useApp((s) => s.unseenPanes)
+  const sort = useApp((s) => workspaceSort(s.settings))
+  const height = heightOf(useApp((s) => s.layout.workspacesHeight))
+  const setLayout = useApp((s) => s.setLayout)
   const now = useNow(30_000)
+  /** The whole list, header included — what the divider under it sizes — and the rows, which scroll. */
+  const block = useRef<HTMLDivElement>(null)
+  const rows = useRef<HTMLDivElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   /**
    * Which workspace the name form "Save Workspace As…" shows is for, when there is a workspace
@@ -94,9 +108,10 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
   const [naming, setNaming] = useState<WorkspaceId | null>(null)
   /**
    * The order the list had when the pointer came over it, kept until the pointer leaves, so that
-   * nothing moves under it. See `holdRanking`.
+   * nothing moves under it. See `holdRanking`. With the sort it was in: an order held from before
+   * another was chosen is not the list any more.
    */
-  const [held, setHeld] = useState<Ranking | null>(null)
+  const [held, setHeld] = useState<{ sort: WorkspaceSort; ranking: Ranking } | null>(null)
   /** Whether the checklist of cold workspaces is showing. */
   const [reviewing, setReviewing] = useState(false)
 
@@ -263,6 +278,37 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     [addFolder, saveWorkspaceAs, removeWorkspace]
   )
 
+  /**
+   * The sort button's menu: the four orders, the list's own ticked. Native, as a workspace's own
+   * menu is, and kept in Settings, so the list comes back in the same order next time.
+   */
+  const chooseSort = useCallback(async () => {
+    const choice = await popupMenu(
+      WORKSPACE_SORTS.map((s) => ({ kind: 'item' as const, id: s, label: SORTS[s].label, checked: s === sort }))
+    )
+    const picked = WORKSPACE_SORTS.find((s) => s === choice)
+    if (picked && picked !== sort) setWorkspaceSort(picked)
+  }, [sort])
+
+  /**
+   * The divider under the list, dragged: the list as tall as the divider is let go at. No shorter
+   * than its header and a row; no taller than its rows need, so the divider stops at the last one
+   * rather than opening a gap under it; and never so tall that the view below loses its room.
+   */
+  const resize = useCallback(
+    (dy: number, start: number) => {
+      const el = block.current
+      const list = rows.current
+      if (!el || !list) return
+      // All of it, with every row showing: what is above the rows, and the rows in full.
+      const natural = el.offsetHeight - list.clientHeight + list.scrollHeight
+      const room = (el.parentElement?.clientHeight ?? Infinity) - BELOW_MIN
+      const most = Math.max(LIST_MIN, Math.min(natural, room))
+      setLayout({ workspacesHeight: Math.round(Math.min(most, Math.max(LIST_MIN, start + dy))) })
+    },
+    [setLayout]
+  )
+
   const activeWorkspace = workspaces.find((w) => w.id === activeId)
   const namingWorkspace = workspaces.find((w) => w.id === naming)
 
@@ -270,8 +316,18 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     const clock = activityClock(Object.values(activity), localDay(now))
     return new Map(workspaces.map((w) => [w.id, warmthOf(activity[w.id], clock)]))
   }, [workspaces, activity, now])
-  const live = useMemo(() => rank(workspaces, warmth), [workspaces, warmth])
-  const ranking = held ? holdRanking(held, live) : live
+  // Every workspace but Scratch, which stays first, where it always was, whatever the order.
+  const listed = useMemo(
+    () =>
+      workspaces
+        .filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
+        .map((w): Listed => ({ id: w.id, name: w.name, createdAt: w.createdAt, ...warmth.get(w.id)! })),
+    [workspaces, warmth]
+  )
+  const live = useMemo(() => rankWorkspaces(listed, sort), [listed, sort])
+  // The same ones whatever the order — in heat's own run, which is where the checklist takes them from.
+  const cold = useMemo(() => rankWorkspaces(listed, 'heat').cold, [listed])
+  const ranking = held && held.sort === sort ? holdRanking(held.ranking, live) : live
   const byId = new Map(workspaces.map((w) => [w.id, w]))
   const scratch = byId.get(SCRATCH_WORKSPACE_ID)
   // Counted from the rows themselves: one clicked while the order is held warms up where it is.
@@ -301,112 +357,139 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     )
 
   return (
-    <div
-      className="workspace-list"
-      style={{ flex: '0 0 auto', borderBottom: '1px solid var(--border)', position: 'relative' }}
-    >
-      <div className="section-header">
-        <span className="section-header__title">Workspaces</span>
-        {live.cold.length > 0 && (
-          <button
-            className="heat-hint"
-            title={`Nothing has happened in ${live.cold.length === 1 ? 'one workspace' : `${live.cold.length} workspaces`} in your last ${COLD_AFTER} days with Rigee. Choose which to remove.`}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setReviewing((r) => !r)}
-          >
-            {live.cold.length} cold
-          </button>
-        )}
-        <button
-          className="icon-button"
-          title="Open…"
-          onMouseDown={(e) => { e.stopPropagation(); setMenuOpen((o) => !o) }}
-        >
-          <PlusIcon size={14} />
-        </button>
-        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
-          <CollapseLeftIcon size={14} />
-        </button>
-      </div>
-
-      {menuOpen && (
-        <OpenMenu
-          onFolder={() => { setMenuOpen(false); void openFolder() }}
-          onWorkspaceFile={() => { setMenuOpen(false); void openWorkspaceFile() }}
-          onAddFolder={() => { setMenuOpen(false); if (activeId) void addFolder(activeId) }}
-          onSaveAs={() => { setMenuOpen(false); if (activeId) saveWorkspaceAs(activeId) }}
-          canAddFolder={activeId !== null && activeId !== SCRATCH_WORKSPACE_ID}
-          canSave={(activeWorkspace?.folders.length ?? 0) > 0}
-        />
-      )}
-
-      {namingWorkspace && workspaceFilesDir && (
-        <Suspense fallback={null}>
-          <SaveAsForm
-            // A fresh form for each workspace: the name typed for one is not a name for another.
-            key={namingWorkspace.id}
-            className="menu menu--inline"
-            popup
-            title={namingWorkspace.id === activeId ? 'Save workspace as' : `Save “${namingWorkspace.name}” as`}
-            initialName={namingWorkspace.name}
-            dir={workspaceFilesDir}
-            onSave={async (name) => { if (await save(namingWorkspace.id, name, 'named')) setNaming(null) }}
-            onElsewhere={async (name) => { setNaming(null); await save(namingWorkspace.id, name, 'pick') }}
-            onCancel={() => setNaming(null)}
-          />
-        </Suspense>
-      )}
-
-      {reviewing && live.cold.length > 0 && (
-        <Suspense fallback={null}>
-          <ColdReview
-            workspaces={live.cold.map((id) => byId.get(id)!)}
-            activity={activity}
-            now={now}
-            onRemove={removeCold}
-            onCancel={() => setReviewing(false)}
-          />
-        </Suspense>
-      )}
-
-      {error && (
-        <div className="error-banner" onClick={() => setError(null)} title="Dismiss">
-          {error}
-        </div>
-      )}
-
+    <>
       <div
-        style={{ maxHeight: 220, overflowY: 'auto', paddingBottom: 4 }}
-        onMouseEnter={() => setHeld(live)}
-        onMouseLeave={() => setHeld(null)}
+        ref={block}
+        className="workspace-list"
+        style={{
+          flex: '0 0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          // Whatever the divider says, the view below keeps room to be used in a short window.
+          maxHeight: height ? `min(${height}px, calc(100% - ${BELOW_MIN}px))` : `calc(100% - ${BELOW_MIN}px)`
+        }}
       >
-        {renderRow(scratch)}
-        {ranking.recent.map((id) => renderRow(byId.get(id)))}
-        {stillCold > 0 && (
-          <div
-            className="heat-divider"
-            title={`Nothing has happened in these in your last ${COLD_AFTER} days with Rigee`}
-          >
-            <span>Cold · {stillCold}</span>
-            <span className="heat-divider__rule" />
+        {/*
+          The header, and what opens from it — the + menu, the name form, the checklist — drawn
+          over the rows. In a box of their own because the list is a flex column, and a column
+          puts a box taken out of its flow at its top, over the header, not after it.
+        */}
+        <div style={{ flex: '0 0 auto', position: 'relative' }}>
+          <div className="section-header">
+            <span className="section-header__title">Workspaces</span>
+            {cold.length > 0 && (
+              <button
+                className="heat-hint"
+                title={`Nothing has happened in ${cold.length === 1 ? 'one workspace' : `${cold.length} workspaces`} in your last ${COLD_AFTER} days with Rigee. Choose which to remove.`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setReviewing((r) => !r)}
+              >
+                {cold.length} cold
+              </button>
+            )}
             <button
-              className="heat-divider__review"
-              title="Choose which to remove"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setReviewing((r) => !r)}
+              className="icon-button"
+              aria-label="Sort workspaces"
+              title={`${SORTS[sort].title}. Click to sort another way.`}
+              onClick={() => void chooseSort()}
             >
-              Review…
+              <SortIcon size={14} />
+            </button>
+            <button
+              className="icon-button"
+              title="Open…"
+              onMouseDown={(e) => { e.stopPropagation(); setMenuOpen((o) => !o) }}
+            >
+              <PlusIcon size={14} />
+            </button>
+            <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+              <CollapseLeftIcon size={14} />
             </button>
           </div>
-        )}
-        {ranking.cold.map((id) => renderRow(byId.get(id)))}
-        {workspaces.length <= 1 && (
-          <div className="muted" style={{ paddingTop: 4 }}>
-            Scratch is always here for terminals. Press + to add a folder as a workspace.
+
+          {menuOpen && (
+            <OpenMenu
+              onFolder={() => { setMenuOpen(false); void openFolder() }}
+              onWorkspaceFile={() => { setMenuOpen(false); void openWorkspaceFile() }}
+              onAddFolder={() => { setMenuOpen(false); if (activeId) void addFolder(activeId) }}
+              onSaveAs={() => { setMenuOpen(false); if (activeId) saveWorkspaceAs(activeId) }}
+              canAddFolder={activeId !== null && activeId !== SCRATCH_WORKSPACE_ID}
+              canSave={(activeWorkspace?.folders.length ?? 0) > 0}
+            />
+          )}
+
+          {namingWorkspace && workspaceFilesDir && (
+            <Suspense fallback={null}>
+              <SaveAsForm
+                // A fresh form for each workspace: the name typed for one is not a name for another.
+                key={namingWorkspace.id}
+                className="menu menu--inline"
+                popup
+                title={namingWorkspace.id === activeId ? 'Save workspace as' : `Save “${namingWorkspace.name}” as`}
+                initialName={namingWorkspace.name}
+                dir={workspaceFilesDir}
+                onSave={async (name) => { if (await save(namingWorkspace.id, name, 'named')) setNaming(null) }}
+                onElsewhere={async (name) => { setNaming(null); await save(namingWorkspace.id, name, 'pick') }}
+                onCancel={() => setNaming(null)}
+              />
+            </Suspense>
+          )}
+
+          {reviewing && cold.length > 0 && (
+            <Suspense fallback={null}>
+              <ColdReview
+                workspaces={cold.map((id) => byId.get(id)!)}
+                activity={activity}
+                now={now}
+                onRemove={removeCold}
+                onCancel={() => setReviewing(false)}
+              />
+            </Suspense>
+          )}
+        </div>
+
+        {error && (
+          <div className="error-banner" onClick={() => setError(null)} title="Dismiss">
+            {error}
           </div>
         )}
+
+        <div
+          ref={rows}
+          // Only the rows give way when the list is held shorter than it would be.
+          style={{ flex: '0 1 auto', minHeight: 0, maxHeight: height ? undefined : 220, overflowY: 'auto', paddingBottom: 4 }}
+          onMouseEnter={() => setHeld({ sort, ranking: live })}
+          onMouseLeave={() => setHeld(null)}
+        >
+          {renderRow(scratch)}
+          {ranking.recent.map((id) => renderRow(byId.get(id)))}
+          {stillCold > 0 && (
+            <div
+              className="heat-divider"
+              title={`Nothing has happened in these in your last ${COLD_AFTER} days with Rigee`}
+            >
+              <span>Cold · {stillCold}</span>
+              <span className="heat-divider__rule" />
+              <button
+                className="heat-divider__review"
+                title="Choose which to remove"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setReviewing((r) => !r)}
+              >
+                Review…
+              </button>
+            </div>
+          )}
+          {ranking.cold.map((id) => renderRow(byId.get(id)))}
+          {workspaces.length <= 1 && (
+            <div className="muted" style={{ paddingTop: 4 }}>
+              Scratch is always here for terminals. Press + to add a folder as a workspace.
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+      <Splitter orientation="horizontal" value={() => block.current?.offsetHeight ?? 0} onDrag={resize} />
+    </>
   )
 }
 
@@ -564,16 +647,25 @@ function warmthOf(activity: WorkspaceActivity | undefined, clock: readonly strin
   }
 }
 
-/** Every workspace but Scratch — which stays first, where it always was — hottest first, then the cold. */
-function rank(workspaces: readonly Workspace[], warmth: ReadonlyMap<WorkspaceId, Warmth>): Ranking {
-  const listed = workspaces
-    .filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
-    .map((w) => ({ id: w.id, ...warmth.get(w.id)! }))
-    .sort(compareWarmth)
-  return {
-    recent: listed.filter((w) => w.temperature !== 'cold').map((w) => w.id),
-    cold: listed.filter((w) => w.temperature === 'cold').map((w) => w.id)
-  }
+/** Each order as the sort menu offers it, and as the sort button's tooltip says the list is in it. */
+const SORTS: Record<WorkspaceSort, { label: string; title: string }> = {
+  heat: { label: 'Sort by Heat', title: 'Sorted by heat: the busiest lately first' },
+  recent: { label: 'Sort by Last Active', title: 'Sorted by when anything last happened in each, the latest first' },
+  created: { label: 'Sort by Date Added', title: 'Sorted by when each was added, the newest first' },
+  name: { label: 'Sort by Name', title: 'Sorted by name' }
+}
+
+/**
+ * The shortest the divider makes the list: its header and one row, so that Scratch at least stays
+ * in sight — the header's 30px, a row's 27 (`--row-h`) and the 4 under the rows.
+ */
+const LIST_MIN = 30 + 27 + 4
+/** What the view below the list keeps, however far down the divider goes: its header and a few rows. */
+const BELOW_MIN = 120
+
+/** The height the divider left the list at, if the layout has one fit to use. */
+function heightOf(stored: unknown): number | undefined {
+  return typeof stored === 'number' && Number.isFinite(stored) && stored > 0 ? Math.max(LIST_MIN, stored) : undefined
 }
 
 const TEMPERATURE: Record<Temperature, string> = {
@@ -594,8 +686,13 @@ function describe(
   if (activity?.usedAt) lines.push(`Last used ${longAgo(activity.usedAt, now)}`)
   if (activity?.outputAt) lines.push(`Terminal output ${longAgo(activity.outputAt, now)}`)
   if (!activity?.usedAt && !activity?.outputAt) lines.push('Nothing recorded yet')
-  if (w.id === SCRATCH_WORKSPACE_ID) lines.push('Always available; no folders')
-  else lines.push(w.folders.length === 1 ? '1 folder' : `${w.folders.length} folders`)
+  if (w.id === SCRATCH_WORKSPACE_ID) {
+    lines.push('Always available; no folders')
+  } else {
+    lines.push(w.folders.length === 1 ? '1 folder' : `${w.folders.length} folders`)
+    // What the list goes by sorted by date added, and nothing else on the row says.
+    if (Number.isFinite(w.createdAt) && w.createdAt > 0) lines.push(`Added ${longAgo(w.createdAt, now)}`)
+  }
   return lines.join('\n')
 }
 

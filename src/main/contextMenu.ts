@@ -40,6 +40,9 @@ export function popupContextMenu(window: BrowserWindow, items: readonly ContextM
                 // Drawn, never registered: whoever asked for the menu answers the key itself, and a
                 // registered accelerator would act on it a second time.
                 ...(item.accelerator ? { accelerator: item.accelerator, registerAccelerator: false } : {}),
+                // A checkbox only for the tick. The menu is built afresh each time it opens, so the
+                // tick Electron moves on a click is never seen; what is ticked is the asker's to say.
+                ...(item.checked !== undefined ? { type: 'checkbox' as const, checked: item.checked === true } : {}),
                 click: () => settle(item.id)
               }
       )

@@ -103,10 +103,12 @@ import {
   lastActiveAt,
   localDay,
   longAgo,
+  rankWorkspaces,
   recordMinute,
   sanitizeActivity,
   shortAgo,
   temperatureOf,
+  type Listed,
   type Warmth
 } from '../src/renderer/src/heat.ts'
 import {
@@ -1233,6 +1235,31 @@ console.log('\nworkspace heat')
     sorted.map((x) => x.id).join(','), 'hot,warm,cool,tie-a,cold-new,cold-old')
   eq('equal heat goes to the more recent',
     [w('a', 'cool', 3, 1), w('b', 'cool', 3, 2)].sort(compareWarmth).map((x) => x.id).join(','), 'b,a')
+
+  // In the order the user chose.
+  const l = (id: string, name: string, temperature: Warmth['temperature'], heat: number, lastActive: number, createdAt: number): Listed =>
+    ({ id, name, temperature, heat, lastActive, createdAt })
+  const listed = [
+    l('busy', 'Busy', 'hot', 60, 5_000, 3_000),
+    l('agent', 'agent', 'warm', 20, 9_000, 1_000),
+    l('fresh', 'fresh', 'cool', 0, 0, 9_000),
+    l('idle', 'api10', 'cool', 2, 7_000, 5_000),
+    l('old', 'api2', 'cold', 900, 2_000, 7_000),
+    l('older', 'Zed', 'cold', 50, 1_000, 2_000)
+  ]
+  const runs = (r: { recent: string[]; cold: string[] }): string => `${r.recent.join(',')} | ${r.cold.join(',')}`
+  eq('by heat, the hottest first and the cold below', runs(rankWorkspaces(listed, 'heat')), 'busy,agent,idle,fresh | old,older')
+  eq('by when anything last happened, the latest first, never last, the cold below',
+    runs(rankWorkspaces(listed, 'recent')), 'agent,idle,busy,fresh | old,older')
+  eq('by date added, the newest first, the cold in their places', runs(rankWorkspaces(listed, 'created')), 'fresh,old,idle,busy,older,agent | ')
+  eq('by name, numbers as numbers and capitals aside', runs(rankWorkspaces(listed, 'name')), 'agent,old,idle,busy,fresh,older | ')
+  eq('the list handed in is left as it was', listed.map((x) => x.id).join(','), 'busy,agent,fresh,idle,old,older')
+  const twins = [l('a', 'same', 'cool', 0, 0, 5), l('b', 'Same', 'cool', 0, 0, 5)]
+  eq('added at once, they keep their places', rankWorkspaces(twins, 'created').recent.join(','), 'a,b')
+  eq('…either way round', rankWorkspaces([...twins].reverse(), 'created').recent.join(','), 'b,a')
+  eq('one name twice, the same', rankWorkspaces([...twins].reverse(), 'name').recent.join(','), 'b,a')
+  eq('a time added that is not one counts as the oldest',
+    rankWorkspaces([l('bad', 'x', 'cool', 0, 0, Number.NaN), l('ok', 'y', 'cool', 0, 0, 1)], 'created').recent.join(','), 'ok,bad')
 
   // Holding the order under the pointer.
   const held = { recent: ['a', 'b', 'c'], cold: ['x', 'y'] }

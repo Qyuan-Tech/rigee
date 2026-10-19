@@ -4508,7 +4508,11 @@ async function runHeatSmoke(): Promise<void> {
   // The middle of the centre pane: well away from the list.
   const away = { x: 760, y: 460 }
   const layout = (): Promise<string> => js(`(() => { ${helpers}; return layout().join(' ') })()`)
-  const readDoc = (): { workspaces?: Workspace[]; ui?: Record<string, { activity?: WorkspaceActivity }> } => {
+  const readDoc = (): {
+    workspaces?: Workspace[]
+    settings?: { workspaceSort?: string }
+    ui?: Record<string, { activity?: WorkspaceActivity; layout?: { workspacesHeight?: number } }>
+  } => {
     try { return JSON.parse(readFileSync(join(dir, 'workspaces.json'), 'utf8')) } catch { return {} }
   }
 
@@ -4666,6 +4670,161 @@ async function runHeatSmoke(): Promise<void> {
     if (printing.quiet?.outputAt) return finish(false, 'a-prompt-counted-as-output', printing.quiet)
     if (printing.scratch?.outputAt) return finish(false, 'scratch-prompt-counted-as-output', printing.scratch)
     trail.push('a prompt is not output: neither quiet nor Scratch has any')
+
+    // --- sorted another way --------------------------------------------------------------------
+    // From the sort button in the header. Its menu is native, so it is answered here: what it
+    // offered is kept, and the order named is what the user "picked". The pointer stays off the
+    // rows throughout, so no order is held.
+    const sortBy = async (id: string): Promise<{ offered: string; layout: string }> => {
+      await js(`(() => {
+        window.__offered = ''
+        window.__rigee.menus.answer = (items) => {
+          window.__offered = items.filter(i => i.kind === 'item').map(i => i.label + (i.checked ? ' ✓' : '')).join(', ')
+          window.__rigee.menus.answer = null
+          return ${JSON.stringify(id)}
+        }
+      })()`)
+      if (!(await clickAt(wc, '[aria-label="Sort workspaces"]'))) return { offered: 'no sort button', layout: '' }
+      await sleep(400)
+      return js(`(() => { ${helpers}; return { offered: window.__offered, layout: layout().join(' ') } })()`)
+    }
+    const sortOnDisk = async (want: string | undefined): Promise<boolean> => {
+      for (let i = 0; i < 30; i++) {
+        if (readDoc().settings?.workspaceSort === want) return true
+        await sleep(100)
+      }
+      return false
+    }
+    const byHeat = await js<string>(`(async () => {
+      ${helpers}
+      // Each added at a time of its own, in an order that is neither the list's nor any other's.
+      const hoursAgo = { cool: 1, stale: 2, before: 3, quiet: 4, hot: 5, garbled: 6, chatty: 7, cold: 8, new: 9, agent: 10, warm: 11 }
+      const s = store.getState()
+      s.setWorkspaces(s.workspaces.map(w => w.name in hoursAgo ? { ...w, createdAt: Date.now() - hoursAgo[w.name] * 3600000 } : w))
+      await sleep(300)
+      return layout().join(' ')
+    })()`)
+    trail.push(`by heat: ${byHeat}`)
+
+    const byName = await sortBy('name')
+    trail.push(`the sort menu: ${byName.offered}`)
+    if (byName.offered !== 'Sort by Heat ✓, Sort by Last Active, Sort by Date Added, Sort by Name') return finish(false, 'sort-menu-wrong', byName)
+    trail.push(`by name: ${byName.layout}`)
+    if (byName.layout !== 'Scratch agent before chatty cold cool garbled hot new quiet stale warm') return finish(false, 'not-sorted-by-name', byName)
+    const faded = await js<{ heat: string; hint: string }>(`(() => { ${helpers}; return { heat: heat('stale'), hint: document.querySelector('.heat-hint')?.textContent || '' } })()`)
+    if (faded.heat !== 'cold' || faded.hint !== '1 cold') return finish(false, 'sorted-by-name-the-cold-one-lost-its-heat', faded)
+    trail.push('stale keeps its place among the names, faded, and the header still says 1 cold')
+    if (!(await sortOnDisk('name'))) return finish(false, 'the-order-was-not-saved', readDoc().settings)
+    await shoot('heat-by-name')
+
+    const byAdded = await sortBy('created')
+    if (byAdded.offered !== 'Sort by Heat, Sort by Last Active, Sort by Date Added, Sort by Name ✓') return finish(false, 'sort-menu-did-not-tick-name', byAdded)
+    trail.push(`by date added: ${byAdded.layout}`)
+    if (byAdded.layout !== 'Scratch cool stale before quiet hot garbled chatty cold new agent warm') return finish(false, 'not-sorted-by-date-added', byAdded)
+
+    // chatty printed after quiet was switched to, which was after cold was clicked, after cool was
+    // used under the pointer; agent, hot and warm are as planted; nothing ever happened in the rest.
+    const byRecent = await sortBy('recent')
+    trail.push(`by last active: ${byRecent.layout}`)
+    if (byRecent.layout !== 'Scratch chatty quiet cold cool agent hot warm before garbled new | stale') return finish(false, 'not-sorted-by-last-active', byRecent)
+
+    const heatAgain = await sortBy('heat')
+    trail.push(`by heat again: ${heatAgain.layout}`)
+    if (heatAgain.layout !== byHeat) return finish(false, 'heat-did-not-come-back', heatAgain)
+    if (!(await sortOnDisk(undefined))) return finish(false, 'heat-was-saved-as-something', readDoc().settings)
+    trail.push('heat, the default, is saved as nothing')
+
+    // --- the divider under the list ------------------------------------------------------------
+    // Dragged for real: a splitter only follows a pointer it has captured, and capture only holds
+    // while a button is really down, so a drag dispatched from inside the page would move nothing.
+    const measure = (): Promise<{ top: number; block: number; rows: number; full: number; pane: number; below: number; at: { x: number; y: number }; lastRow: number; stored: number | null }> => js(`(() => {
+      const block = document.querySelector('.workspace-list')
+      const rows = block.lastElementChild
+      const divider = block.nextElementSibling
+      const r = divider.getBoundingClientRect()
+      return {
+        top: Math.round(block.getBoundingClientRect().top),
+        block: block.offsetHeight, rows: rows.clientHeight, full: rows.scrollHeight,
+        pane: block.parentElement.clientHeight, below: divider.nextElementSibling?.offsetHeight ?? 0,
+        at: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) },
+        lastRow: Math.round([...rows.querySelectorAll('.row')].pop().getBoundingClientRect().bottom),
+        stored: window.__rigee.store.getState().layout.workspacesHeight ?? null
+      }
+    })()`)
+    const drag = async (from: { x: number; y: number }, toY: number): Promise<void> => {
+      wc.sendInputEvent({ type: 'mouseDown', x: from.x, y: from.y, button: 'left', clickCount: 1 })
+      for (let i = 1; i <= 4; i++) {
+        wc.sendInputEvent({ type: 'mouseMove', x: from.x, y: Math.round(from.y + ((toY - from.y) * i) / 4), modifiers: ['leftbuttondown'] })
+        await sleep(30)
+      }
+      wc.sendInputEvent({ type: 'mouseUp', x: from.x, y: toY, button: 'left', clickCount: 1 })
+      await sleep(300)
+    }
+    const heightOnDisk = async (want: number): Promise<boolean> => {
+      for (let i = 0; i < 30; i++) {
+        if (readDoc().ui?.['ws-hot']?.layout?.workspacesHeight === want) return true
+        await sleep(100)
+      }
+      return false
+    }
+    const first = await measure()
+    trail.push(`the list at first: ${first.block}px, its rows ${first.rows} of ${first.full}, in a panel of ${first.pane}`)
+    if (first.stored !== null || first.rows !== 220) return finish(false, 'the-list-did-not-start-as-it-always-has', first)
+
+    await drag(first.at, first.at.y + 81)
+    const lower = await measure()
+    trail.push(`down 81px: ${lower.block}px`)
+    if (lower.block !== first.block + 81 || lower.stored !== first.block + 81) return finish(false, 'the-list-did-not-follow-the-divider', lower)
+    if (Math.abs(lower.at.y - (first.at.y + 81)) > 1) return finish(false, 'the-divider-is-not-where-it-was-let-go', lower)
+
+    await drag(lower.at, 880)
+    const all = await measure()
+    trail.push(`to the bottom of the window: ${all.block}px, its rows ${all.rows} of ${all.full}, the last ending at ${all.lastRow} and the divider at ${all.at.y}`)
+    if (all.rows !== all.full) return finish(false, 'pulled-down-not-every-row-shows', all)
+    if (all.stored !== all.block || all.at.y - all.lastRow > 6) return finish(false, 'the-divider-opened-a-gap-under-the-rows', all)
+    await shoot('heat-divider-down')
+
+    await drag(all.at, all.top + 20)
+    const least = await measure()
+    trail.push(`to the top: ${least.block}px, and the view below ${least.below} of ${least.pane}`)
+    if (least.block !== 61 || least.stored !== 61) return finish(false, 'the-list-went-shorter-than-a-row', least)
+    if (Math.abs(least.below - (least.pane - least.block - 1)) > 1) return finish(false, 'the-view-below-did-not-take-the-rest', least)
+    if (!(await heightOnDisk(61))) return finish(false, 'the-height-was-not-saved', readDoc().ui?.['ws-hot']?.layout)
+
+    // A short window, and more rows than it has room for: the view below keeps its room, whatever
+    // the layout says and however far the divider is pulled.
+    const win = BrowserWindow.fromWebContents(wc)
+    win?.setSize(1400, 560)
+    const squeezed = await js<{ block: number; pane: number }>(`(async () => {
+      ${helpers}
+      const s = store.getState()
+      s.setWorkspaces([...s.workspaces, ...[1, 2, 3, 4, 5, 6].map(i => workspace('ws-extra' + i, 'cool'))])
+      s.setLayout({ workspacesHeight: 5000 })
+      await sleep(400)
+      const block = document.querySelector('.workspace-list')
+      return { block: block.offsetHeight, pane: block.parentElement.clientHeight }
+    })()`)
+    trail.push(`in a short window, told 5000px, the list took ${squeezed.block} of ${squeezed.pane}`)
+    if (Math.abs(squeezed.pane - 120 - squeezed.block) > 1) return finish(false, 'a-short-window-lost-the-view-below', squeezed)
+    const short = await measure()
+    await drag(short.at, short.at.y + 100)
+    const pulled = await measure()
+    trail.push(`pulled 100px further: ${pulled.block}px, stored ${pulled.stored}`)
+    if (pulled.stored !== pulled.pane - 120 || Math.abs(pulled.block - pulled.stored) > 1) return finish(false, 'pulled-past-the-room-for-the-view-below', pulled)
+    await js(`(async () => {
+      ${helpers}
+      for (const i of [1, 2, 3, 4, 5, 6]) store.getState().removeWorkspace('ws-extra' + i)
+      await sleep(100)
+    })()`)
+    win?.setSize(1400, 900)
+    await sleep(400)
+    const back = await measure()
+    await drag(back.at, back.at.y + (first.block - back.block))
+    const kept = await measure()
+    trail.push(`back in a full window and dragged to ${kept.block}px`)
+    if (kept.stored !== first.block || !(await heightOnDisk(first.block))) return finish(false, 'the-height-was-not-saved', kept)
+    pointTo(away)
+    await sleep(300)
 
     // --- clearing out the cold --------------------------------------------------------------
     // From the header, which is always in view: the divider's own button is at the bottom of a list

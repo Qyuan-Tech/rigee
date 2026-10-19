@@ -41,9 +41,12 @@ running your own shell.
   the tree — see [the explorer](#the-explorer).
   The list is ordered by [heat](#workspace-heat): the workspaces you have been busiest in come
   first, orange when hot and amber when warm, and the ones you have not touched in a while fade
-  out below a *Cold* divider, with a checklist for removing them. Each row also counts the
-  [terminals at work](#terminals-at-work) in it — an agent or a build printing — and, in green, the
-  ones that have finished since you last looked; click a count to go to that terminal.
+  out below a *Cold* divider, with a checklist for removing them. The sort button in its header
+  orders it instead by when anything last happened in each, by when each was added, or by name.
+  Each row also counts the [terminals at work](#terminals-at-work) in it — an agent or a build
+  printing — and, in green, the ones that have finished since you last looked; click a count to go
+  to that terminal. Drag the line between the list and the file tree to give either more room:
+  down, it stops at the last workspace; up, at the first.
 - **Centre** — tabs. A tab is a terminal (splittable), a file in Monaco, a diff, a Chromium page,
   or whatever a plugin shows — a PDF, an image, a video, a Markdown preview. Mix them freely and drag to reorder; right-click any of them for Close, Close
   Others, Close to the Right and Close All.
@@ -114,6 +117,8 @@ an app launched from Finder inherits almost none of it.
 | A saved workspace's terminals start in the folder its `.code-workspace` file is in | works |
 | A saved workspace's explorer starts with that folder, marked out from the repos below it | works |
 | Workspace heat — the list ordered by how much each workspace has been used lately, hot and warm ones coloured, with how long since anything happened in each | works |
+| The workspace list sorted another way from its header — by last activity, by date added or by name — and kept in that order | works |
+| The line between the workspace list and the panel below it, dragged to give either more room, and where it was left kept | works |
 | Cold workspaces — nothing in them for ten days of use — faded under their own divider, with a checklist to remove them | works |
 | Terminals at work — a spinning count on the workspace's row, a light along it, and a spinner on the tab, while an agent or a build is printing | works |
 | Finished unseen — a green count on the workspace, a dot on the tab and an outline on the split pane until you click into it; the count takes you there | works |
@@ -338,6 +343,12 @@ Time is counted in **days you used Rigee**, not calendar days, so a weekend or a
 nothing — you do not come back to a list of cold workspaces. Workspaces that existed before heat
 did start counting from the day you upgrade, so none of them is cold until ten days of use have
 gone by without it.
+
+Heat is the list's order until you choose another from the sort button in its header: *Last Active*
+— when anything last happened in each, so the times down the right read in order — *Date Added*,
+newest first, or *Name*. The colours stay whichever you choose. Sorted by last activity, the cold
+workspaces stay below their divider; by date added or by name they keep their places and only fade,
+and *N cold* in the header still finds them. The order you choose is kept.
 
 The list holds still while the pointer is over it, so nothing moves under a click; it re-sorts when
 the pointer leaves. Cold workspaces are never removed for you. *N cold* in the header, or *Review…*

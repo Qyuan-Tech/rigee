@@ -284,7 +284,8 @@ export const DEFAULT_KEYBINDINGS: KeyBindings = {
 // ---------------------------------------------------------------------------
 
 /**
- * Preferences other than key bindings: the settings dialog's General page.
+ * Preferences other than key bindings: the settings dialog's General page, and the ones set where
+ * they take effect, like the order of the workspace list.
  *
  * One object rather than more top-level fields, so the next preference is a field here and not
  * another change to the document's shape. Fields this build does not know are kept, as
@@ -304,7 +305,20 @@ export interface AppSettings {
    * only ever stored as false, by the prompt's "Don't remind me again" or the General page.
    */
   remindToSaveWorkspace?: boolean
+  /**
+   * How the side bar orders the workspace list, chosen from the sort button in its header. Unset
+   * means by heat, and only another order is ever stored. A value this build does not know — one a
+   * newer build wrote — is kept, and read as heat.
+   */
+  workspaceSort?: WorkspaceSort
 }
+
+/**
+ * The orders the workspace list can be in, as the sort menu lists them: by heat, how much each
+ * has been used lately; by when anything last happened in each; by when each was added; by name.
+ */
+export const WORKSPACE_SORTS = ['heat', 'recent', 'created', 'name'] as const
+export type WorkspaceSort = (typeof WORKSPACE_SORTS)[number]
 
 // ---------------------------------------------------------------------------
 // Activity
@@ -352,6 +366,15 @@ export interface PanelLayout {
   rightWidth: number
   leftCollapsed: boolean
   rightCollapsed: boolean
+  /**
+   * How tall the workspace list at the top of the left panel may be, header included, in pixels:
+   * where the divider under it was last let go. It is shorter when its rows do not fill that, and
+   * leaves the view below it room whatever the window's height.
+   *
+   * Absent until the divider is first dragged, which means the list grows with its rows to a few
+   * of them and then scrolls — all it did before the divider could be moved.
+   */
+  workspacesHeight?: number
   /**
    * Which view the activity bar is showing in the left panel, by view id.
    *

@@ -294,6 +294,9 @@ function cleanSettings(raw: unknown): AppSettings {
   // Only "off" is worth storing; absent is the default, which is on.
   if (doc.remindToSaveWorkspace === false) out.remindToSaveWorkspace = false
   else delete out.remindToSaveWorkspace
+  // Any name of an order, not only the ones this build has: the renderer reads one it does not
+  // know as heat, and a newer build's choice comes back through an older one intact.
+  if (typeof doc.workspaceSort !== 'string' || !doc.workspaceSort) delete out.workspaceSort
   return out
 }
 

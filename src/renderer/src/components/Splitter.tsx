@@ -2,8 +2,11 @@ import { useCallback, useRef, useState } from 'react'
 
 interface Props {
   orientation: 'vertical' | 'horizontal'
-  /** Current size of the pane being resized; captured at drag start. */
-  value: number
+  /**
+   * Current size of the pane being resized; captured at drag start. Or how to measure it then, for
+   * a pane whose size is its content's rather than a number anybody holds.
+   */
+  value: number | (() => number)
   onDrag: (delta: number, startValue: number) => void
 }
 
@@ -19,7 +22,7 @@ export function Splitter({ orientation, value, onDrag }: Props): React.ReactElem
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId)
-      start.current = { pos: vertical ? e.clientX : e.clientY, value }
+      start.current = { pos: vertical ? e.clientX : e.clientY, value: typeof value === 'function' ? value() : value }
       setDragging(true)
     },
     [value, vertical]
