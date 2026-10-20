@@ -156,6 +156,14 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     })
   }, [tab.root, closeLeaf])
 
+  // A pane made active from outside — split in from the explorer, or followed to from a badge in
+  // the side bar — has to be on screen, so a zoom on another pane ends, as it does whenever the
+  // keyboard moves from in here. Ended rather than only not shown, or going back to that pane would
+  // zoom it again.
+  useEffect(() => {
+    if (zoomed && zoomed !== tab.activeLeafId) setZoomed(null)
+  }, [zoomed, tab.activeLeafId])
+
   const split = useCallback(
     (direction: 'row' | 'column', before = false) => {
       const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, direction, newLeaf(), before)

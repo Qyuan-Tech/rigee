@@ -3049,7 +3049,9 @@ async function runTabsSmoke(): Promise<void> {
  * And a folder's own menu in the explorer: Open in Terminal Tab starts in that folder, not where the
  * workspace's terminals would, and does not stop to ask about saving; Open in Terminal Split adds a
  * pane to the terminal on screen that starts in the folder rather than where its neighbour is, and
- * two more make a grid of four — the left pane split down, then the right — not a row.
+ * two more make a grid of four — the left pane split down, then the right — not a row. A fifth,
+ * split in while a pane is zoomed, ends the zoom and starts on screen; so does a pane picked from
+ * outside, and going back to the pane that was zoomed does not zoom it again.
  * The tree keeps up with the disk: a file written or deleted from outside appears or goes by
  * itself, and the Refresh button reads folders again where the watcher does not look (.git).
  * And a saved workspace's tree is headed by its own folder, the one its file is in: marked as the
@@ -3468,6 +3470,50 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     if (gridAt.join() !== [repos[0]!, repos[1]!].map((p) => realpathSync(p)).join()) {
       return finish(false, 'a-pane-in-the-grid-started-somewhere-else', gridAt)
     }
+
+    // Zoomed in on one pane, a pane made active from outside still comes into view: the zoom ends.
+    // A fifth split in from the explorer — whose shell is waited for, and a pane behind a zoom never
+    // starts one — then a pane picked through the store, as following a badge in the side bar picks
+    // it. Back on the pane that was zoomed, it is not zoomed again.
+    const zoom = await js<{ ok: boolean; stage?: string; shape?: string }>(`(async () => {
+      ${helpers}
+      const tab = activeTab()
+      const mac = navigator.platform.toLowerCase().includes('mac')
+      const shape = (n) => n.kind === 'leaf' ? 'L' : (n.direction === 'row' ? 'R' : 'C') + '(' + n.children.map(shape).join(' ') + ')'
+      const leafIds = (n) => n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIds)
+      const shown = () => document.querySelectorAll('.term__pane').length
+      const zoomed = () => !!document.querySelector('.term__prefix--left')
+      const zoomIn = () => {
+        const t = activeTab()
+        getTerminal(paneKey(t.id, t.activeLeafId)).term.textarea.dispatchEvent(new KeyboardEvent('keydown', Object.assign(
+          { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }, mac ? { metaKey: true } : { ctrlKey: true })))
+        return until(() => zoomed() && shown() === 1)
+      }
+      const pick = (leafId) => store.getState().updateTab(store.getState().activeWorkspaceId, tab.id, { activeLeafId: leafId })
+      if (!tab || leafIds(tab.root).length !== 4) return { ok: false, stage: 'no-grid-to-zoom-in-on' }
+      if (!(await zoomIn())) return { ok: false, stage: 'the-zoom-key-did-not-zoom' }
+
+      const folder = [...document.querySelectorAll('.explorer__body .row')]
+        .find(r => r.querySelector('.row__label')?.textContent === 'repo-a')
+      menus.answer = () => 'terminal-split'
+      folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      const after = await until(() => { const t = activeTab(); return t && t.id === tab.id && leafIds(t.root).length === 5 ? t : null })
+      menus.answer = null
+      if (!after) return { ok: false, stage: 'split-from-the-explorer-while-zoomed-did-not-split' }
+      if (!(await startedPane(after))) return { ok: false, stage: 'a-pane-split-in-while-zoomed-never-started', shape: shape(after.root) }
+      if (zoomed() || shown() !== 5) return { ok: false, stage: 'a-pane-split-in-while-zoomed-is-not-on-screen', shape: shape(after.root) }
+
+      const was = after.activeLeafId
+      if (!(await zoomIn())) return { ok: false, stage: 'the-zoom-key-did-not-zoom-again' }
+      pick(leafIds(after.root)[0])
+      if (!(await until(() => !zoomed() && shown() === 5))) return { ok: false, stage: 'a-pane-picked-from-outside-stayed-behind-the-zoom' }
+      pick(was)
+      await sleep(300)
+      if (zoomed() || shown() !== 5) return { ok: false, stage: 'back-on-the-pane-that-was-zoomed-it-zoomed-again' }
+      return { ok: true, shape: shape(activeTab().root) }
+    })()`)
+    if (!zoom.ok) return finish(false, zoom.stage ?? 'zoomed', zoom.shape)
+    trail.push(`zoomed, a fifth Open in Terminal Split ended the zoom and started on screen, making ${zoom.shape}; a pane picked from outside ended it too, and going back did not zoom again`)
 
     // --- the explorer keeps up with the disk -------------------------------------------------
     // Still on ws-explore, whose roots the tree opened on first sight. A file written from outside
