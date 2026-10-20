@@ -4,7 +4,7 @@ import { notePaneFocus, notePaneOutput } from './paneWatch'
 import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
-import { leaves, neighbourOf, removeLeaf, splitLeaf } from './paneTree'
+import { leaves, neighbourOf, removeLeaf, roomForPane, splitLeaf } from './paneTree'
 import { newTerminalTab, rowOf, useApp } from './store'
 import { remindsToSave } from './workspaces'
 import type { Terminal } from '@xterm/xterm'
@@ -495,9 +495,11 @@ export function openTerminalTab(
 }
 
 /**
- * Split the terminal on screen — the active group's tab, if it is a terminal — beside its active
- * pane, the new pane starting in `cwd`. With no terminal showing there is nothing to split, and a
- * tab in that folder is the nearest thing to what was asked. Returns the tab the pane went into.
+ * Add a pane to the terminal on screen — the active group's tab, if it is a terminal — starting in
+ * `cwd`. It goes where there is most room rather than beside the active pane, so that opening one
+ * folder after another fills out a grid: see `roomForPane`. With no terminal showing there is
+ * nothing to split, and a tab in that folder is the nearest thing to what was asked. Returns the
+ * tab the pane went into.
  */
 export function splitTerminalAt(workspaceId: string, cwd: string): string {
   const s = useApp.getState()
@@ -505,9 +507,10 @@ export function splitTerminalAt(workspaceId: string, cwd: string): string {
   const group = row.groups.find((g) => g.id === row.activeGroupId)
   const tab = group?.tabs.find((t) => t.id === group.activeTabId)
   if (tab?.kind !== 'terminal' || askingToSave.has(tab.id)) return openTerminalTab(workspaceId, { cwd })
-  const { root, newLeafId } = splitLeaf(tab.root, tab.activeLeafId, 'row')
+  const { leafId, direction } = roomForPane(tab.root)
+  const { root, newLeafId } = splitLeaf(tab.root, leafId, direction)
   const key = paneKey(tab.id, newLeafId)
-  inheritFontSize(key, paneKey(tab.id, tab.activeLeafId))
+  inheritFontSize(key, paneKey(tab.id, leafId))
   pendingStartDir.set(key, cwd)
   s.updateTab(workspaceId, tab.id, { root, activeLeafId: newLeafId })
   return tab.id

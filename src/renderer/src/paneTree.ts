@@ -282,6 +282,51 @@ export function equalize(root: PaneNode): PaneNode {
   return walk(root)
 }
 
+// ---------------------------------------------------------------------------
+// A pane added to the tab rather than beside one — Open in Terminal Split
+// ---------------------------------------------------------------------------
+
+/**
+ * Which pane to split, and which way, when nobody pointed at one: "Open in Terminal Split" on a
+ * folder in the explorer.
+ *
+ * The biggest pane — of several the same size, the first reading across and then down — split
+ * across the split it sits in. So the panes fill out a grid: two side by side, then the left one
+ * over a new one, then the right one, then each of those four in half the other way. Splitting the
+ * newest pane the same way every time makes a row of panes, each half as wide as the one before.
+ *
+ * A lone pane has no split to go across, and goes side by side whatever shape the tab is. Going the
+ * long way instead would leave the first split to a few pixels: with both side panels open in a
+ * window of the default size, the tab between them is nearly square.
+ */
+export function roomForPane(root: PaneNode): { leafId: string; direction: 'row' | 'column' } {
+  const rects = nodeRects(root)
+  const eps = 1e-6
+  let best: { id: string; area: number; r: Rect } | null = null
+  for (const leaf of leaves(root)) {
+    const r = rects.get(leaf.id)!
+    const area = r.w * r.h
+    const bigger = !best || area > best.area + eps
+    const tied = !!best && Math.abs(area - best.area) <= eps
+    const earlier = !!best && (r.y < best.r.y - eps || (Math.abs(r.y - best.r.y) <= eps && r.x < best.r.x - eps))
+    if (bigger || (tied && earlier)) best = { id: leaf.id, area, r }
+  }
+  const leafId = best!.id
+  const parent = parentOf(root, leafId)
+  return { leafId, direction: parent?.direction === 'row' ? 'column' : 'row' }
+}
+
+/** The split `id` sits directly in; null for the root. */
+function parentOf(node: PaneNode, id: string): Extract<PaneNode, { kind: 'split' }> | null {
+  if (node.kind === 'leaf') return null
+  for (const child of node.children) {
+    if (child.id === id) return node
+    const found = parentOf(child, id)
+    if (found) return found
+  }
+  return null
+}
+
 function normalise(sizes: number[]): number[] {
   const total = sizes.reduce((a, b) => a + b, 0)
   if (total <= 0) return sizes.map(() => 1 / sizes.length)

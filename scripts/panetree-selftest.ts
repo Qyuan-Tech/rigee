@@ -27,6 +27,7 @@ import {
   nodeRects,
   removeLeaf,
   resizeSplit,
+  roomForPane,
   setSizes,
   splitLeaf
 } from '../src/renderer/src/paneTree.ts'
@@ -892,6 +893,41 @@ console.log('\npane navigation')
   const before = splitLeaf(a, a.id, 'row', newLeaf(), true)
   eq('new_split:left puts the new pane first',
     before.root.kind === 'split' ? before.root.children[0]!.id : '', before.newLeafId)
+}
+
+console.log('\nopen in terminal split')
+{
+  // What splitTerminalAt does with what roomForPane says, again and again.
+  const add = (root: PaneNode): PaneNode => {
+    const { leafId, direction } = roomForPane(root)
+    return splitLeaf(root, leafId, direction).root
+  }
+  const a = newLeaf()
+  const two = add(a)
+  eq('a lone pane splits beside itself', shape(two), 'R(L L)')
+  eq('the third pane goes under the left one', roomForPane(two).leafId, a.id)
+  const three = add(two)
+  eq('three is the left one over a new one, beside the right', shape(three), 'R(C(L L) L)')
+  const four = add(three)
+  eq('the fourth goes under the right one: a grid of four', shape(four), 'R(C(L L) C(L L))')
+  const five = add(four)
+  eq('the fifth halves the top left the other way', shape(five), 'R(C(R(L L) L) C(L L))')
+  const six = add(five)
+  eq('the sixth the top right, reading across before down', shape(six), 'R(C(R(L L) L) C(R(L L) L))')
+  const eight = add(add(six))
+  eq('eight is four across and two down', shape(eight), 'R(C(R(L L) R(L L)) C(R(L L) R(L L)))')
+  const rects = nodeRects(eight)
+  check('all eight the same size', leaves(eight).every((l) => Math.abs(rects.get(l.id)!.w * rects.get(l.id)!.h - 1 / 8) < 1e-9))
+
+  // A layout made by hand: the biggest pane first, wherever it is.
+  const leaning = setSizes(two, two.id, [0.3, 0.7])
+  eq('a bigger pane beats an earlier one', roomForPane(leaning).leafId, leaves(two)[1]!.id)
+  const byHand = splitLeaf(two, leaves(two)[1]!.id, 'column').root
+  eq('beside a stack, the pane on its own is split', roomForPane(byHand).leafId, a.id)
+  eq('across the row it is in', roomForPane(byHand).direction, 'column')
+  const threeAcross = equalize(splitLeaf(two, leaves(two)[1]!.id, 'row').root)
+  eq('of three equal columns, the first', roomForPane(threeAcross).leafId, a.id)
+  eq('split down, not into a fourth column', shape(add(threeAcross)), 'R(C(L L) L L)')
 }
 
 console.log('\ntab strip')

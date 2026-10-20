@@ -126,7 +126,7 @@ an app launched from Finder inherits almost none of it.
 | Terminals at work — a spinning count on the workspace's row, a light along it, and a spinner on the tab, while an agent or a build is printing | works |
 | Finished unseen — a green count on the workspace, a dot on the tab and an outline on the split pane until you click into it; the count takes you there | works |
 | A terminal opened in an unsaved workspace offers to save it first — or not now, or never again | works |
-| Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split beside the terminal on screen | works |
+| Right-click a folder in the explorer — Open in Terminal Tab, or Open in Terminal Split into the terminal on screen, folder after folder filling out a grid | works |
 | Explorer file operations — New File, New Folder, Rename, Cut, Copy, Paste, Delete to the Trash, Copy Path, Copy Relative Path, Reveal in Finder, from the right-click menu or VS Code's keys | works |
 | Explorer selection — click, Cmd/Ctrl-click and Shift-click, the arrows with Shift, Cmd/Ctrl+A | works |
 | Drag files in from Finder or Explorer to copy them; drag inside the tree to move, holding Option (Ctrl elsewhere) to copy | works |
@@ -206,8 +206,10 @@ or *Not Now* to start in the first folder as before. It asks again with the next
 
 Right-click any folder in the explorer — a repo at the top of the tree or anything inside it — for
 *Open in Terminal Tab*, a new tab whose shell starts there, or *Open in Terminal Split*, a new pane
-beside the active one in the terminal on screen (a new tab when no terminal is showing). Either way
-the folder you picked wins, and nothing asks about saving the workspace.
+in the terminal on screen (a new tab when no terminal is showing). Either way the folder you picked
+wins, and nothing asks about saving the workspace. A split goes wherever there is most room, so one
+folder after another fills out a grid rather than a row of ever thinner panes: the second beside the
+first, the third under the left one, the fourth under the right, and so on.
 
 Closing several tabs at once — Close Others, Close to the Right, Close All — asks first if it would
 stop a program still running in a terminal it sweeps up. A shell sitting at its prompt closes

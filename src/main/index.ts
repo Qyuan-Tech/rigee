@@ -3048,7 +3048,8 @@ async function runTabsSmoke(): Promise<void> {
  * row still in the tree; the workspace's own folder does not offer it.
  * And a folder's own menu in the explorer: Open in Terminal Tab starts in that folder, not where the
  * workspace's terminals would, and does not stop to ask about saving; Open in Terminal Split adds a
- * pane to the terminal on screen that starts in the folder rather than where its neighbour is.
+ * pane to the terminal on screen that starts in the folder rather than where its neighbour is, and
+ * two more make a grid of four — the left pane split down, then the right — not a row.
  * The tree keeps up with the disk: a file written or deleted from outside appears or goes by
  * itself, and the Refresh button reads folders again where the watcher does not look (.git).
  * And a saved workspace's tree is headed by its own folder, the one its file is in: marked as the
@@ -3434,6 +3435,39 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     const splitAt = await whereIs(split.paneId)
     trail.push(`Open in Terminal Split put a second pane in that tab, started in ${splitAt}`)
     if (splitAt !== realpathSync(repos[1]!)) return finish(false, 'open-in-split-started-somewhere-else', splitAt)
+
+    // Two more make a grid: the third goes under the left pane and the fourth under the right, where
+    // splitting the newest pane each time would make a row of four, each half as wide as the last.
+    const grid = await js<{ ok: boolean; stage?: string; shapes: string[]; paneIds: string[] }>(`(async () => {
+      ${helpers}
+      const tab = activeTab()
+      const count = (t) => JSON.stringify(t.root).split('"kind":"leaf"').length - 1
+      const shape = (n) => n.kind === 'leaf' ? 'L' : (n.direction === 'row' ? 'R' : 'C') + '(' + n.children.map(shape).join(' ') + ')'
+      const shapes = [], paneIds = []
+      for (const label of ['repo-a', 'repo-b']) {
+        const folder = [...document.querySelectorAll('.explorer__body .row')]
+          .find(r => r.querySelector('.row__label')?.textContent === label)
+        if (!tab || !folder) return { ok: false, stage: 'nothing-to-split-or-no-row-for-' + label, shapes, paneIds }
+        const before = count(activeTab())
+        menus.answer = () => 'terminal-split'
+        folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+        const after = await until(() => { const t = activeTab(); return t && t.id === tab.id && count(t) === before + 1 ? t : null })
+        menus.answer = null
+        if (!after) return { ok: false, stage: 'split-from-the-explorer-did-not-split-again', shapes, paneIds }
+        shapes.push(shape(after.root))
+        const paneId = await startedPane(after)
+        if (!paneId) return { ok: false, stage: 'a-pane-in-the-grid-never-started', shapes, paneIds }
+        paneIds.push(paneId)
+      }
+      return { ok: true, shapes, paneIds }
+    })()`)
+    if (!grid.ok) return finish(false, grid.stage ?? 'open-in-split-grid', grid.shapes)
+    trail.push(`two more Open in Terminal Splits made ${grid.shapes.join(', then ')}`)
+    if (grid.shapes.join() !== 'R(C(L L) L),R(C(L L) C(L L))') return finish(false, 'four-panes-are-not-a-grid', grid.shapes)
+    const gridAt = await Promise.all(grid.paneIds.map(whereIs))
+    if (gridAt.join() !== [repos[0]!, repos[1]!].map((p) => realpathSync(p)).join()) {
+      return finish(false, 'a-pane-in-the-grid-started-somewhere-else', gridAt)
+    }
 
     // --- the explorer keeps up with the disk -------------------------------------------------
     // Still on ws-explore, whose roots the tree opened on first sight. A file written from outside

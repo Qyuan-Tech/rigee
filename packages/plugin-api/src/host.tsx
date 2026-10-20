@@ -183,8 +183,9 @@ export interface ShellHost {
   /**
    * Open a terminal in the active workspace whose shell starts in `cwd` — a folder the user picked,
    * so it never stops to ask about saving the workspace. `tab` (the default) is a new terminal tab;
-   * `split` is a new pane beside the active one in the terminal on screen, or a new tab when no
-   * terminal is showing. Returns the tab it is in, or null with no workspace to put it in.
+   * `split` is a new pane in the terminal on screen, wherever it has most room — one after another
+   * they fill out a grid — or a new tab when no terminal is showing. Returns the tab it is in, or
+   * null with no workspace to put it in.
    */
   openTerminal: (request: { cwd: string; where?: 'tab' | 'split' }) => TabId | null
 
