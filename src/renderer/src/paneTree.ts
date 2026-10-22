@@ -114,10 +114,23 @@ export function setSizes(root: PaneNode, splitId: string, sizes: number[]): Pane
   return walk(root)
 }
 
-/** Set a leaf's pty id without rebuilding the rest of the tree's identities. */
-export function bindPane(root: PaneNode, leafId: string, paneId: string): PaneNode {
+/** Set a leaf's pty id, and where its shell started, without rebuilding the rest of the tree's identities. */
+export function bindPane(root: PaneNode, leafId: string, paneId: string, cwd: string): PaneNode {
+  return patchLeaf(root, leafId, { paneId, cwd })
+}
+
+/** Record where a leaf's shell is now, for the next run to start it there. */
+export function setLeafCwd(root: PaneNode, leafId: string, cwd: string): PaneNode {
+  return patchLeaf(root, leafId, { cwd })
+}
+
+function patchLeaf(
+  root: PaneNode,
+  leafId: string,
+  patch: Partial<Extract<PaneNode, { kind: 'leaf' }>>
+): PaneNode {
   const walk = (node: PaneNode): PaneNode => {
-    if (node.kind === 'leaf') return node.id === leafId ? { ...node, paneId } : node
+    if (node.kind === 'leaf') return node.id === leafId ? { ...node, ...patch } : node
     return { ...node, children: node.children.map(walk) }
   }
   return walk(root)

@@ -35,6 +35,8 @@ export interface SpawnOptions {
   cwd: string
   /** A live pane to start beside: in the directory its shell is in now. `cwd` if that fails. */
   cwdFrom?: string
+  /** Where this pane's shell was when the app last closed. `cwd` if that has gone. */
+  lastCwd?: string
   cols: number
   rows: number
   /** Extra environment for this terminal, e.g. a workspace-specific variable. */
@@ -94,11 +96,15 @@ export class PtyManager {
     return ws
   }
 
-  async spawn(opts: SpawnOptions): Promise<{ paneId: string }> {
+  async spawn(opts: SpawnOptions): Promise<{ paneId: string; cwd: string }> {
     const pty = await this.load()
     const { file, args } = defaultShell()
-    // A split starts where the pane it came from is now, not back at the workspace's first folder.
-    const wanted = (opts.cwdFrom ? await this.cwdOf(opts.cwdFrom) : null) ?? (opts.cwd || homedir())
+    // A split starts where the pane it came from is now, not back at the workspace's first folder;
+    // a pane restored after a restart, where its shell was when the app closed.
+    const wanted =
+      (opts.cwdFrom ? await this.cwdOf(opts.cwdFrom) : null) ??
+      (opts.lastCwd && isDirectory(opts.lastCwd) ? opts.lastCwd : null) ??
+      (opts.cwd || homedir())
     // A directory that has gone — a workspace file moved, a repo deleted — does not fail the spawn:
     // the shell starts, cannot chdir and exits with nothing said, and the new tab flashes and is gone.
     const cwd = isDirectory(wanted) ? wanted : homedir()
@@ -132,7 +138,7 @@ export class PtyManager {
       this.onExit(opts.workspaceId, paneId, exitCode)
     })
 
-    return { paneId }
+    return { paneId, cwd }
   }
 
   write(paneId: string, data: string): void {

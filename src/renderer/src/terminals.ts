@@ -4,7 +4,7 @@ import { notePaneFocus, notePaneOutput } from './paneWatch'
 import { editorFontSize, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
-import { leaves, neighbourOf, removeLeaf, roomForPane, splitLeaf } from './paneTree'
+import { leaves, neighbourOf, removeLeaf, roomForPane, setLeafCwd, splitLeaf } from './paneTree'
 import { newTerminalTab, rowOf, useApp } from './store'
 import { remindsToSave } from './workspaces'
 import type { Terminal } from '@xterm/xterm'
@@ -471,6 +471,51 @@ export function takeCwdSource(key: string): string | undefined {
   const paneId = pendingCwdFrom.get(key)
   pendingCwdFrom.delete(key)
   return paneId
+}
+
+/** How long after the last Enter in a pane its shell is asked where it is. */
+const CWD_SETTLE_MS = 500
+
+/** Panes whose shell is to be asked where it is, once Enter has stopped being pressed. */
+const cwdChecks = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * Enter was pressed in this pane: in a moment, ask where its shell is and keep that on its leaf, so
+ * that after a restart the pane starts there rather than back at the tab's folder.
+ *
+ * Asked after Enter because a shell changes directory only by running something, and it runs
+ * something when Enter is pressed at its prompt. Not when the app quits: main kills every shell
+ * before the page makes its last save (see `before-quit` in main's index.ts), and a crash would
+ * not ask at all. Never on a timer, so a window full of idle shells costs nothing. Windows cannot
+ * say where a process is, so there a pane keeps the directory it started in.
+ */
+export function noteEnter(paneId: string): void {
+  if (platform() === 'win32') return
+  const pending = cwdChecks.get(paneId)
+  if (pending) clearTimeout(pending)
+  cwdChecks.set(
+    paneId,
+    setTimeout(() => {
+      cwdChecks.delete(paneId)
+      void recordCwd(paneId)
+    }, CWD_SETTLE_MS)
+  )
+}
+
+async function recordCwd(paneId: string): Promise<void> {
+  const cwd = await rpc['terminal:cwd']({ paneId }).catch(() => null)
+  if (!cwd) return
+  const s = useApp.getState()
+  for (const [workspaceId, row] of Object.entries(s.rowsByWorkspace)) {
+    for (const tab of allTabs(row)) {
+      if (tab.kind !== 'terminal') continue
+      const leaf = leaves(tab.root).find((l) => l.paneId === paneId)
+      if (!leaf) continue
+      // Most commands leave the directory where it was, and an unchanged tab is not worth a save.
+      if (leaf.cwd !== cwd) s.updateTab(workspaceId, tab.id, { root: setLeafCwd(tab.root, leaf.id, cwd) })
+      return
+    }
+  }
 }
 
 /**

@@ -617,7 +617,11 @@ function isPaneNode(v: unknown): v is PaneNode {
 }
 
 function clearPaneIds(node: PaneNode): PaneNode {
-  if (node.kind === 'leaf') return { ...node, paneId: null }
+  if (node.kind === 'leaf') {
+    // Where the shell was is kept, unlike the process: it is where the pane starts again.
+    const { cwd, ...leaf } = node
+    return { ...leaf, paneId: null, ...(typeof cwd === 'string' && cwd ? { cwd } : {}) }
+  }
   return { ...node, children: node.children.map(clearPaneIds) }
 }
 

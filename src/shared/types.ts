@@ -129,7 +129,16 @@ export interface TerminalTab extends TabBase {
 }
 
 export type PaneNode =
-  | { kind: 'leaf'; id: string; paneId: PtyPaneId | null }
+  | {
+      kind: 'leaf'
+      id: string
+      paneId: PtyPaneId | null
+      /**
+       * Where this pane's shell was last seen, `cd` and all: where it starts again after a restart,
+       * rather than back at the tab's folder. See `noteEnter` in the renderer's terminals.ts.
+       */
+      cwd?: string
+    }
   | {
       kind: 'split'
       id: string

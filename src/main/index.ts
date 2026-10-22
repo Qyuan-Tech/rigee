@@ -3040,7 +3040,8 @@ async function runTabsSmoke(): Promise<void> {
  * in the workspace's folder; the next terminal asks again, and saving from the question starts it
  * in the folder the file went to; Don't remind me again starts it and is kept in Settings, and the
  * next terminal does not ask. A workspace whose file has gone starts its terminals at home rather
- * than flashing a tab that dies.
+ * than flashing a tab that dies. A pane restored with the directory its shell was last in starts
+ * there — or, that folder gone, where its tab would start it.
  *
  * And the menu a workspace opens on right-click: Add Folder on a saved workspace that is not the
  * active one adds it there — without switching to it — and to the file, whose hand-written
@@ -3601,6 +3602,35 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
     })()`)
     trail.push(`its tree is headed by "${goneTree.name}", which says ${goneTree.says ? 'it is no longer there' : 'nothing'}`)
     if (goneTree.name !== 'gone' || !goneTree.says) return finish(false, 'a-gone-own-folder-not-said-so', goneTree)
+
+    // --- a pane comes back where its shell was ----------------------------------------------------
+    // As a tab comes back from disk: leaves with no shell, each with the directory its last one was
+    // in. One in repo-b starts there, where its tab alone would start it in repo-a, and its leaf says
+    // so; one whose directory has gone since starts in the tab's folder rather than at home.
+    const restored = await js<{ ok: boolean; stage?: string; paneIds?: string[]; kept?: string }>(`(async () => {
+      ${helpers}
+      store.getState().setActiveWorkspace('ws-quiet')
+      await sleep(300)
+      const paneIds = []
+      let kept
+      for (const cwd of [${JSON.stringify(repos[1])}, '/nonexistent-rigee-smoke/moved-away']) {
+        const fresh = window.__rigee.newTerminalTab()
+        const tab = { ...fresh, root: { ...fresh.root, cwd } }
+        store.getState().openTab('ws-quiet', tab)
+        const paneId = await startedPane(tab)
+        if (!paneId) return { ok: false, stage: 'restored-pane-never-started' }
+        paneIds.push(paneId)
+        kept ??= store.getState().rowsByWorkspace['ws-quiet'].groups.flatMap(g => g.tabs).find(t => t.id === tab.id)?.root.cwd
+      }
+      return { ok: true, paneIds, kept }
+    })()`)
+    if (!restored.ok) return finish(false, restored.stage ?? 'restored')
+    const restoredAt = await Promise.all(restored.paneIds!.map(whereIs))
+    trail.push(`restored panes started in ${restoredAt.join(' and ')}`)
+    if (restoredAt[0] !== realpathSync(repos[1]!) || restored.kept !== repos[1]) {
+      return finish(false, 'restored-pane-not-where-its-shell-was', { restoredAt, kept: restored.kept })
+    }
+    if (restoredAt[1] !== realpathSync(repos[0]!)) return finish(false, 'restored-pane-with-a-gone-folder-not-in-the-tabs', restoredAt)
 
     // --- right-click: Add Folder, on a saved workspace that is not the active one ---------------
     // Hand-edited first, the way people keep these files: a note, and a setting.
@@ -5151,7 +5181,8 @@ async function runHeatSmoke(): Promise<void> {
  * they stop — the agent alive and silent, the build gone — and the count followed to the terminal,
  * which clears it; a tab's dot and a split pane's mark doing the same; and neither somebody typing
  * nor a quick command counted as work. Real programs under a real shell with job control, real
- * keystrokes, real clicks.
+ * keystrokes, real clicks. And a `cd` typed into a pane kept on its leaf and saved, which is where
+ * the pane starts again after a restart.
  *
  * `RIGEE_SHOT_DIR` leaves PNGs of the counts and of a finished split pane.
  */
@@ -5374,6 +5405,45 @@ async function runRunningSmoke(): Promise<void> {
     trail.push(`closed while at work: ${JSON.stringify(closed.counts)}`)
     if (!closed.ok || closed.unseen) return finish(false, 'a-closed-terminal-left-its-count-behind', closed)
     if (JSON.stringify(closed.counts) !== JSON.stringify({ working: null, finished: null, light: false })) return finish(false, 'counts-left-after-closing', closed)
+
+    // --- a pane keeps where its shell went -----------------------------------------------------------
+    const movedTo = realpathSync(folders.quiet!)
+    const moved = await js<{ ok: boolean; leafId?: string; cwd?: string | null }>(`(async () => {
+      ${helpers}
+      const leafOf = () => {
+        const tab = s().rowsByWorkspace['ws-busy'].groups.flatMap(g => g.tabs).find(t => t.id === ${JSON.stringify(t2)})
+        const find = (n) => n.kind === 'leaf' ? (n.paneId === ${JSON.stringify(p2)} ? n : null) : n.children.map(find).find(Boolean) ?? null
+        return tab ? find(tab.root) : null
+      }
+      const leaf = leafOf()
+      if (!leaf) return { ok: false, cwd: null }
+      // Through xterm, the road a keystroke takes, which is where Enter is noticed.
+      getTerminal(paneKey(${JSON.stringify(t2)}, leaf.id)).term.input('cd "' + folders.quiet + '"\\r', true)
+      const kept = await until(() => leafOf()?.cwd === ${JSON.stringify(movedTo)}, 5000)
+      return { ok: !!kept, leafId: leaf.id, cwd: leafOf()?.cwd ?? null }
+    })()`)
+    trail.push(`cd into quiet: the pane's leaf says ${moved.cwd}`)
+    if (!moved.ok) return finish(false, 'cd-not-kept-on-the-leaf', moved.cwd)
+    type Node = { id?: string; cwd?: string; children?: Node[] }
+    const leafOnDisk = (): string | undefined => {
+      try {
+        const doc = JSON.parse(readFileSync(join(dir, 'workspaces.json'), 'utf8')) as {
+          ui?: Record<string, { groups?: Array<{ tabs?: Array<{ id?: string; root?: Node }> }> }>
+        }
+        const find = (n: Node | undefined): Node | undefined =>
+          !n ? undefined : n.id === moved.leafId ? n : n.children?.map(find).find(Boolean)
+        return find(doc.ui?.['ws-busy']?.groups?.flatMap((g) => g.tabs ?? []).find((t) => t.id === t2)?.root)?.cwd
+      } catch {
+        return undefined
+      }
+    }
+    let onDisk = leafOnDisk()
+    for (let i = 0; i < 30 && onDisk !== movedTo; i++) {
+      await sleep(100)
+      onDisk = leafOnDisk()
+    }
+    trail.push(`and on disk, ${onDisk}`)
+    if (onDisk !== movedTo) return finish(false, 'cd-not-saved', onDisk)
 
     finish(true, 'running')
   } catch (err) {
@@ -8262,13 +8332,14 @@ function registerTerminalHandlers(): void {
     return ptys
   }
 
-  handle('terminal:spawn', async ({ workspaceId, cwd, cwdFrom, cols, rows }) => {
+  handle('terminal:spawn', async ({ workspaceId, cwd, cwdFrom, lastCwd, cols, rows }) => {
     // A packaged app starts with a minimal PATH, so the shell must be findable before we spawn.
     await ensureShellPath()
-    return mgr().spawn({ workspaceId, cwd, cwdFrom, cols, rows })
+    return mgr().spawn({ workspaceId, cwd, cwdFrom, lastCwd, cols, rows })
   })
   handle('terminal:resize', ({ paneId, cols, rows }) => { mgr().resize(paneId, cols, rows) })
   handle('terminal:kill', ({ paneId }) => { mgr().kill(paneId) })
+  handle('terminal:cwd', ({ paneId }) => mgr().cwdOf(paneId))
   handle('terminal:running', ({ paneIds }) => mgr().running(paneIds))
 
   handle('dialog:closeRunning', async ({ processes, tabs }) => {

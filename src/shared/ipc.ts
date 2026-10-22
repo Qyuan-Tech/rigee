@@ -311,11 +311,18 @@ export interface IpcRequests {
      * stands in when that pane is gone or its directory cannot be read.
      */
     cwdFrom?: PtyPaneId
+    /**
+     * Where this pane's shell was when the app last closed, for a pane coming back after a restart.
+     * `cwd` stands in when that directory has gone.
+     */
+    lastCwd?: string
     cols: number
     rows: number
-  }) => { paneId: PtyPaneId }
+  }) => { paneId: PtyPaneId; cwd: string }
   'terminal:resize': (args: { paneId: PtyPaneId; cols: number; rows: number }) => void
   'terminal:kill': (args: { paneId: PtyPaneId }) => void
+  /** The directory a pane's shell is in now; null for a pane that has gone. */
+  'terminal:cwd': (args: { paneId: PtyPaneId }) => string | null
   /**
    * Which of these panes have a program running in the foreground rather than a shell waiting at
    * its prompt, and what each program is called. Empty where the platform cannot tell (Windows).
@@ -428,6 +435,7 @@ export const REQUEST_CHANNELS: readonly IpcRequestChannel[] = [
   'terminal:spawn',
   'terminal:resize',
   'terminal:kill',
+  'terminal:cwd',
   'terminal:running',
   'terminal:requestPort',
   'terminal:disconnect',

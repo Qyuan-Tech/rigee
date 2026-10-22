@@ -47,6 +47,7 @@ import {
   inheritFontSize,
   isAskingToSave,
   newlineBytes,
+  noteEnter,
   paneFontSize,
   paneKey,
   paneSearch,
@@ -415,7 +416,8 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
   latest.current = { handleKey, patch }
   const onKey = useCallback((leafId: string, e: KeyboardEvent) => latest.current.handleKey(leafId, e), [])
   const onBind = useCallback(
-    (leafId: string, paneId: string) => latest.current.patch((t) => ({ root: bindPane(t.root, leafId, paneId) })),
+    (leafId: string, paneId: string, cwd: string) =>
+      latest.current.patch((t) => ({ root: bindPane(t.root, leafId, paneId, cwd) })),
     []
   )
 
@@ -756,7 +758,7 @@ interface NodeProps {
   cwd: string
   /** Whether a pane in this tab may take the keyboard when it mounts. */
   inActiveGroup: boolean
-  onBind: (leafId: string, paneId: string) => void
+  onBind: (leafId: string, paneId: string, cwd: string) => void
   onFocus: (leafId: string) => void
   onClose: (leafId: string) => void
   onResize: (splitId: string, sizes: number[]) => void
@@ -886,14 +888,16 @@ function LeafView({
       } else if (!spawning.current) {
         spawning.current = true
         try {
-          // A folder picked for this pane beats everything; then the pane it was split from; the
-          // tab's or workspace's folder only when it was neither.
+          // A folder picked for this pane beats everything; then the pane it was split from; then,
+          // for a pane restored after a restart, where its shell was; the tab's or workspace's
+          // folder only when it was none of these.
           const startDir = takeStartDir(key)
           const cwdFrom = takeCwdSource(key)
-          const { paneId } = await rpc['terminal:spawn']({
+          const { paneId, cwd: startedIn } = await rpc['terminal:spawn']({
             workspaceId,
             cwd: startDir ?? cwd,
             cwdFrom: startDir ? undefined : cwdFrom,
+            lastCwd: startDir ? undefined : leaf.cwd,
             cols: handle.term.cols,
             rows: handle.term.rows
           })
@@ -908,7 +912,7 @@ function LeafView({
           handle.paneId = paneId
           // A new process has not asked for anything yet, whatever the last one in this pane did.
           handle.modifyOtherKeys = 0
-          onBind(leaf.id, paneId)
+          onBind(leaf.id, paneId, startedIn)
           // Binding changes `leaf.paneId`, which re-runs this effect; that run does the wiring.
           if (cancelled) return
         } catch (e) {
@@ -943,6 +947,7 @@ function LeafView({
         window.rigee.writeTerminal(workspaceId, handle.paneId, data)
         // What comes back in the next moment is this key's echo, not the pane at work.
         notePaneInput(handle.paneId)
+        if (data.includes('\r')) noteEnter(handle.paneId)
       })
 
       // Only the active pane of the active group. A terminal that arrives in another column —
