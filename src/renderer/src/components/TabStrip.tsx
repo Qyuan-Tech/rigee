@@ -18,6 +18,7 @@ import { leaves } from '../paneTree'
 import { nextTabId, rowOf, useActiveWorkspace, useApp, useRow } from '../store'
 import { isCloseCommand, isFileTab, tabsToClose } from '../tabs'
 import { openTerminalTab } from '../terminals'
+import { t } from '../i18n'
 import type { GroupId, Tab, TabId, WorkspaceId } from '@shared/types'
 
 /**
@@ -66,8 +67,8 @@ function TabStatusIcon({
   const finished = panes.some((id) => id in unseen)
   return (
     <span className="tab__icon">
-      {busy ? <span className="spinner" title="At work" /> : <TabIcon tab={tab} />}
-      {finished && <span className="tab__finished" title="Finished since you last looked" />}
+      {busy ? <span className="spinner" title={t('At work')} /> : <TabIcon tab={tab} />}
+      {finished && <span className="tab__finished" title={t('Finished since you last looked')} />}
     </span>
   )
 }
@@ -199,11 +200,11 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           title={tabTooltip(tab)}
         >
           <TabStatusIcon tab={tab} working={workingPanes} unseen={unseenPanes} />
-          <span className="tab__label">{tab.title}</span>
+          <span className="tab__label">{tabLabel(tab)}</span>
           <button
             className={`tab__close${unsaved(tab, dirtyFiles) ? ' tab__close--dirty' : ''}`}
             onClick={(e) => { e.stopPropagation(); closeTab(workspace.id, tab.id) }}
-            title={unsaved(tab, dirtyFiles) ? 'Unsaved changes — close tab' : 'Close tab'}
+            title={unsaved(tab, dirtyFiles) ? t('Unsaved changes — close tab') : t('Close tab')}
           >
             <CloseIcon size={11} />
             <span className="tab__dirty" aria-hidden="true" />
@@ -212,7 +213,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
       ))}
 
       <div className="tabstrip__actions">
-        <button className="icon-button" onClick={addTerminal} title="New terminal">
+        <button className="icon-button" onClick={addTerminal} title={t('New terminal')}>
           <TerminalIcon size={14} />
         </button>
         {creatableTabs().map((c) => {
@@ -238,7 +239,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           className="icon-button"
           onClick={() => split('right')}
           disabled={!activeTab}
-          title={moves ? 'Move to a new group' : 'Split right'}
+          title={moves ? t('Move to a new group') : t('Split right')}
         >
           <SplitIcon size={14} />
         </button>
@@ -246,7 +247,7 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
           className="icon-button"
           onClick={() => split('down')}
           disabled={!activeTab}
-          title={moves ? 'Move to a new group below' : 'Split down'}
+          title={moves ? t('Move to a new group below') : t('Split down')}
         >
           <SplitDownIcon size={14} />
         </button>
@@ -268,11 +269,11 @@ export function TabStrip({ groupId }: { groupId: GroupId }): React.ReactElement 
 async function showTabMenu(workspaceId: WorkspaceId, tabId: TabId, tabs: readonly Tab[]): Promise<void> {
   const none = (command: 'others' | 'right'): boolean => tabsToClose(tabs, tabId, command).length === 0
   const choice = await popupMenu([
-    { kind: 'item', id: 'close', label: 'Close' },
-    { kind: 'item', id: 'others', label: 'Close Others', enabled: !none('others') },
-    { kind: 'item', id: 'right', label: 'Close to the Right', enabled: !none('right') },
+    { kind: 'item', id: 'close', label: t('Close') },
+    { kind: 'item', id: 'others', label: t('Close Others'), enabled: !none('others') },
+    { kind: 'item', id: 'right', label: t('Close to the Right'), enabled: !none('right') },
     { kind: 'separator' },
-    { kind: 'item', id: 'all', label: 'Close All' }
+    { kind: 'item', id: 'all', label: t('Close All') }
   ])
   if (!choice) return
 
@@ -282,6 +283,14 @@ async function showTabMenu(workspaceId: WorkspaceId, tabId: TabId, tabs: readonl
   if (!group) return
   if (choice === 'close') void closeTabsSafely(workspaceId, [tabId])
   else if (isCloseCommand(choice)) void closeTabsSafely(workspaceId, tabsToClose(group.tabs, tabId, choice), { sweptFrom: tabId })
+}
+
+/**
+ * What a tab is called on the strip: its title, but a terminal's in the language the window is in
+ * now — every terminal is called "terminal", and the word is stored with the tab.
+ */
+function tabLabel(tab: Tab): string {
+  return tab.kind === 'terminal' && tab.title === 'terminal' ? t('terminal') : tab.title
 }
 
 /** Whether a tab wears the unsaved dot: the file's own tab, never a preview of it. */
@@ -303,6 +312,6 @@ function tabTooltip(tab: Tab): string {
       return tab.tooltip ? `${tab.tooltip} — ${name}` : name
     }
     case 'terminal':
-      return 'terminal'
+      return t('terminal')
   }
 }

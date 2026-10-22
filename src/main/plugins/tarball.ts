@@ -34,6 +34,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { gunzip, gunzipSync } from 'node:zlib'
+import { t } from '@shared/l10n'
 
 const gunzipAsync = promisify(gunzip)
 
@@ -93,9 +94,9 @@ const inflateCeiling = (limits: UnpackLimits): number => limits.maxBytes + limit
 
 function inflateError(err: unknown, limits: UnpackLimits): Error {
   if (err instanceof RangeError || (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
-    return new Error(`the archive unpacks to more than ${limits.maxBytes} bytes`)
+    return new Error(t('the archive unpacks to more than {n} bytes', { n: limits.maxBytes }))
   }
-  return new Error(`the archive is not valid gzip (${message(err)})`)
+  return new Error(t('the archive is not valid gzip ({reason})', { reason: message(err) }))
 }
 
 function writeEntries(
@@ -115,15 +116,15 @@ function writeEntries(
     // Two zero blocks end the archive; one is enough to know there is nothing after it worth
     // reading, and whatever padding follows is the trailer.
     if (header.every((b) => b === 0)) break
-    if (++entries > limits.maxFiles * 3 + 16) throw new Error('the archive has too many entries')
+    if (++entries > limits.maxFiles * 3 + 16) throw new Error(t('the archive has too many entries'))
 
-    if (!checksumOk(header)) throw new Error(`corrupt header at byte ${at}`)
+    if (!checksumOk(header)) throw new Error(t('corrupt header at byte {at}', { at }))
     const size = octal(header, 124, 12)
-    if (size === null) throw new Error(`unreadable size at byte ${at}`)
+    if (size === null) throw new Error(t('unreadable size at byte {at}', { at }))
     const type = String.fromCharCode(header[156]!)
     const dataStart = at + BLOCK
     const dataEnd = dataStart + size
-    if (dataEnd > tar.length) throw new Error('the archive is truncated')
+    if (dataEnd > tar.length) throw new Error(t('the archive is truncated'))
     const data = tar.subarray(dataStart, dataEnd)
     at = dataStart + Math.ceil(size / BLOCK) * BLOCK
 
@@ -147,19 +148,19 @@ function writeEntries(
       continue
     }
     if (type !== '0' && type !== '\0') {
-      throw new Error(`${name}: ${describeType(type)} entries are not allowed in a plugin`)
+      throw new Error(`${name}: ${disallowed(type)}`)
     }
 
     const rel = relativePath(name, false)
     const key = rel.toLowerCase()
     // Case-folded, because two names that differ only in case are one file on macOS and Windows:
     // the second would overwrite the first there and not here.
-    if (seen.has(key)) throw new Error(`${name}: appears twice in the archive`)
+    if (seen.has(key)) throw new Error(`${name}: ${t('appears twice in the archive')}`)
     seen.add(key)
 
-    if (++files > limits.maxFiles) throw new Error(`more than ${limits.maxFiles} files`)
+    if (++files > limits.maxFiles) throw new Error(t('more than {n} files', { n: limits.maxFiles }))
     bytes += size
-    if (bytes > limits.maxBytes) throw new Error(`more than ${limits.maxBytes} bytes`)
+    if (bytes > limits.maxBytes) throw new Error(t('more than {n} bytes', { n: limits.maxBytes }))
 
     const file = inside(root, rel)
     mkdirSync(join(file, '..'), { recursive: true })
@@ -180,18 +181,18 @@ function relativePath(name: string, isDir: boolean): string {
   // Some writers add `./` in front; node-tar does not, but it means the same thing.
   const raw = name.startsWith('./') ? name.slice(2) : name
   const trimmed = isDir ? raw.replace(/\/+$/, '') + '/' : raw
-  if (!trimmed.startsWith(PREFIX)) throw new Error(`${name}: outside package/`)
+  if (!trimmed.startsWith(PREFIX)) throw new Error(`${name}: ${t('outside package/')}`)
   const rel = trimmed.slice(PREFIX.length).replace(/\/$/, '')
   if (rel === '') {
     if (isDir) return ''
-    throw new Error(`${name}: not a file name`)
+    throw new Error(`${name}: ${t('not a file name')}`)
   }
   // Control characters, and everything Windows refuses in a file name: `\` and `:` above all,
   // because those two turn a harmless POSIX name into a path that leaves the directory.
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f\\:*?"<>|]/.test(rel)) throw new Error(`${name}: unsafe characters in the path`)
+  if (/[\u0000-\u001f\u007f\\:*?"<>|]/.test(rel)) throw new Error(`${name}: ${t('unsafe characters in the path')}`)
   for (const segment of rel.split('/')) {
-    if (segment === '' || segment === '.' || segment === '..') throw new Error(`${name}: unsafe path`)
+    if (segment === '' || segment === '.' || segment === '..') throw new Error(`${name}: ${t('unsafe path')}`)
   }
   return rel
 }
@@ -199,7 +200,7 @@ function relativePath(name: string, isDir: boolean): string {
 /** Join, then prove the result is still under `root` — the check that cannot be argued with. */
 function inside(root: string, rel: string): string {
   const full = resolve(root, rel)
-  if (!full.startsWith(root + sep)) throw new Error(`${rel}: resolves outside the plugin`)
+  if (!full.startsWith(root + sep)) throw new Error(`${rel}: ${t('resolves outside the plugin')}`)
   return full
 }
 
@@ -220,7 +221,7 @@ function paxPath(data: Buffer): string | null {
     if (space < 0) break
     const length = Number(data.subarray(at, space).toString('latin1'))
     if (!Number.isInteger(length) || length <= 0 || at + length > data.length) {
-      throw new Error('malformed pax header')
+      throw new Error(t('malformed pax header'))
     }
     const record = data.subarray(space + 1, at + length - 1).toString('utf8')
     const eq = record.indexOf('=')
@@ -254,19 +255,20 @@ function checksumOk(header: Buffer): boolean {
   return sum === stored
 }
 
-function describeType(type: string): string {
+/** Why an entry of this type is refused: anything but a file or a folder. */
+function disallowed(type: string): string {
   switch (type) {
     case '1':
-      return 'hard link'
+      return t('hard link entries are not allowed in a plugin')
     case '2':
-      return 'symbolic link'
+      return t('symbolic link entries are not allowed in a plugin')
     case '3':
     case '4':
-      return 'device'
+      return t('device entries are not allowed in a plugin')
     case '6':
-      return 'FIFO'
+      return t('FIFO entries are not allowed in a plugin')
     default:
-      return `type "${type}"`
+      return t('type "{type}" entries are not allowed in a plugin', { type })
   }
 }
 

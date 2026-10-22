@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { setFileDecorations, type FileDecoration } from '@rigee/plugin-api'
+import { locale, setFileDecorations, type FileDecoration, type Locale } from '@rigee/plugin-api'
+import { t } from './l10n'
 import type { GitFileChange, GitStatusLetter, RepoStatus } from '../protocol'
 
 /**
@@ -39,16 +40,36 @@ export function setRepoStatus(status: RepoStatus): void {
   setFileDecorations(`scm:${status.root}`, decorationsOf(status))
 }
 
-/** VS Code's colours and letters, and the order a folder picks between them: conflicts first. */
-const LOOK: Partial<Record<GitStatusLetter, FileDecoration>> = {
-  U: { color: 'var(--git-conflict)', badge: '!', tooltip: 'Conflicted', weight: 5 },
-  M: { color: 'var(--git-modified)', badge: 'M', tooltip: 'Modified', weight: 4 },
-  T: { color: 'var(--git-modified)', badge: 'T', tooltip: 'Type changed', weight: 4 },
-  D: { color: 'var(--git-deleted)', badge: 'D', tooltip: 'Deleted', weight: 3 },
-  A: { color: 'var(--git-added)', badge: 'A', tooltip: 'Added', weight: 2 },
-  R: { color: 'var(--git-added)', badge: 'R', tooltip: 'Renamed', weight: 2 },
-  C: { color: 'var(--git-added)', badge: 'C', tooltip: 'Copied', weight: 2 },
-  '?': { color: 'var(--git-untracked)', badge: 'U', tooltip: 'Untracked', weight: 1 }
+/** The table below, as it was last made, and the language it was made in. */
+let made: { locale: Locale; looks: Partial<Record<GitStatusLetter, FileDecoration>> } | null = null
+
+/**
+ * VS Code's colours and letters, and the order a folder picks between them: conflicts first.
+ *
+ * In the shell's language, for the tooltips, and made once per language rather than once per
+ * status: the explorer draws a row again only when its decoration is another object, and a status
+ * that moved one file must not redraw every other changed file with it. Decorations already
+ * published take a new language with the next status — nothing outside a component hears of the
+ * switch any sooner.
+ */
+function looks(): Partial<Record<GitStatusLetter, FileDecoration>> {
+  const now = locale()
+  if (made?.locale !== now) {
+    made = {
+      locale: now,
+      looks: {
+        U: { color: 'var(--git-conflict)', badge: '!', tooltip: t('Conflicted'), weight: 5 },
+        M: { color: 'var(--git-modified)', badge: 'M', tooltip: t('Modified'), weight: 4 },
+        T: { color: 'var(--git-modified)', badge: 'T', tooltip: t('Type changed'), weight: 4 },
+        D: { color: 'var(--git-deleted)', badge: 'D', tooltip: t('Deleted'), weight: 3 },
+        A: { color: 'var(--git-added)', badge: 'A', tooltip: t('Added'), weight: 2 },
+        R: { color: 'var(--git-added)', badge: 'R', tooltip: t('Renamed'), weight: 2 },
+        C: { color: 'var(--git-added)', badge: 'C', tooltip: t('Copied'), weight: 2 },
+        '?': { color: 'var(--git-untracked)', badge: 'U', tooltip: t('Untracked'), weight: 1 }
+      }
+    }
+  }
+  return made.looks
 }
 
 /**
@@ -58,8 +79,9 @@ const LOOK: Partial<Record<GitStatusLetter, FileDecoration>> = {
  */
 function decorationsOf(status: RepoStatus): Record<string, FileDecoration> {
   const out: Record<string, FileDecoration> = {}
+  const byLetter = looks()
   const add = (c: GitFileChange, letter: GitStatusLetter | '.'): void => {
-    const look = letter === '.' ? undefined : LOOK[letter]
+    const look = letter === '.' ? undefined : byLetter[letter]
     // `?` records for a directory end in a slash, which the shell reads as "all of it".
     if (look) out[`${status.root}/${c.path}`] = look
   }

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { COLD_AFTER, lastActiveAt, longAgo } from '../heat'
+import { t, tn } from '../i18n'
 import type { Workspace, WorkspaceActivity, WorkspaceId } from '@shared/types'
 
 /**
@@ -33,10 +34,12 @@ export function ColdReview({
 
   return (
     <div className="menu menu--inline heat-review" onMouseDown={(e) => e.stopPropagation()}>
-      <div className="heat-review__title">Remove cold workspaces</div>
+      <div className="heat-review__title">{t('Remove cold workspaces')}</div>
       <div className="heat-review__note">
-        Nothing has happened in these in your last {COLD_AFTER} days with Rigee. Removing one closes its
-        tabs; its folders, and its workspace file if it has one, stay where they are.
+        {t(
+          'Nothing has happened in these in your last {days} days with Rigee. Removing one closes its tabs; its folders, and its workspace file if it has one, stay where they are.',
+          { days: COLD_AFTER }
+        )}
       </div>
       <div className="heat-review__list">
         {workspaces.map((w) => {
@@ -45,13 +48,13 @@ export function ColdReview({
             <label key={w.id} className="heat-review__item">
               <input type="checkbox" checked={picked.has(w.id)} onChange={() => toggle(w.id)} />
               <span className="heat-review__name">{w.name}</span>
-              <span className="heat-review__when">{at ? longAgo(at, now) : 'never used'}</span>
+              <span className="heat-review__when">{at ? longAgo(at, now) : t('never used')}</span>
             </label>
           )
         })}
       </div>
       <div className="heat-review__actions">
-        <button className="btn" onClick={onCancel}>Cancel</button>
+        <button className="btn" onClick={onCancel}>{t('Cancel')}</button>
         <button
           className="btn btn--primary"
           disabled={busy || chosen.length === 0}
@@ -60,7 +63,7 @@ export function ColdReview({
             void onRemove(chosen).finally(() => setBusy(false))
           }}
         >
-          {chosen.length === 1 ? 'Remove 1 Workspace' : `Remove ${chosen.length} Workspaces`}
+          {tn(chosen.length, 'Remove 1 Workspace', 'Remove {n} Workspaces')}
         </button>
       </div>
     </div>

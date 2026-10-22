@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { t } from '@shared/l10n'
 import type { FileDecoration } from '@rigee/plugin-api'
 
 /**
@@ -63,7 +64,7 @@ export function setFileDecorations(source: string, decorations: Record<string, F
       if (key.endsWith('/')) recursive.set(path, d)
       put(path, d)
       // Folders show the colour only; a badge on a folder would claim the folder itself changed.
-      const rolled: FileDecoration = { color: d.color, weight: d.weight, tooltip: 'Contains changes' }
+      const rolled: FileDecoration = { color: d.color, weight: d.weight, tooltip: t('Contains changes') }
       for (let dir = parentOf(path); dir; dir = parentOf(dir)) put(dir, rolled)
     }
   }

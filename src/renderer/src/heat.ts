@@ -27,6 +27,7 @@
  * dims Friday's no more than a night would.
  */
 
+import { t, tn } from '@shared/l10n'
 import type { ActivityDay, WorkspaceActivity, WorkspaceSort } from '@shared/types'
 
 /** What each day of use leaves of what came before it — of a minute's worth, and of heat: 0.6. */
@@ -274,28 +275,46 @@ export function holdRanking(held: Ranking, live: Ranking): Ranking {
   return { recent, cold: held.cold.filter((id) => alive.has(id)) }
 }
 
-/** How long ago, as short as the side bar has room for: `now`, `5m`, `3h`, `2d`, `3w`, `4mo`, `2y`. */
-export function shortAgo(then: number, now: number): string {
+/** How long ago, in the largest unit that fits — or null, under a minute. */
+function age(then: number, now: number): { n: number; unit: 'm' | 'h' | 'd' | 'w' | 'mo' | 'y' } | null {
   const minutes = Math.floor((now - then) / 60_000)
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1) return null
+  if (minutes < 60) return { n: minutes, unit: 'm' }
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
+  if (hours < 24) return { n: hours, unit: 'h' }
   const days = Math.floor(hours / 24)
-  if (days < 14) return `${days}d`
-  if (days < 61) return `${Math.floor(days / 7)}w`
-  if (days < 365) return `${Math.floor(days / 30)}mo`
-  return `${Math.floor(days / 365)}y`
+  if (days < 14) return { n: days, unit: 'd' }
+  if (days < 61) return { n: Math.floor(days / 7), unit: 'w' }
+  if (days < 365) return { n: Math.floor(days / 30), unit: 'mo' }
+  return { n: Math.floor(days / 365), unit: 'y' }
 }
 
-const UNITS: Record<string, string> = { m: 'minute', h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' }
+/** How long ago, as short as the side bar has room for: `now`, `5m`, `3h`, `2d`, `3w`, `4mo`, `2y`. */
+export function shortAgo(then: number, now: number): string {
+  const a = age(then, now)
+  if (!a) return t('now')
+  switch (a.unit) {
+    case 'm': return t('{n}m', { n: a.n })
+    case 'h': return t('{n}h', { n: a.n })
+    case 'd': return t('{n}d', { n: a.n })
+    case 'w': return t('{n}w', { n: a.n })
+    case 'mo': return t('{n}mo', { n: a.n })
+    case 'y': return t('{n}y', { n: a.n })
+  }
+}
 
 /** The same in words, for a tooltip: `just now`, `5 minutes ago`, `3 weeks ago`. */
 export function longAgo(then: number, now: number): string {
-  const short = shortAgo(then, now)
-  if (short === 'now') return 'just now'
-  const n = parseInt(short, 10)
-  return `${n} ${UNITS[short.replace(/^\d+/, '')]}${n === 1 ? '' : 's'} ago`
+  const a = age(then, now)
+  if (!a) return t('just now')
+  switch (a.unit) {
+    case 'm': return tn(a.n, '1 minute ago', '{n} minutes ago')
+    case 'h': return tn(a.n, '1 hour ago', '{n} hours ago')
+    case 'd': return tn(a.n, '1 day ago', '{n} days ago')
+    case 'w': return tn(a.n, '1 week ago', '{n} weeks ago')
+    case 'mo': return tn(a.n, '1 month ago', '{n} months ago')
+    case 'y': return tn(a.n, '1 year ago', '{n} years ago')
+  }
 }
 
 /**

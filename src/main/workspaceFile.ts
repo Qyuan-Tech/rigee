@@ -17,6 +17,7 @@
  */
 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { t } from '@shared/l10n'
 
 export interface WorkspaceFileFolder {
   path: string
@@ -79,13 +80,13 @@ export function parseWorkspaceFile(text: string, filePath: string): ParsedWorksp
   try {
     doc = JSON.parse(stripJsonComments(text))
   } catch (err) {
-    throw new Error(`${label} is not valid JSON: ${err instanceof Error ? err.message : err}`)
+    throw new Error(t('{name} is not valid JSON: {reason}', { name: label, reason: err instanceof Error ? err.message : String(err) }))
   }
-  if (!doc || typeof doc !== 'object') throw new Error(`${label} is not a workspace file`)
+  if (!doc || typeof doc !== 'object') throw new Error(t('{name} is not a workspace file', { name: label }))
 
   const rawFolders = (doc as { folders?: unknown }).folders
   if (!Array.isArray(rawFolders)) {
-    throw new Error(`${label} has no "folders" array`)
+    throw new Error(t('{name} has no "folders" array', { name: label }))
   }
 
   const base = dirname(resolve(filePath))

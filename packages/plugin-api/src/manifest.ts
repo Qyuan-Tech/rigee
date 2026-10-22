@@ -31,6 +31,8 @@
  * it reaches lands in both bundles.
  */
 
+import type { Translations } from './l10n'
+
 /** Stable identity of a plugin. Namespaces its commands, its view types and its events. */
 export type PluginId = string
 
@@ -282,6 +284,17 @@ export interface PluginManifest {
    */
   permissions?: PluginPermission[]
   contributes?: PluginContributions
+  /**
+   * The manifest's own words in the other languages Rigee speaks: `displayName`, `description`, and
+   * the titles and labels of its contributions, each English string as it is written above to what
+   * it is in that language — `{ 'zh-CN': { 'Explorer': '资源管理器' } }`. The shell shows them in
+   * whichever language it is in, and anything missing in English. Since Rigee 1.2.0; an older Rigee
+   * shows the English.
+   *
+   * Only these words, and on purpose: a manifest is read at boot, in both realms, before any of the
+   * plugin loads. The plugin's own UI carries its own table — see `localize`.
+   */
+  l10n?: Translations
 }
 
 /**

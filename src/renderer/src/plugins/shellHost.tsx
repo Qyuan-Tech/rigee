@@ -23,6 +23,7 @@ import * as pluginApi from '@rigee/plugin-api'
 import { installShellHost, type ShellHost } from '@rigee/plugin-api'
 import { Notice } from '../components/Notice'
 import { editorFontSize, monoFamily } from '../fonts'
+import { currentLocale, useLocale } from '../i18n'
 import * as icons from '../icons'
 import { isMac, rpc } from '../ipc'
 import {
@@ -88,6 +89,9 @@ const host: ShellHost = {
   isMac,
   monoFamily,
   editorFontSize,
+
+  locale: currentLocale,
+  useLocale,
 
   activeWorkspaceId: api.activeWorkspaceId,
   useActiveWorkspace,

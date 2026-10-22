@@ -15,6 +15,7 @@
  * is the user's doing, not the pane's, and does not count.
  */
 
+import { t, tn } from '@shared/l10n'
 import { allTabs, type GroupRow } from './groups'
 import { leaves } from './paneTree'
 
@@ -111,10 +112,14 @@ export function terminalPanes(row: GroupRow): PaneAt[] {
 }
 
 /**
- * "2 at work — claude, npm": a count and what is counted, for a badge's tooltip. Programs are named
- * once each, and only when main could name them.
+ * "2 terminals at work — claude, npm": a count and what is counted, for a badge's tooltip. Programs
+ * are named once each, and only when main could name them.
  */
-export function describePanes(count: number, what: string, programs: readonly string[]): string {
+export function describePanes(count: number, state: 'working' | 'finished', programs: readonly string[]): string {
   const named = [...new Set(programs.filter(Boolean))]
-  return `${count} ${count === 1 ? 'terminal' : 'terminals'} ${what}${named.length > 0 ? ` — ${named.join(', ')}` : ''}`
+  const counted =
+    state === 'working'
+      ? tn(count, '1 terminal at work', '{n} terminals at work')
+      : tn(count, '1 terminal finished since you last looked', '{n} terminals finished since you last looked')
+  return named.length > 0 ? t('{panes} — {programs}', { panes: counted, programs: named.join(', ') }) : counted
 }

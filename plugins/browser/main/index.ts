@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { registerBrowserCommands } from '../protocol'
+import { translatorFor } from './l10n'
 import { BrowserTabs } from './tabs'
 import type { Context, Plugin } from 'cordis'
 import type { EmitBrowserEvent } from '../protocol'
@@ -43,6 +44,8 @@ const plugin: Plugin = {
     const emit: EmitBrowserEvent = shell.emit.bind(shell)
     const shellWindow = shell.window.bind(shell)
     const shellWc = shell.webContents.bind(shell)
+    // Asked each time something is said: the user can switch language while a page is open.
+    const locale = shell.locale.bind(shell)
 
     let tabs: BrowserTabs | null = null
     const pendingAuth = new Map<string, AuthCallback>()
@@ -63,7 +66,7 @@ const plugin: Plugin = {
       if (!window) throw new Error('window not ready')
       if (existing && existing.ownerWindow() === window) return existing
       existing?.destroyAll()
-      tabs = new BrowserTabs(window, emit)
+      tabs = new BrowserTabs(window, emit, locale)
       return tabs
     }
 
@@ -123,10 +126,11 @@ const plugin: Plugin = {
 
         const requestId = `auth${++authSeq}`
         pendingAuth.set(requestId, callback)
+        const { t } = translatorFor(locale())
         emit('authRequested', {
           viewId,
           requestId,
-          host: authInfo.host || authInfo.realm || 'the server',
+          host: authInfo.host || authInfo.realm || t('the server'),
           realm: authInfo.realm,
           isProxy: authInfo.isProxy,
           url: details.url

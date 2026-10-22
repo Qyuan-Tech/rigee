@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { explorerClient, type ExplorerCall } from '../protocol'
 import type { FileStat } from '@rigee/plugin-api'
+import { t } from './l10n'
 
 /**
  * Directory listings, cached by absolute path outside React — and told when they have gone stale.
@@ -64,7 +65,7 @@ export function connect(invoke: (command: string, args: unknown) => Promise<unkn
 
 /** A command to the main half. Not connected only while the plugin is being switched off. */
 export const request: ExplorerCall = (command, args) =>
-  call ? call(command, args) : Promise.reject(new Error('The explorer is switched off.'))
+  call ? call(command, args) : Promise.reject(new Error(t('The explorer is switched off.')))
 
 /**
  * Watch these folders, and only these. Failing to is not fatal: the refresh button still works.

@@ -1,3 +1,4 @@
+import { t } from '@shared/l10n'
 import { allTabs } from './groups'
 import { onEvent, rpc } from './ipc'
 import { leaves } from './paneTree'
@@ -46,7 +47,7 @@ async function saveAll(paths: readonly string[]): Promise<boolean> {
     try {
       await handlers.get(path)?.save()
     } catch (err) {
-      window.alert(`Not saved: ${err instanceof Error ? err.message : String(err)}`)
+      window.alert(t('Not saved: {reason}', { reason: err instanceof Error ? err.message : String(err) }))
       return false
     }
   }

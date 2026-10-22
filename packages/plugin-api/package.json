@@ -1,6 +1,6 @@
 {
   "name": "@rigee/plugin-api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The contract a Rigee plugin is written against.",
   "license": "MIT",
   "type": "module",
@@ -22,6 +22,10 @@
     "./context": {
       "types": "./dist/context.d.ts",
       "default": "./dist/context.js"
+    },
+    "./l10n": {
+      "types": "./dist/l10n.d.ts",
+      "default": "./dist/l10n.js"
     }
   },
   "files": [

@@ -11,6 +11,7 @@ import {
   writeFile
 } from '@rigee/plugin-api'
 import { loadMonaco, MONACO_THEME } from '@plugins/shared/monaco'
+import { t, useT } from './l10n'
 import type { PluginEditorProps } from '@rigee/plugin-api'
 import type * as Monaco from 'monaco-editor'
 
@@ -113,7 +114,7 @@ async function saveFile(filePath: string, model: Monaco.editor.ITextModel): Prom
   const state = files.get(filePath)
   if (!state) return
   const name = nameOf(filePath)
-  if (state.lossy) throw new Error(`${name} is not UTF-8, so it is read-only here`)
+  if (state.lossy) throw new Error(t('{name} is not UTF-8, so it is read-only here', { name }))
 
   let disk: Awaited<ReturnType<typeof readFile>> | null
   try {
@@ -122,18 +123,20 @@ async function saveFile(filePath: string, model: Monaco.editor.ITextModel): Prom
     const message = err instanceof Error ? err.message : String(err)
     // Gone — a refactor moved or deleted it. Writing would quietly bring it back, which is how a
     // build ends up with the module it was supposed to have lost.
-    if (!/ENOENT|no such file/i.test(message)) throw new Error(`could not check ${name} before saving: ${message}`)
-    if (!window.confirm(`${name} has been deleted or moved on disk since it was opened here.\n\nSave it again anyway?`)) {
-      throw new Error(`${name} was deleted on disk; not saved`)
+    if (!/ENOENT|no such file/i.test(message)) throw new Error(t('could not check {name} before saving: {message}', { name, message }))
+    if (!window.confirm(t('{name} has been deleted or moved on disk since it was opened here.\n\nSave it again anyway?', { name }))) {
+      throw new Error(t('{name} was deleted on disk; not saved', { name }))
     }
     disk = null
   }
   if (disk && (disk.tooLarge || disk.content !== state.base)) {
     const overwrite = window.confirm(
-      `${name} has changed on disk since it was opened here — another program, or an agent in a terminal, wrote to it.\n\n` +
-        'Overwrite it with the version in the editor? Cancel keeps the file on disk as it is.'
+      t(
+        '{name} has changed on disk since it was opened here — another program, or an agent in a terminal, wrote to it.\n\nOverwrite it with the version in the editor? Cancel keeps the file on disk as it is.',
+        { name }
+      )
     )
-    if (!overwrite) throw new Error(`${name} changed on disk; not overwritten`)
+    if (!overwrite) throw new Error(t('{name} changed on disk; not overwritten', { name }))
   }
   // With the byte order mark if the file on disk had one when last read — not whatever it had when
   // first opened: a tool that has since added or removed it is the one to follow. A CSV that loses
@@ -237,6 +240,7 @@ function replaceText(model: Monaco.editor.ITextModel, raw: string): void {
 }
 
 export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): React.ReactElement {
+  const { t } = useT()
   const host = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [tooLarge, setTooLarge] = useState(false)
@@ -317,11 +321,12 @@ export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): 
         // Cmd+S / Ctrl+S. An ACTION, not addCommand: Monaco's addCommand registers window-wide, the
         // last editor to register wins, and the registration outlives the editor — so with two
         // files open, Cmd+S in one saved the other. An action's keybinding is scoped to its own
-        // editor and goes away with it.
+        // editor and goes away with it. Its label, which the command palette shows, stays in the
+        // language the editor was made in: Monaco cannot rename an action once it is added.
         if (!readOnly) {
           const save = live.addAction({
             id: 'rigee.save',
-            label: 'Save',
+            label: t('Save'),
             keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
             run: () => {
               // Nothing to save: write nothing. Rewriting an unchanged file only touches its mtime
@@ -397,17 +402,16 @@ export function MonacoEditor({ filePath, tabId, readOnly }: PluginEditorProps): 
     }
   }, [filePath, tabId, readOnly, splitFrom])
 
-  if (tooLarge) return <Notice>File is too large to open in the editor.</Notice>
+  if (tooLarge) return <Notice>{t('File is too large to open in the editor.')}</Notice>
   if (error) return <Notice tone="error">{error}</Notice>
   return (
     <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
       {lossy && (
         <div className="error-banner">
-          This file is not UTF-8, so it is shown read-only — saving would replace every character it
-          could not decode.
+          {t('This file is not UTF-8, so it is shown read-only — saving would replace every character it could not decode.')}
         </div>
       )}
-      {saveError && <div className="error-banner">Not saved: {saveError}</div>}
+      {saveError && <div className="error-banner">{t('Not saved: {reason}', { reason: saveError })}</div>}
       <div ref={host} style={{ flex: 1, minHeight: 0, width: '100%' }} />
     </div>
   )

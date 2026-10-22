@@ -11,6 +11,7 @@ import { installUnsavedBridge } from './editing'
 import { installActivityTracking } from './activity'
 import { installPaneWatch } from './paneWatch'
 import { freshActivity, sanitizeActivity } from './heat'
+import { onLocaleChange, speakFromSettings, t, useLocale } from './i18n'
 import { CollapseLeftIcon, CollapseRightIcon, GearIcon } from './icons'
 import { allTabs, widthShares } from './groups'
 import { setDisabledPlugins, setDiskPlugins } from './plugins/registry'
@@ -41,6 +42,8 @@ const SettingsDialog = lazy(() => loadSettingsDialog().then((m) => ({ default: m
 setTimeout(() => { void loadSettingsDialog() }, 3000)
 
 export function App(): React.ReactElement {
+  // Drawn again, all of it, when the language changes: see i18n.ts.
+  useLocale()
   const ready = useApp((s) => s.ready)
   const settingsOpen = useApp((s) => s.settingsOpen)
   const setSettingsOpen = useApp((s) => s.setSettingsOpen)
@@ -60,6 +63,12 @@ export function App(): React.ReactElement {
       if (cancelled) return
       const store = useApp.getState()
 
+      // The language before anything is drawn or named in it — Scratch is named below — rather
+      // than English first and then everything again.
+      if (state.settings) store.setSettings(state.settings)
+      await speakFromSettings(platform.languages)
+      if (cancelled) return
+
       // Both of these FIRST, before a single contribution table is read. A disabled plugin must
       // not have its icon in the activity bar for even one frame, and must not claim a file type
       // it is about to stop being able to open; an untrusted one must not claim anything at all,
@@ -75,9 +84,10 @@ export function App(): React.ReactElement {
       )
 
       // Scratch is synthesised, never loaded: it must exist even on a first run, and its
-      // definition should follow the app rather than whatever was persisted long ago.
+      // definition should follow the app rather than whatever was persisted long ago. Its name
+      // too, which is the window's language's — see useScratchName.
       const persisted = state.workspaces.filter((w) => w.id !== SCRATCH_WORKSPACE_ID)
-      store.setWorkspaces([scratchWorkspace(platform.homeDir), ...persisted])
+      store.setWorkspaces([{ ...scratchWorkspace(platform.homeDir), name: t('Scratch') }, ...persisted])
       store.setActiveWorkspace(state.activeWorkspaceId ?? persisted[0]?.id ?? SCRATCH_WORKSPACE_ID)
 
       for (const [wsId, ui] of Object.entries(state.ui)) {
@@ -106,7 +116,6 @@ export function App(): React.ReactElement {
       const activeUi = state.activeWorkspaceId ? state.ui[state.activeWorkspaceId] : undefined
       if (activeUi) store.setLayout(activeUi.layout)
       if (state.keybindings) store.setKeybindings(state.keybindings)
-      if (state.settings) store.setSettings(state.settings)
       store.setReady(true)
     })()
     return () => { cancelled = true }
@@ -118,6 +127,7 @@ export function App(): React.ReactElement {
   useEffect(installPaneWatch, [])
   usePersistence()
   useScratchTerminal()
+  useScratchName()
 
   const onLeftDrag = useCallback(
     (dx: number, startWidth: number) => setLayout({ leftWidth: clamp(startWidth + dx, 180, 560) }),
@@ -174,7 +184,7 @@ export function App(): React.ReactElement {
         ) : (
           <Rail
             side="right"
-            label={slotLabel('right', 'Panel')}
+            label={slotLabel('right', t('Panel'))}
             onExpand={() => setLayout({ rightCollapsed: false })}
           />
         )}
@@ -206,7 +216,7 @@ function Rail({
     <div
       className={`rail rail--${side}`}
       onClick={onExpand}
-      title={`Show ${label.toLowerCase()}`}
+      title={t('Show {panel}', { panel: label.toLowerCase() })}
       role="button"
     >
       <span className="rail__grip"><Icon size={13} /></span>
@@ -226,7 +236,7 @@ function TitleBar({ onSettings }: { onSettings: () => void }): React.ReactElemen
       {workspace && <span className="titlebar__context">{workspace.name}</span>}
       <button
         className="icon-button"
-        title="Settings"
+        title={t('Settings')}
         // Never takes the focus: clicking it must leave the keyboard wherever the user was typing.
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSettings}
@@ -293,6 +303,23 @@ function useScratchTerminal(): void {
     if (allTabs(rowOf(s, SCRATCH_WORKSPACE_ID)).length > 0) return
     s.openTab(SCRATCH_WORKSPACE_ID, newTerminalTab())
   }, [ready, activeId])
+}
+
+/**
+ * Scratch's name, in the language the window is in. It is the one workspace the shell names itself
+ * — every other is named after its folder or by the user — and it is never persisted, so renaming it
+ * here touches nothing on disk.
+ */
+function useScratchName(): void {
+  useEffect(
+    () =>
+      onLocaleChange(() =>
+        useApp.setState((s) => ({
+          workspaces: s.workspaces.map((w) => (w.id === SCRATCH_WORKSPACE_ID ? { ...w, name: t('Scratch') } : w))
+        }))
+      ),
+    []
+  )
 }
 
 function usePersistence(): void {

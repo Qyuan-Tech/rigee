@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { platform } from '../ipc'
+import { t, tx } from '../i18n'
 import { useApp } from '../store'
 import { reason, saveWorkspaceFile, stopRemindingToSave } from '../workspaces'
 import { renameWorkspace, workspaceFileRename } from '../workspaceRename'
@@ -25,7 +26,7 @@ export function SaveAsForm({
   onSave,
   onElsewhere,
   onCancel,
-  cancelLabel = 'Cancel',
+  cancelLabel,
   children,
   footer
 }: {
@@ -43,6 +44,7 @@ export function SaveAsForm({
   onSave: (name: string) => Promise<void>
   onElsewhere: (name: string) => Promise<void>
   onCancel: () => void
+  /** Cancel, unless it says something else. */
   cancelLabel?: string
   /** Said between the title and the name. */
   children?: React.ReactNode
@@ -94,16 +96,16 @@ export function SaveAsForm({
       <div className="saveas__actions">
         <button
           className="saveas__elsewhere"
-          title="Choose where to save it instead"
+          title={t('Choose where to save it instead')}
           disabled={busy}
           onClick={() => run(onElsewhere)}
         >
-          Elsewhere…
+          {t('Elsewhere…')}
         </button>
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onCancel}>{cancelLabel}</button>
+        <button className="btn" onClick={onCancel}>{cancelLabel ?? t('Cancel')}</button>
         <button className="btn btn--primary" disabled={!!problem || busy} onClick={() => run(onSave)}>
-          Save
+          {t('Save')}
         </button>
       </div>
       {footer}
@@ -165,7 +167,7 @@ export function RenameForm({ workspace, onDone }: { workspace: Workspace; onDone
   const said = problem ?? refused
   return (
     <div className="saveas menu menu--inline" onMouseDown={(e) => e.stopPropagation()}>
-      <div className="saveas__title">Rename “{workspace.name}”</div>
+      <div className="saveas__title">{t('Rename “{name}”', { name: workspace.name })}</div>
       <input
         ref={input}
         value={name}
@@ -191,13 +193,13 @@ export function RenameForm({ workspace, onDone }: { workspace: Workspace; onDone
       ) : target ? (
         <div className="saveas__path" title={target}>{target}</div>
       ) : (
-        <div className="saveas__note">Not saved yet, so there is no workspace file: only its name changes.</div>
+        <div className="saveas__note">{t('Not saved yet, so there is no workspace file: only its name changes.')}</div>
       )}
       <div className="saveas__actions">
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onDone}>Cancel</button>
+        <button className="btn" onClick={onDone}>{t('Cancel')}</button>
         <button className="btn btn--primary" disabled={!!said || busy} onClick={rename}>
-          Rename
+          {t('Rename')}
         </button>
       </div>
     </div>
@@ -246,8 +248,9 @@ export function SaveReminder({
   const first = workspace.folders[0]?.name ?? workspace.name
   const intro = (
     <div className="saveprompt__intro">
-      Once this workspace is saved, its terminals start in the folder it is saved in. Until then they start
-      in <b>{first}</b>.
+      {tx('Once this workspace is saved, its terminals start in the folder it is saved in. Until then they start in {folder}.', {
+        folder: <b>{first}</b>
+      })}
     </div>
   )
   const footer = (
@@ -256,10 +259,10 @@ export function SaveReminder({
       <div className="saveprompt__footer">
         <button
           className="saveas__elsewhere"
-          title="Turn it back on in Settings → General"
+          title={t('Turn it back on in Settings → General')}
           onClick={stopRemindingToSave}
         >
-          Don’t remind me again
+          {t('Don’t remind me again')}
         </button>
       </div>
     </>
@@ -269,10 +272,10 @@ export function SaveReminder({
     return (
       <SaveAsForm
         className="saveprompt"
-        title="Save this workspace?"
+        title={t('Save this workspace?')}
         initialName={workspace.name}
         dir={dir}
-        cancelLabel="Not Now"
+        cancelLabel={t('Not Now')}
         onSave={(name) => save(name, 'named')}
         onElsewhere={(name) => save(name, 'pick')}
         onCancel={onSkip}
@@ -292,11 +295,11 @@ export function SaveReminder({
         onSkip()
       }}
     >
-      <div className="saveas__title">Save this workspace?</div>
+      <div className="saveas__title">{t('Save this workspace?')}</div>
       {intro}
       <div className="saveas__actions">
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onSkip}>Not Now</button>
+        <button className="btn" onClick={onSkip}>{t('Not Now')}</button>
         <button
           ref={primary}
           className="btn btn--primary"
@@ -306,7 +309,7 @@ export function SaveReminder({
             void save(workspace.name, 'pick').finally(() => setBusy(false))
           }}
         >
-          Save As…
+          {t('Save As…')}
         </button>
       </div>
       {footer}

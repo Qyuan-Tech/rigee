@@ -22,6 +22,7 @@ import { selectedLeftView } from './ActivityBar'
 import { allTabs } from '../groups'
 import { rowOf, useApp } from '../store'
 import { Notice } from './Notice'
+import { t, tx } from '../i18n'
 import type { CustomTab, EditorTab } from '@shared/types'
 
 /**
@@ -90,9 +91,9 @@ export function PluginEditorPane({ tab }: { tab: EditorTab }): React.ReactElemen
     return (
       <Notice>
         <div>
-          No viewer for {viewType ? <code>{viewType}</code> : 'this file'}.
+          {viewType ? tx('No viewer for {viewType}.', { viewType: <code>{viewType}</code> }) : t('No viewer for this file.')}
           <div style={{ marginTop: 10, display: 'flex', gap: 6, justifyContent: 'center' }}>
-            <button className="btn" onClick={openAsText}>Open as text</button>
+            <button className="btn" onClick={openAsText}>{t('Open as text')}</button>
             {viewType && <FindPluginButton viewType={viewType} />}
           </div>
         </div>
@@ -143,7 +144,7 @@ export function PluginTabPane({ tab }: { tab: CustomTab }): React.ReactElement {
     return (
       <Notice>
         <div>
-          No plugin provides <code>{tab.viewType}</code> any more.
+          {tx('No plugin provides {viewType} any more.', { viewType: <code>{tab.viewType}</code> })}
           <div style={{ marginTop: 10 }}>
             <FindPluginButton viewType={tab.viewType} />
           </div>
@@ -169,7 +170,7 @@ function FindPluginButton({ viewType }: { viewType: string }): React.ReactElemen
   if (!id) return null
   return (
     <button className="btn" onClick={() => searchPluginsFor(id)}>
-      Find a plugin on GitHub
+      {t('Find a plugin on GitHub')}
     </button>
   )
 }
@@ -235,7 +236,7 @@ function PluginView({
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div className="section-header">
           <span className="section-header__title">{title}</span>
-          <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+          <button className="icon-button" title={t('Collapse panel')} onClick={onCollapse}>
             <CollapseRightIcon size={14} />
           </button>
         </div>

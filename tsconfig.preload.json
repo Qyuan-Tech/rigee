@@ -3,7 +3,7 @@
   // reach Electron's Node-side APIs, but it executes in the renderer process and therefore deals
   // in DOM types (MessagePort, MessageEvent). Neither tsconfig.node.json nor tsconfig.web.json
   // describes that combination.
-  "include": ["src/preload/**/*", "src/shared/**/*", "packages/plugin-api/src/data.ts", "packages/plugin-api/src/manifest.ts"],
+  "include": ["src/preload/**/*", "src/shared/**/*", "packages/plugin-api/src/data.ts", "packages/plugin-api/src/manifest.ts", "packages/plugin-api/src/l10n.ts"],
   "compilerOptions": {
     "composite": true,
     "tsBuildInfoFile": "node_modules/.tmp/tsconfig.preload.tsbuildinfo",
@@ -21,7 +21,8 @@
     "paths": {
       "@shared/*": ["src/shared/*"],
       "@rigee/plugin-api/data": ["packages/plugin-api/src/data.ts"],
-      "@rigee/plugin-api/manifest": ["packages/plugin-api/src/manifest.ts"]
+      "@rigee/plugin-api/manifest": ["packages/plugin-api/src/manifest.ts"],
+      "@rigee/plugin-api/l10n": ["packages/plugin-api/src/l10n.ts"]
     }
   }
 }

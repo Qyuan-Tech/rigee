@@ -3,6 +3,7 @@ import { groupById, type GroupRow } from '../groups'
 import { isMac } from '../ipc'
 import { formatTrigger, triggersFor } from '@shared/keymap'
 import { useKeymap } from '../shortcuts'
+import { t, tx } from '../i18n'
 import { useApp, useRow } from '../store'
 import { PluginEditorPane, PluginTabPane } from './PluginHost'
 import { Splitter } from './Splitter'
@@ -161,26 +162,23 @@ function EmptyMark(): React.ReactElement {
 function EmptyState({ solo }: { solo: boolean }): React.ReactElement {
   // Whatever new_tab is bound to now, so the advice survives the user rebinding it.
   const newTab = triggersFor(useKeymap(), 'new_tab')[0]
-  if (!solo) return <div className="empty"><div className="muted">Nothing open</div></div>
+  if (!solo) return <div className="empty"><div className="muted">{t('Nothing open')}</div></div>
 
   return (
     <div className="empty">
       <div>
         <EmptyMark />
-        <div className="empty__title">Nothing open</div>
+        <div className="empty__title">{t('Nothing open')}</div>
         <div className="empty__hint">
           <div>
-            {newTab ? (
-              <>
-                Start a terminal with <span className="kbd">{formatTrigger(newTab, isMac())}</span>, or
-                press the buttons in the tab strip
-              </>
-            ) : (
-              'Start a terminal with the buttons in the tab strip'
-            )}
+            {newTab
+              ? tx('Start a terminal with {key}, or press the buttons in the tab strip', {
+                  key: <span className="kbd">{formatTrigger(newTab, isMac())}</span>
+                })
+              : t('Start a terminal with the buttons in the tab strip')}
           </div>
-          <div>Click a file in the explorer to read it</div>
-          <div>Click a change on the right to see its diff</div>
+          <div>{t('Click a file in the explorer to read it')}</div>
+          <div>{t('Click a change on the right to see its diff')}</div>
         </div>
       </div>
     </div>

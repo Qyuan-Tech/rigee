@@ -44,6 +44,7 @@ const plugin: Plugin = {
     const shell = ctx.shell
     const emit = explorerEmitter(shell.emit.bind(shell))
     const ask = shell.ask.bind(shell)
+    const locale = shell.locale.bind(shell)
 
     const watched = new Map<string, Watched>()
     /** Unsubscribes still finishing. Quitting waits for these too: see `dispose`. */
@@ -123,10 +124,10 @@ const plugin: Plugin = {
 
     registerExplorerCommands(register, {
       'explorer:watch': ({ roots }) => watch(roots.filter(Boolean)),
-      'explorer:create': ({ dir, name, folder }) => create(dir, name, folder),
-      'explorer:rename': ({ path, name }) => renameEntry(path, name),
-      'explorer:transfer': (args) => transfer(args, ask),
-      'explorer:delete': ({ paths, permanently, unsaved }) => remove(paths, permanently, unsaved, ask),
+      'explorer:create': ({ dir, name, folder }) => create(dir, name, folder, locale),
+      'explorer:rename': ({ path, name }) => renameEntry(path, name, locale),
+      'explorer:transfer': (args) => transfer(args, ask, locale),
+      'explorer:delete': ({ paths, permanently, unsaved }) => remove(paths, permanently, unsaved, ask, locale),
       'explorer:reveal': ({ path }) => { reveal(path) },
       'explorer:copyText': ({ text }) => copyText(text)
     })

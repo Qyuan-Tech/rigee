@@ -144,6 +144,11 @@ export interface IpcRequests {
     /** The shell terminals will run, for display in the status bar. */
     shell: string
     homeDir: string
+    /**
+     * The system's preferred languages, most preferred first — what Rigee speaks while Settings
+     * does not name a language. See `resolveLocale`.
+     */
+    languages: string[]
   }
   /**
    * Ghostty's `toggle_fullscreen`. Through main because the renderer's Fullscreen API would put

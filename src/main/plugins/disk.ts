@@ -28,6 +28,8 @@ import {
   type PluginId,
   type PluginPermission
 } from '@rigee/plugin-api/manifest'
+import type { Translations } from '@rigee/plugin-api/l10n'
+import { t } from '@shared/l10n'
 import { compareVersions, ID_PATTERN, isVersion } from './convention'
 
 /**
@@ -120,7 +122,7 @@ export function discoverDiskPlugins(pluginsDir: string, rules: DiscoveryRules): 
     // types and events, so letting the alphabetically-first one win would mean an install could
     // shadow a plugin the user already trusts just by picking its name.
     if (seen.has(result.id)) {
-      rejected.push({ id: name, dir, reason: `another directory already declares the id "${result.id}"` })
+      rejected.push({ id: name, dir, reason: t('another directory already declares the id "{id}"', { id: result.id }) })
       continue
     }
     seen.add(result.id)
@@ -143,47 +145,49 @@ function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPl
   try {
     raw = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
   } catch (err) {
-    return { reason: `package.json is missing or not valid JSON (${message(err)})` }
+    return { reason: t('package.json is missing or not valid JSON ({reason})', { reason: message(err) }) }
   }
 
   const section = (raw as { rigee?: unknown } | null)?.rigee
   if (!section || typeof section !== 'object') {
-    return { reason: 'package.json has no "rigee" section' }
+    return { reason: t('package.json has no "rigee" section') }
   }
   const m = section as Record<string, unknown>
 
   const id = m.id
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
-    return { reason: 'rigee.id must be lower-case letters, digits and hyphens' }
+    return { reason: t('rigee.id must be lower-case letters, digits and hyphens') }
   }
   // The directory name IS the id, because the id is also the authority of every
   // `rigee-plugin://<id>/…` URL. If the two could differ, serving a file would mean a lookup from
   // id to directory, and a second plugin could claim the first one's URLs by declaring its id.
   if (id !== dirName) {
-    return { reason: `rigee.id is "${id}" but the directory is named "${dirName}"` }
+    return { reason: t('rigee.id is "{id}" but the directory is named "{dir}"', { id, dir: dirName }) }
   }
   if (rules.reserved.has(id)) {
-    return { reason: `the id "${id}" belongs to a plugin that ships with Rigee` }
+    return { reason: t('the id "{id}" belongs to a plugin that ships with Rigee', { id }) }
   }
 
   if (m.apiVersion !== PLUGIN_API_VERSION) {
     return {
-      reason:
-        `built for plugin API ${String(m.apiVersion)}, this Rigee implements ${PLUGIN_API_VERSION}`
+      reason: t('built for plugin API {theirs}, this Rigee implements {ours}', {
+        theirs: String(m.apiVersion),
+        ours: PLUGIN_API_VERSION
+      })
     }
   }
   if (typeof m.version !== 'string' || typeof m.displayName !== 'string') {
-    return { reason: 'rigee.version and rigee.displayName are required strings' }
+    return { reason: t('rigee.version and rigee.displayName are required strings') }
   }
   let minAppVersion: string | undefined
   if (m.minAppVersion !== undefined) {
     if (typeof m.minAppVersion !== 'string' || !isVersion(m.minAppVersion)) {
-      return { reason: 'rigee.minAppVersion must be a version such as 1.1.0' }
+      return { reason: t('rigee.minAppVersion must be a version such as 1.1.0') }
     }
     // A build whose own version is not one (a hand-edited package.json) cannot say it is new
     // enough, and is not asked: refusing every plugin on that account would be the worse failure.
     if (isVersion(rules.appVersion) && compareVersions(rules.appVersion, m.minAppVersion) < 0) {
-      return { reason: `needs Rigee ${m.minAppVersion} or later; this is ${rules.appVersion}` }
+      return { reason: t('needs Rigee {needs} or later; this is {this}', { needs: m.minAppVersion, this: rules.appVersion }) }
     }
     minAppVersion = m.minAppVersion
   }
@@ -193,19 +197,22 @@ function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPl
   const renderer = entryPath(dir, m.renderer)
   if ('reason' in renderer) return { reason: `rigee.renderer: ${renderer.reason}` }
   if (!main.value && !renderer.value) {
-    return { reason: 'declares neither a main nor a renderer entry, so it can never do anything' }
+    return { reason: t('declares neither a main nor a renderer entry, so it can never do anything') }
   }
 
   const permissions: PluginPermission[] = []
   for (const p of Array.isArray(m.permissions) ? m.permissions : []) {
     if (typeof p !== 'string' || !PERMISSIONS.has(p)) {
-      return { reason: `unknown permission ${JSON.stringify(p)}` }
+      return { reason: t('unknown permission {permission}', { permission: JSON.stringify(p) ?? String(p) }) }
     }
     permissions.push(p as PluginPermission)
   }
 
   const contributes = checkContributions(m.contributes, id)
   if (typeof contributes === 'string') return { reason: contributes }
+
+  const l10n = checkTranslations(m.l10n)
+  if (typeof l10n === 'string') return { reason: l10n }
 
   const hash = hashDirectory(dir)
   if (typeof hash !== 'string') return { reason: hash.reason }
@@ -224,9 +231,42 @@ function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPl
       ...(minAppVersion ? { minAppVersion } : {}),
       ...(main.value ? { main: main.value } : {}),
       ...(renderer.value ? { renderer: renderer.value } : {}),
-      contributes
+      contributes,
+      ...(l10n ? { l10n } : {})
     }
   }
+}
+
+/** Ceilings on a manifest's translations: they are read at boot and sent to the window whole. */
+const MAX_LANGUAGES = 32
+const MAX_TRANSLATED = 256
+const MAX_WORDS = 1024
+
+/**
+ * The manifest's own translations, checked as everything else in it is: languages by tag, each a
+ * table of strings — the words of a manifest, so a few dozen at most, and bounded well above that.
+ *
+ * Built with `Object.fromEntries`, which DEFINES each key: a table assembled by assignment would
+ * take a key called `__proto__` as an instruction rather than as a string to translate.
+ */
+function checkTranslations(value: unknown): Translations | null | string {
+  if (value === undefined || value === null) return null
+  const invalid = t('rigee.l10n must map languages to tables of strings')
+  if (typeof value !== 'object' || Array.isArray(value)) return invalid
+  const languages = Object.entries(value)
+  if (languages.length > MAX_LANGUAGES) return invalid
+  const out: [string, Record<string, string>][] = []
+  for (const [locale, table] of languages) {
+    if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(locale)) return invalid
+    if (!table || typeof table !== 'object' || Array.isArray(table)) return invalid
+    const entries = Object.entries(table)
+    if (entries.length > MAX_TRANSLATED) return invalid
+    for (const [words, translated] of entries) {
+      if (typeof translated !== 'string' || words.length > MAX_WORDS || translated.length > MAX_WORDS) return invalid
+    }
+    out.push([locale, Object.fromEntries(entries) as Record<string, string>])
+  }
+  return Object.fromEntries(out)
 }
 
 /**
@@ -239,14 +279,14 @@ function readPlugin(dir: string, dirName: string, rules: DiscoveryRules): DiskPl
  */
 function entryPath(dir: string, value: unknown): { value: string | null } | { reason: string } {
   if (value === undefined || value === null) return { value: null }
-  if (typeof value !== 'string' || value.length === 0) return { reason: 'must be a string' }
+  if (typeof value !== 'string' || value.length === 0) return { reason: t('must be a string') }
 
   const full = resolve(dir, value)
-  if (!contains(dir, full)) return { reason: 'points outside the plugin directory' }
+  if (!contains(dir, full)) return { reason: t('points outside the plugin directory') }
   try {
-    if (!statSync(full).isFile()) return { reason: 'is not a file' }
+    if (!statSync(full).isFile()) return { reason: t('is not a file') }
   } catch {
-    return { reason: `file not found (${value})` }
+    return { reason: t('file not found ({file})', { file: value }) }
   }
   // Stored relative and POSIX-separated, because it becomes a URL path.
   return { value: relative(dir, full).split(sep).join('/') }
@@ -262,7 +302,7 @@ function entryPath(dir: string, value: unknown): { value: string | null } | { re
  */
 function checkContributions(value: unknown, id: PluginId): PluginContributions | string {
   if (value === undefined || value === null) return {}
-  if (typeof value !== 'object') return 'rigee.contributes must be an object'
+  if (typeof value !== 'object') return t('rigee.contributes must be an object')
 
   const c = value as Record<string, unknown>
   const prefix = viewNamespace(id)
@@ -277,11 +317,11 @@ function checkContributions(value: unknown, id: PluginId): PluginContributions |
   ] as const) {
     const list = c[key]
     if (list === undefined) continue
-    if (!Array.isArray(list)) return `rigee.contributes.${key} must be an array`
+    if (!Array.isArray(list)) return t('rigee.contributes.{key} must be an array', { key })
     for (const entry of list) {
       const declared = (entry as Record<string, unknown> | null)?.[idField]
       if (typeof declared !== 'string' || !declared.startsWith(prefix)) {
-        return `rigee.contributes.${key}: "${String(declared)}" must start with "${prefix}"`
+        return t('rigee.contributes.{key}: "{id}" must start with "{prefix}"', { key, id: String(declared), prefix })
       }
     }
     // Shape beyond the id is the renderer's problem: it reads these defensively already, and a
@@ -308,13 +348,13 @@ function hashDirectory(dir: string): string | { reason: string } {
     try {
       entries = readdirSync(current, { withFileTypes: true })
     } catch (err) {
-      return `cannot read ${relative(dir, current) || '.'} (${message(err)})`
+      return t('cannot read {file} ({reason})', { file: relative(dir, current) || '.', reason: message(err) })
     }
     for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
       const full = join(current, entry.name)
       // Symlinks are not followed and not hashed. Following one would let a plugin's contents
       // change without its hash changing, which is the one thing the hash exists to prevent.
-      if (entry.isSymbolicLink()) return `contains a symbolic link (${relative(dir, full)})`
+      if (entry.isSymbolicLink()) return t('contains a symbolic link ({file})', { file: relative(dir, full) })
       if (entry.isDirectory()) {
         const err = walk(full)
         if (err) return err
@@ -322,15 +362,15 @@ function hashDirectory(dir: string): string | { reason: string } {
       }
       if (!entry.isFile()) continue
 
-      if (++files > MAX_PLUGIN_FILES) return `more than ${MAX_PLUGIN_FILES} files`
+      if (++files > MAX_PLUGIN_FILES) return t('more than {n} files', { n: MAX_PLUGIN_FILES })
       let data: Buffer
       try {
         data = readFileSync(full)
       } catch (err) {
-        return `cannot read ${relative(dir, full)} (${message(err)})`
+        return t('cannot read {file} ({reason})', { file: relative(dir, full), reason: message(err) })
       }
       bytes += data.length
-      if (bytes > MAX_PLUGIN_BYTES) return `larger than ${MAX_PLUGIN_BYTES} bytes`
+      if (bytes > MAX_PLUGIN_BYTES) return t('larger than {n} bytes', { n: MAX_PLUGIN_BYTES })
       hash.update(relative(dir, full).split(sep).join('/'))
       hash.update('\0')
       hash.update(data)

@@ -2,6 +2,7 @@ import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useState } from 'react'
 import { isMac, openPluginTab, useActiveWorkspace } from '@rigee/plugin-api'
 import { diffTabKey } from './diffTab'
+import { useT } from './l10n'
 import { scm } from './rpc'
 import { setRepoStatus, useScm } from './store'
 import type { PluginViewProps } from '@rigee/plugin-api'
@@ -23,6 +24,7 @@ const LETTER_COLOR: Record<string, string> = {
 type Group = 'conflicts' | 'staged' | 'unstaged' | 'untracked'
 
 export function ScmPanel({ onCollapse }: PluginViewProps): React.ReactElement {
+  const { t } = useT()
   const workspace = useActiveWorkspace()
   const byRepo = useScm((s) => s.byRepo)
   const [busy, setBusy] = useState(false)
@@ -73,9 +75,9 @@ export function ScmPanel({ onCollapse }: PluginViewProps): React.ReactElement {
     [refresh]
   )
 
-  if (!workspace) return <Panel onCollapse={onCollapse}><div className="muted">No workspace open.</div></Panel>
+  if (!workspace) return <Panel onCollapse={onCollapse}><div className="muted">{t('No workspace open.')}</div></Panel>
   if (repoRoots.length === 0) {
-    return <Panel onCollapse={onCollapse}><div className="muted">No git repository in this workspace.</div></Panel>
+    return <Panel onCollapse={onCollapse}><div className="muted">{t('No git repository in this workspace.')}</div></Panel>
   }
 
   const multi = repoRoots.length > 1
@@ -99,7 +101,7 @@ export function ScmPanel({ onCollapse }: PluginViewProps): React.ReactElement {
         return status ? (
           <RepoSection key={root} status={status} multi={multi} busy={busy} act={act} />
         ) : (
-          <div className="muted" key={root}>reading {root.split('/').pop()}…</div>
+          <div className="muted" key={root}>{t('reading {name}…', { name: basename(root) })}</div>
         )
       })}
       {error && <div className="error-banner">{error}</div>}
@@ -118,6 +120,7 @@ function RepoSection({
   busy: boolean
   act: (fn: () => Promise<unknown>) => Promise<void>
 }): React.ReactElement {
+  const { t } = useT()
   const [message, setMessage] = useState('')
   const root = status.root
   const total =
@@ -156,12 +159,12 @@ function RepoSection({
         <div className="scm__branch">
           <span className="scm__branch-name">
             <icons.Branch size={12} />
-            {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
+            {status.branch ?? t('detached @ {commit}', { commit: status.detachedAt ?? '?' })}
           </span>
           {status.upstream && (status.ahead > 0 || status.behind > 0) && (
             <span className="badge">↑{status.ahead} ↓{status.behind}</span>
           )}
-          {status.stashCount > 0 && <span className="badge">stash {status.stashCount}</span>}
+          {status.stashCount > 0 && <span className="badge">{t('stash {n}', { n: status.stashCount })}</span>}
           {status.operation !== 'none' && (
             <span className="badge badge--warn">{status.operation}</span>
           )}
@@ -174,7 +177,7 @@ function RepoSection({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(false) }
           }}
-          placeholder={`Message (${isMac() ? 'Cmd' : 'Ctrl'}+Enter to commit)`}
+          placeholder={t('Message ({key}+Enter to commit)', { key: isMac() ? 'Cmd' : 'Ctrl' })}
           rows={2}
         />
 
@@ -184,33 +187,33 @@ function RepoSection({
             disabled={busy || !message.trim()}
             onClick={() => commit(false)}
           >
-            Commit{status.staged.length > 0 ? ` ${status.staged.length}` : ''}
+            {status.staged.length > 0 ? t('Commit {n}', { n: status.staged.length }) : t('Commit')}
           </button>
-          <button className="btn" disabled={busy} onClick={() => commit(true)} title="Amend the last commit">
-            Amend
+          <button className="btn" disabled={busy} onClick={() => commit(true)} title={t('Amend the last commit')}>
+            {t('Amend')}
           </button>
           {allUnstaged.length > 0 && (
             <button
               className="btn"
               disabled={busy}
-              title="Stage everything"
+              title={t('Stage everything')}
               onClick={() => void act(() => scm('scm:stage', { repoRoot: root, paths: allUnstaged }))}
             >
-              Stage all
+              {t('Stage all')}
             </button>
           )}
         </div>
       </div>
 
       <div className={multi ? 'scm__files' : 'scm__files scm__files--scroll'}>
-        {total === 0 && <div className="muted">Working tree clean.</div>}
-        <FileGroup title="Merge changes" group="conflicts" files={status.conflicts} root={root}
+        {total === 0 && <div className="muted">{t('Working tree clean.')}</div>}
+        <FileGroup title={t('Merge changes')} group="conflicts" files={status.conflicts} root={root}
           busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
-        <FileGroup title="Staged" group="staged" files={status.staged} root={root}
+        <FileGroup title={t('Staged')} group="staged" files={status.staged} root={root}
           busy={busy} act={act} against={{ kind: 'index-vs-head' }} />
-        <FileGroup title="Changes" group="unstaged" files={status.unstaged} root={root}
+        <FileGroup title={t('Changes')} group="unstaged" files={status.unstaged} root={root}
           busy={busy} act={act} against={{ kind: 'worktree-vs-index' }} />
-        <FileGroup title="Untracked" group="untracked" files={status.untracked} root={root}
+        <FileGroup title={t('Untracked')} group="untracked" files={status.untracked} root={root}
           busy={busy} act={act} against={{ kind: 'worktree-vs-head' }} />
       </div>
         </>
@@ -236,6 +239,7 @@ function FileGroup({
   act: (fn: () => Promise<unknown>) => Promise<void>
   against: DiffTarget
 }): React.ReactElement | null {
+  const { t } = useT()
   if (files.length === 0) return null
 
   const staged = group === 'staged'
@@ -273,7 +277,7 @@ function FileGroup({
               {!staged && (
                 <button
                   className="icon-button"
-                  title="Discard changes"
+                  title={t('Discard changes')}
                   disabled={busy}
                   onClick={() => void act(() => scm('scm:discard', { repoRoot: root, paths: [f.path] }))}
                 >
@@ -282,7 +286,7 @@ function FileGroup({
               )}
               <button
                 className="icon-button"
-                title={staged ? 'Unstage' : 'Stage'}
+                title={staged ? t('Unstage') : t('Stage')}
                 disabled={busy}
                 onClick={() =>
                   void act(() =>
@@ -316,11 +320,12 @@ function Panel({
   /** True when several repo sections stack and the panel itself has to scroll them. */
   scroll?: boolean
 }): React.ReactElement {
+  const { t } = useT()
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="section-header">
-        <span className="section-header__title">Source control</span>
-        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+        <span className="section-header__title">{t('Source control')}</span>
+        <button className="icon-button" title={t('Collapse panel')} onClick={onCollapse}>
           <icons.CollapseRight size={14} />
         </button>
       </div>

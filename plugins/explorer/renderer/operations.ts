@@ -14,6 +14,7 @@ import {
 } from '@rigee/plugin-api'
 import type { MenuItem } from '@rigee/plugin-api'
 import { invalidate, invalidateUnder, listings, request } from './listings'
+import { t } from './l10n'
 import {
   clipboard,
   follow,
@@ -291,7 +292,9 @@ export async function rename(tree: Tree, path: string, name: string): Promise<vo
   const unsaved = unsavedFiles([path])
   if (unsaved.length > 0) {
     throw new Error(
-      unsaved[0] === path ? 'It has unsaved changes. Save or undo them first.' : `“${nameOf(unsaved[0]!)}” in it has unsaved changes. Save or undo them first.`
+      unsaved[0] === path
+        ? t('It has unsaved changes. Save or undo them first.')
+        : t('“{name}” in it has unsaved changes. Save or undo them first.', { name: nameOf(unsaved[0]!) })
     )
   }
   const to = await request('explorer:rename', { path, name })
@@ -333,7 +336,7 @@ export interface NameIssue {
  * its own name — or the same name in another case — is not "taken".
  */
 export function nameIssue(name: string, dir: string, self: string | null, nested: boolean): NameIssue | null {
-  const problem = nameProblem(name, { nested, windows: windows() })
+  const problem = nameProblem(name, { nested, windows: windows() }, t)
   if (problem) return { message: problem, blocking: true }
   const first = name.split(windows() ? /[\\/]/ : '/')[0]!
   const same = (a: string, b: string): boolean =>
@@ -341,9 +344,9 @@ export function nameIssue(name: string, dir: string, self: string | null, nested
   const clash = listings.get(dir)?.find((entry) => same(entry.name, first) && entry.path !== self)
   // A nested name may go through a folder that is already there; it cannot go through a file.
   if (clash && (first === name || !clash.isDir)) {
-    return { message: `“${first}” already exists here. Choose a different name.`, blocking: true }
+    return { message: t('“{name}” already exists here. Choose a different name.', { name: first }), blocking: true }
   }
-  if (name !== name.trim()) return { message: 'The name starts or ends with a space.', blocking: false }
+  if (name !== name.trim()) return { message: t('The name starts or ends with a space.'), blocking: false }
   return null
 }
 
@@ -359,7 +362,7 @@ export function copyPaths(tree: Tree, paths: readonly string[], relative: boolea
 // --- the menu --------------------------------------------------------------------------
 
 const revealLabel = (): string =>
-  isMac() ? 'Reveal in Finder' : windows() ? 'Reveal in File Explorer' : 'Open Containing Folder'
+  isMac() ? t('Reveal in Finder') : windows() ? t('Reveal in File Explorer') : t('Open Containing Folder')
 
 /**
  * A row's right-click menu, VS Code's for a file or a folder. Right-clicking a row outside the
@@ -392,24 +395,24 @@ export async function showMenu(tree: Tree, row: Row): Promise<void> {
   // nothing about Markdown.
   const offers = !many && !row.dir ? editorsOnRequest(row.path) : []
   if (offers.length > 0) items.push(...offers.map((o) => item(o.viewType, o.label)), separator)
-  if (!many && row.dir) items.push(item('new-file', 'New File…'), item('new-folder', 'New Folder…'), separator)
+  if (!many && row.dir) items.push(item('new-file', t('New File…')), item('new-folder', t('New Folder…')), separator)
   if (!many) {
     items.push(
       item('reveal', revealLabel(), mac ? 'Alt+Cmd+R' : 'Shift+Alt+R'),
-      item('terminal-tab', 'Open in Terminal Tab'),
-      item('terminal-split', 'Open in Terminal Split'),
+      item('terminal-tab', t('Open in Terminal Tab')),
+      item('terminal-split', t('Open in Terminal Split')),
       separator
     )
   }
-  if (isListed(tree, row.path)) items.push(item('remove-folder', 'Remove Folder from Workspace'), separator)
-  if (entries.length > 0) items.push(item('cut', 'Cut', 'CmdOrCtrl+X'), item('copy', 'Copy', 'CmdOrCtrl+C'))
-  items.push(item('paste', 'Paste', 'CmdOrCtrl+V', clipboard() !== null))
-  items.push(separator, item('copy-path', 'Copy Path', mac ? 'Alt+Cmd+C' : 'Shift+Alt+C'))
-  if (many || !row.root) items.push(item('copy-relative-path', 'Copy Relative Path', mac ? 'Alt+Shift+Cmd+C' : 'Ctrl+Shift+Alt+C'))
+  if (isListed(tree, row.path)) items.push(item('remove-folder', t('Remove Folder from Workspace')), separator)
+  if (entries.length > 0) items.push(item('cut', t('Cut'), 'CmdOrCtrl+X'), item('copy', t('Copy'), 'CmdOrCtrl+C'))
+  items.push(item('paste', t('Paste'), 'CmdOrCtrl+V', clipboard() !== null))
+  items.push(separator, item('copy-path', t('Copy Path'), mac ? 'Alt+Cmd+C' : 'Shift+Alt+C'))
+  if (many || !row.root) items.push(item('copy-relative-path', t('Copy Relative Path'), mac ? 'Alt+Shift+Cmd+C' : 'Ctrl+Shift+Alt+C'))
   if (entries.length > 0) {
     items.push(separator)
-    if (!many) items.push(item('rename', 'Rename…', mac ? 'Enter' : 'F2'))
-    items.push(item('delete', 'Delete', mac ? 'Cmd+Backspace' : 'Delete'))
+    if (!many) items.push(item('rename', t('Rename…'), mac ? 'Enter' : 'F2'))
+    items.push(item('delete', t('Delete'), mac ? 'Cmd+Backspace' : 'Delete'))
   }
 
   const choice = await popupMenu(items)

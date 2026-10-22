@@ -36,11 +36,14 @@ const plugin: Plugin = {
     const register = commands.register.bind(commands)
     const shell = ctx.shell
     const emit = scmEmitter(shell.emit.bind(shell))
+    // The language, for the few errors the service words itself. Handed over as a function, not a
+    // value: it is asked each time, because the user can switch while the plugin runs.
+    const locale = shell.locale.bind(shell)
 
     // Assigned synchronously by the effect below; cordis runs a sync effect's body on the spot.
     let git!: GitService
     ctx.effect(() => {
-      git = new GitService()
+      git = new GitService(locale)
       // RETURNED, not voided: cordis awaits a disposer that hands back a promise (verified
       // against 4.0.0-rc.10), and that is the link that lets `app.quit` wait for the filesystem
       // watchers to actually let go. Dropping the promise here would put the abort-on-quit back.

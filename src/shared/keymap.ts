@@ -14,6 +14,8 @@
  * have. A line using any of them is rejected with a reason rather than half-honoured.
  */
 
+import { t } from './l10n'
+
 // ---------------------------------------------------------------------------
 // Triggers
 // ---------------------------------------------------------------------------
@@ -179,8 +181,9 @@ export interface ActionSpec {
    */
   scope: 'terminal' | 'app'
   group: ActionGroup
-  /** Absent: takes no parameter. */
-  param?: { required: boolean; valid: (p: string) => boolean; hint: string }
+  /** Absent: takes no parameter. `hint` is what a parameter looks like, said when one is wrong. */
+  param?: { required: boolean; valid: (p: string) => boolean; hint: () => string }
+  /** What the shortcuts table calls it, in the language Rigee is in when asked. */
   label: (param: string) => string
   /**
    * Whether holding the key down repeats the action. Off for anything that opens, closes or
@@ -193,7 +196,6 @@ const DIRECTIONS = ['up', 'down', 'left', 'right'] as const
 const isInt = (p: string): boolean => /^\d+$/.test(p) && Number(p) >= 1
 const isNumber = (p: string): boolean => /^\d+(\.\d+)?$/.test(p) && Number(p) > 0
 const oneOf = (...xs: string[]) => (p: string): boolean => xs.includes(p)
-const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 
 /** The actions Rigee implements, by Ghostty's name. Rigee's own additions are marked. */
 export const ACTIONS: Record<string, ActionSpec> = {
@@ -201,119 +203,119 @@ export const ACTIONS: Record<string, ActionSpec> = {
     scope: 'terminal',
     group: 'Clipboard',
     // Ghostty's formats. The terminal only ever copies text, so all four copy the same thing.
-    param: { required: false, valid: oneOf('plain', 'mixed', 'vt', 'html'), hint: 'plain | mixed' },
-    label: () => 'Copy',
+    param: { required: false, valid: oneOf('plain', 'mixed', 'vt', 'html'), hint: () => 'plain | mixed' },
+    label: () => t('Copy'),
     repeats: false
   },
-  paste_from_clipboard: { scope: 'terminal', group: 'Clipboard', label: () => 'Paste', repeats: true },
+  paste_from_clipboard: { scope: 'terminal', group: 'Clipboard', label: () => t('Paste'), repeats: true },
   paste_from_selection: {
     scope: 'terminal',
     group: 'Clipboard',
-    label: () => 'Paste the last selection',
+    label: () => t('Paste the last selection'),
     repeats: true
   },
 
   text: {
     scope: 'terminal',
     group: 'Editing',
-    param: { required: true, valid: (p) => decodeText(p) !== null, hint: 'text, with \\x escapes' },
-    label: (p) => KNOWN_TEXT[p] ?? `Send “${p}”`,
+    param: { required: true, valid: (p) => decodeText(p) !== null, hint: () => t('text, with \\x escapes') },
+    label: (p) => knownText(p) ?? t('Send “{text}”', { text: p }),
     repeats: true
   },
   esc: {
     scope: 'terminal',
     group: 'Editing',
-    param: { required: true, valid: (p) => p.length > 0, hint: 'text after ESC' },
-    label: (p) => KNOWN_ESC[p] ?? `Send ESC ${p}`,
+    param: { required: true, valid: (p) => p.length > 0, hint: () => t('text after ESC') },
+    label: (p) => knownEsc(p) ?? t('Send ESC {text}', { text: p }),
     repeats: true
   },
   csi: {
     scope: 'terminal',
     group: 'Editing',
-    param: { required: true, valid: (p) => p.length > 0, hint: 'text after ESC [' },
-    label: (p) => `Send ESC [${p}`,
+    param: { required: true, valid: (p) => p.length > 0, hint: () => t('text after ESC [') },
+    label: (p) => t('Send ESC [{text}', { text: p }),
     repeats: true
   },
   /** Rigee: a newline that does not submit. See `newlineBytes` in terminals.ts. */
   insert_newline: {
     scope: 'terminal',
     group: 'Editing',
-    label: () => 'Insert a newline without submitting',
+    label: () => t('Insert a newline without submitting'),
     repeats: true
   },
 
   increase_font_size: {
     scope: 'terminal',
     group: 'Font',
-    param: { required: false, valid: isNumber, hint: 'points' },
-    label: () => 'Bigger text',
+    param: { required: false, valid: isNumber, hint: () => t('points') },
+    label: () => t('Bigger text'),
     repeats: true
   },
   decrease_font_size: {
     scope: 'terminal',
     group: 'Font',
-    param: { required: false, valid: isNumber, hint: 'points' },
-    label: () => 'Smaller text',
+    param: { required: false, valid: isNumber, hint: () => t('points') },
+    label: () => t('Smaller text'),
     repeats: true
   },
-  reset_font_size: { scope: 'terminal', group: 'Font', label: () => 'Reset text size', repeats: false },
+  reset_font_size: { scope: 'terminal', group: 'Font', label: () => t('Reset text size'), repeats: false },
   set_font_size: {
     scope: 'terminal',
     group: 'Font',
-    param: { required: true, valid: isNumber, hint: 'points' },
-    label: (p) => `Text size ${p}`,
+    param: { required: true, valid: isNumber, hint: () => t('points') },
+    label: (p) => t('Text size {size}', { size: p }),
     repeats: false
   },
 
-  clear_screen: { scope: 'terminal', group: 'Screen', label: () => 'Clear screen and scrollback', repeats: false },
-  select_all: { scope: 'terminal', group: 'Screen', label: () => 'Select all', repeats: false },
-  scroll_to_top: { scope: 'terminal', group: 'Screen', label: () => 'Scroll to top', repeats: false },
-  scroll_to_bottom: { scope: 'terminal', group: 'Screen', label: () => 'Scroll to bottom', repeats: false },
-  scroll_page_up: { scope: 'terminal', group: 'Screen', label: () => 'Scroll up a page', repeats: true },
-  scroll_page_down: { scope: 'terminal', group: 'Screen', label: () => 'Scroll down a page', repeats: true },
+  clear_screen: { scope: 'terminal', group: 'Screen', label: () => t('Clear screen and scrollback'), repeats: false },
+  select_all: { scope: 'terminal', group: 'Screen', label: () => t('Select all'), repeats: false },
+  scroll_to_top: { scope: 'terminal', group: 'Screen', label: () => t('Scroll to top'), repeats: false },
+  scroll_to_bottom: { scope: 'terminal', group: 'Screen', label: () => t('Scroll to bottom'), repeats: false },
+  scroll_page_up: { scope: 'terminal', group: 'Screen', label: () => t('Scroll up a page'), repeats: true },
+  scroll_page_down: { scope: 'terminal', group: 'Screen', label: () => t('Scroll down a page'), repeats: true },
   scroll_to_selection: {
     scope: 'terminal',
     group: 'Screen',
-    label: () => 'Scroll to the selection',
+    label: () => t('Scroll to the selection'),
     repeats: false
   },
 
-  new_tab: { scope: 'app', group: 'Tabs', label: () => 'New terminal tab', repeats: false },
+  new_tab: { scope: 'app', group: 'Tabs', label: () => t('New terminal tab'), repeats: false },
   /** Ghostty's "surface" is the focused split. Outside a terminal there is none, so it is the tab. */
-  close_surface: { scope: 'app', group: 'Tabs', label: () => 'Close pane (or tab)', repeats: false },
+  close_surface: { scope: 'app', group: 'Tabs', label: () => t('Close pane (or tab)'), repeats: false },
   close_tab: {
     scope: 'app',
     group: 'Tabs',
     // Ghostty's modes. As with the tab strip's menu, `other` and `right` reach every kind of tab.
-    param: { required: false, valid: oneOf('this', 'other', 'right'), hint: 'this | other | right' },
+    param: { required: false, valid: oneOf('this', 'other', 'right'), hint: () => 'this | other | right' },
     label: (p) =>
-      p === 'other' ? 'Close the other tabs' : p === 'right' ? 'Close the tabs to the right' : 'Close tab',
+      p === 'other' ? t('Close the other tabs') : p === 'right' ? t('Close the tabs to the right') : t('Close tab'),
     repeats: false
   },
   goto_tab: {
     scope: 'app',
     group: 'Tabs',
-    param: { required: true, valid: isInt, hint: '1, 2, 3…' },
-    label: (p) => `Go to tab ${p}`,
+    param: { required: true, valid: isInt, hint: () => '1, 2, 3…' },
+    label: (p) => t('Go to tab {n}', { n: p }),
     repeats: false
   },
-  last_tab: { scope: 'app', group: 'Tabs', label: () => 'Go to the last tab', repeats: false },
-  previous_tab: { scope: 'app', group: 'Tabs', label: () => 'Previous tab', repeats: true },
-  next_tab: { scope: 'app', group: 'Tabs', label: () => 'Next tab', repeats: true },
+  last_tab: { scope: 'app', group: 'Tabs', label: () => t('Go to the last tab'), repeats: false },
+  previous_tab: { scope: 'app', group: 'Tabs', label: () => t('Previous tab'), repeats: true },
+  next_tab: { scope: 'app', group: 'Tabs', label: () => t('Next tab'), repeats: true },
   /** Rigee: the editor columns. Ghostty has no equivalent. */
   goto_group: {
     scope: 'app',
     group: 'Tabs',
-    param: { required: true, valid: isInt, hint: '1, 2, 3…' },
-    label: (p) => `Go to column ${p}`,
+    param: { required: true, valid: isInt, hint: () => '1, 2, 3…' },
+    label: (p) => t('Go to column {n}', { n: p }),
     repeats: false
   },
   /** Rigee: VS Code's Split Editor, and Split Editor Down. Bare is right, as Cmd+\ always was. */
   split_group: {
     scope: 'app',
     group: 'Tabs',
-    param: { required: false, valid: oneOf('right', 'down'), hint: 'right | down' },
-    label: (p) => (p === 'down' ? 'Split into a new row' : 'Split into a new column'),
+    param: { required: false, valid: oneOf('right', 'down'), hint: () => 'right | down' },
+    label: (p) => (p === 'down' ? t('Split into a new row') : t('Split into a new column')),
     repeats: false
   },
 
@@ -321,8 +323,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
     scope: 'terminal',
     group: 'Splits',
     // Optional, as in Ghostty, where a bare `new_split` means `auto`.
-    param: { required: false, valid: oneOf(...DIRECTIONS, 'auto'), hint: 'right | down | left | up | auto' },
-    label: (p) => (!p || p === 'auto' ? 'Split the longer way' : `Split ${p}`),
+    param: { required: false, valid: oneOf(...DIRECTIONS, 'auto'), hint: () => 'right | down | left | up | auto' },
+    label: (p) => splitLabel(p),
     repeats: false
   },
   goto_split: {
@@ -332,9 +334,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
     param: {
       required: true,
       valid: oneOf(...DIRECTIONS, 'top', 'bottom', 'previous', 'next'),
-      hint: 'previous | next | up | down | left | right'
+      hint: () => 'previous | next | up | down | left | right'
     },
-    label: (p) => (p === 'previous' || p === 'next' ? `${cap(p)} pane` : `Pane ${splitDirection(p)}`),
+    label: (p) => gotoSplitLabel(p),
     repeats: true
   },
   resize_split: {
@@ -346,46 +348,95 @@ export const ACTIONS: Record<string, ActionSpec> = {
         const [dir, px, ...rest] = p.split(',')
         return rest.length === 0 && (DIRECTIONS as readonly string[]).includes(dir ?? '') && isInt(px ?? '')
       },
-      hint: 'direction,pixels'
+      hint: () => t('direction,pixels')
     },
-    label: (p) => `Move divider ${p.split(',')[0]}`,
+    label: (p) => resizeLabel(p.split(',')[0] ?? ''),
     repeats: true
   },
-  equalize_splits: { scope: 'terminal', group: 'Splits', label: () => 'Make panes equal', repeats: false },
-  toggle_split_zoom: { scope: 'terminal', group: 'Splits', label: () => 'Zoom pane', repeats: false },
+  equalize_splits: { scope: 'terminal', group: 'Splits', label: () => t('Make panes equal'), repeats: false },
+  toggle_split_zoom: { scope: 'terminal', group: 'Splits', label: () => t('Zoom pane'), repeats: false },
 
-  start_search: { scope: 'terminal', group: 'Search', label: () => 'Find', repeats: false },
-  search_selection: { scope: 'terminal', group: 'Search', label: () => 'Find the selection', repeats: false },
+  start_search: { scope: 'terminal', group: 'Search', label: () => t('Find'), repeats: false },
+  search_selection: { scope: 'terminal', group: 'Search', label: () => t('Find the selection'), repeats: false },
   navigate_search: {
     scope: 'terminal',
     group: 'Search',
-    param: { required: true, valid: oneOf('next', 'previous'), hint: 'next | previous' },
-    label: (p) => (p === 'next' ? 'Next match' : 'Previous match'),
+    param: { required: true, valid: oneOf('next', 'previous'), hint: () => 'next | previous' },
+    label: (p) => (p === 'next' ? t('Next match') : t('Previous match')),
     repeats: true
   },
-  end_search: { scope: 'terminal', group: 'Search', label: () => 'Close find', repeats: false },
+  end_search: { scope: 'terminal', group: 'Search', label: () => t('Close find'), repeats: false },
   /** Rigee: find in every file of the workspace, VS Code's Cmd+Shift+F. */
-  search_workspace: { scope: 'app', group: 'Search', label: () => 'Search the workspace', repeats: false },
+  search_workspace: { scope: 'app', group: 'Search', label: () => t('Search the workspace'), repeats: false },
 
-  open_config: { scope: 'app', group: 'Window', label: () => 'Settings', repeats: false },
-  toggle_fullscreen: { scope: 'app', group: 'Window', label: () => 'Full screen', repeats: false },
+  open_config: { scope: 'app', group: 'Window', label: () => t('Settings'), repeats: false },
+  toggle_fullscreen: { scope: 'app', group: 'Window', label: () => t('Full screen'), repeats: false },
   /** Rigee: the side panels. */
-  toggle_left_panel: { scope: 'app', group: 'Window', label: () => 'Show or hide the left panel', repeats: false },
-  toggle_right_panel: { scope: 'app', group: 'Window', label: () => 'Show or hide the right panel', repeats: false },
+  toggle_left_panel: { scope: 'app', group: 'Window', label: () => t('Show or hide the left panel'), repeats: false },
+  toggle_right_panel: { scope: 'app', group: 'Window', label: () => t('Show or hide the right panel'), repeats: false },
   /** Swallow the key: it reaches neither the terminal nor anything else. */
-  ignore: { scope: 'app', group: 'Window', label: () => 'Do nothing', repeats: true }
+  ignore: { scope: 'app', group: 'Window', label: () => t('Do nothing'), repeats: true }
 }
 
-const KNOWN_TEXT: Record<string, string> = {
-  '\\x01': 'Move to start of line',
-  '\\x05': 'Move to end of line',
-  '\\x15': 'Delete to start of line',
-  '\\x17': 'Delete the word before the cursor'
+/** What the line-editing bytes the defaults send are for, by the text they send. */
+function knownText(p: string): string | null {
+  switch (p) {
+    case '\\x01': return t('Move to start of line')
+    case '\\x05': return t('Move to end of line')
+    case '\\x15': return t('Delete to start of line')
+    case '\\x17': return t('Delete the word before the cursor')
+    default: return null
+  }
 }
 
-const KNOWN_ESC: Record<string, string> = {
-  b: 'Move back one word',
-  f: 'Move forward one word'
+function knownEsc(p: string): string | null {
+  return p === 'b' ? t('Move back one word') : p === 'f' ? t('Move forward one word') : null
+}
+
+function splitLabel(p: string): string {
+  switch (p) {
+    case 'right': return t('Split right')
+    case 'down': return t('Split down')
+    case 'left': return t('Split left')
+    case 'up': return t('Split up')
+    default: return t('Split the longer way')
+  }
+}
+
+function gotoSplitLabel(p: string): string {
+  if (p === 'previous') return t('Previous pane')
+  if (p === 'next') return t('Next pane')
+  switch (splitDirection(p)) {
+    case 'up': return t('Pane up')
+    case 'down': return t('Pane down')
+    case 'left': return t('Pane left')
+    case 'right': return t('Pane right')
+  }
+}
+
+/** The divider's direction is whatever the line said, a wrong one included, so it is said back. */
+function resizeLabel(direction: string): string {
+  switch (direction) {
+    case 'up': return t('Move divider up')
+    case 'down': return t('Move divider down')
+    case 'left': return t('Move divider left')
+    case 'right': return t('Move divider right')
+    default: return t('Move divider {direction}', { direction })
+  }
+}
+
+/** The groups of the shortcuts table, as its headings say them. */
+export function groupLabel(group: ActionGroup): string {
+  switch (group) {
+    case 'Clipboard': return t('Clipboard')
+    case 'Editing': return t('Editing')
+    case 'Font': return t('Font')
+    case 'Screen': return t('Screen')
+    case 'Tabs': return t('Tabs')
+    case 'Splits': return t('Splits')
+    case 'Search': return t('Search')
+    case 'Window': return t('Window')
+  }
 }
 
 /** A split direction as Ghostty spells it, with its aliases resolved: `top` is `up`. */
@@ -414,10 +465,10 @@ export function actionLabel(action: string): string {
 export function validateAction(action: string): string | null {
   const [name, param] = splitAction(action)
   const spec = ACTIONS[name]
-  if (!spec) return `unknown action "${name}"`
-  if (!spec.param) return action.includes(':') ? `${name} takes no parameter` : null
-  if (!action.includes(':')) return spec.param.required ? `${name} needs a parameter (${spec.param.hint})` : null
-  return spec.param.valid(param) ? null : `bad parameter for ${name}: expected ${spec.param.hint}`
+  if (!spec) return t('unknown action "{name}"', { name })
+  if (!spec.param) return action.includes(':') ? t('{name} takes no parameter', { name }) : null
+  if (!action.includes(':')) return spec.param.required ? t('{name} needs a parameter ({hint})', { name, hint: spec.param.hint() }) : null
+  return spec.param.valid(param) ? null : t('bad parameter for {name}: expected {hint}', { name, hint: spec.param.hint() })
 }
 
 /**
@@ -519,7 +570,7 @@ export function parseBindLine(input: string): BindLine | null {
     s = s.slice(flag.length + 1)
   }
   if (flags.has('global') || flags.has('all')) {
-    return { kind: 'error', message: '"global:" and "all:" are not supported' }
+    return { kind: 'error', message: t('"global:" and "all:" are not supported') }
   }
 
   // The first '=' not followed by '+' or '=' — Ghostty's rule, which is what lets `super+==…`
@@ -531,15 +582,15 @@ export function parseBindLine(input: string): BindLine | null {
       break
     }
   }
-  if (eq <= 0) return { kind: 'error', message: 'expected trigger=action' }
+  if (eq <= 0) return { kind: 'error', message: t('expected trigger=action') }
 
   const triggerSpec = s.slice(0, eq)
   const action = s.slice(eq + 1).trim()
   if (/[^+]>./.test(triggerSpec)) {
-    return { kind: 'error', message: 'key sequences are not supported; the prefix setting does that' }
+    return { kind: 'error', message: t('key sequences are not supported; the prefix setting does that') }
   }
   const trigger = parseTrigger(triggerSpec)
-  if (!trigger) return { kind: 'error', message: `cannot read the keys "${triggerSpec}"` }
+  if (!trigger) return { kind: 'error', message: t('cannot read the keys "{keys}"', { keys: triggerSpec }) }
 
   if (action === 'unbind') return { kind: 'unbind', trigger }
   const problem = validateAction(action)

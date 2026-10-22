@@ -2,6 +2,8 @@ import { execFile, spawn } from 'node:child_process'
 import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { lstat, open, readdir, readFile } from 'node:fs/promises'
 import { delimiter, join, relative, resolve, sep } from 'node:path'
+import type { Locale, Translator } from '@rigee/plugin-api/l10n'
+import { translatorFor } from './l10n'
 import { MAX_RESULTS, type SearchFileResult, type SearchMatch, type SearchQuery, type SearchResult } from '../types'
 
 /**
@@ -30,13 +32,17 @@ export type EngineName = 'ripgrep' | 'git' | 'node'
  * Run one search. Resolves with what was found — never rejects for a folder it could not read or a
  * pattern that does not compile; those come back as `error`. An aborted search resolves too, with
  * whatever it had, so a superseded keystroke's search costs nothing to throw away.
+ *
+ * `locale` is the language of what the engine notes itself, a folder it could not read; English if
+ * none is given. What ripgrep, git, V8 and the OS report is passed on in their own words.
  */
 export async function runSearch(
   query: SearchQuery,
   signal: AbortSignal,
-  options: { engine?: EngineName; rgPath?: string | null } = {}
+  options: { engine?: EngineName; rgPath?: string | null; locale?: Locale } = {}
 ): Promise<SearchResult> {
   const started = performance.now()
+  const { t } = translatorFor(options.locale ?? 'en')
   const found = new Collector(query.maxResults ?? MAX_RESULTS)
   const done = (engine: EngineName, error?: string): SearchResult => ({
     files: found.files(),
@@ -59,13 +65,13 @@ export async function runSearch(
   query = { ...query, roots: [...new Set(query.roots.map((r) => resolve(r)))] }
 
   const rg = options.engine && options.engine !== 'ripgrep' ? null : (options.rgPath ?? findRipgrep())
-  if (options.engine === 'ripgrep' && !rg) return done('ripgrep', 'ripgrep is not installed')
+  if (options.engine === 'ripgrep' && !rg) return done('ripgrep', t('ripgrep is not installed'))
 
   let error: string | undefined
   const note = (message: string): void => { error ??= message }
 
   if (rg) {
-    const ok = await searchWithRipgrep(rg, query, matcher, found, signal, note)
+    const ok = await searchWithRipgrep(rg, query, matcher, found, signal, note, t)
     // ripgrep's dialect refused a pattern V8 accepts — a lookbehind, say. The other engines filter
     // less cleverly but understand it, so fall through to them rather than report nothing.
     if (ok || options.engine === 'ripgrep') return done('ripgrep', error)
@@ -80,7 +86,7 @@ export async function runSearch(
   for (const { dir, root } of queue) {
     if (signal.aborted || found.full) break
     if (!isDirectory(dir)) {
-      note(`cannot read ${dir}`)
+      note(t('cannot read {dir}', { dir }))
       continue
     }
     // A folder its own repository ignores — a worktree under .worktrees/, a library under
@@ -89,7 +95,7 @@ export async function runSearch(
     const inRepository = options.engine !== 'node' && (await isGitWorkTree(dir))
     const viaGit = inRepository && !(await ignoredByRepository(dir))
     if (options.engine === 'git' && !inRepository) {
-      note(`${dir} is not a git repository`)
+      note(t('{dir} is not a git repository', { dir }))
       continue
     }
     if (viaGit && (await searchWithGit(dir, root, query, matcher, found, signal, note))) {
@@ -263,7 +269,8 @@ export function findRipgrep(): string | null {
 
 /**
  * False when ripgrep could not run this pattern at all, so the caller can try another engine.
- * Everything ripgrep finds is only a candidate line; see the top of the file.
+ * Everything ripgrep finds is only a candidate line; see the top of the file. `t` is for what this
+ * notes in its own words, rather than ripgrep's.
  */
 function searchWithRipgrep(
   rg: string,
@@ -271,11 +278,12 @@ function searchWithRipgrep(
   matcher: RegExp,
   found: Collector,
   signal: AbortSignal,
-  note: (message: string) => void
+  note: (message: string) => void,
+  t: Translator['t']
 ): Promise<boolean> {
   const roots = query.roots.filter((root) => {
     if (isDirectory(root)) return true
-    note(`cannot read ${root}`)
+    note(t('cannot read {dir}', { dir: root }))
     return false
   })
   if (roots.length === 0) return Promise.resolve(true)

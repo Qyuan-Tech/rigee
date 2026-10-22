@@ -22,8 +22,16 @@
 
 import { net } from 'electron'
 import { createHash } from 'node:crypto'
+import { t } from '@shared/l10n'
 import { assetName, marketPluginOf, PLUGIN_TOPIC, versionOfTag } from './convention'
 import type { MarketPlugin } from '@shared/ipc'
+
+/**
+ * GitHub's limit for requests without an account, spent: every request fails the same way until it
+ * resets, so whoever is making several stops at the first. Told apart by its class, not its words,
+ * which are in whatever language Rigee is in.
+ */
+export class RateLimited extends Error {}
 
 /**
  * The API's base URL. Only ever github.com — except under a smoke mode, which points it at a
@@ -48,13 +56,13 @@ async function getJson(path: string): Promise<{ status: number; body: unknown }>
   try {
     res = await net.fetch(`${apiBase()}${path}`, { headers: HEADERS })
   } catch (err) {
-    throw new Error(`could not reach GitHub (${message(err)})`)
+    throw new Error(t('could not reach GitHub ({reason})', { reason: message(err) }))
   }
   if (res.status === 403 || res.status === 429) {
     // GitHub answers a spent rate limit with either status, and says so in the headers. Anything
     // else under these statuses is a real refusal and is reported as one.
     if (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')) {
-      throw new Error(rateLimitMessage(res.headers))
+      throw new RateLimited(rateLimitMessage(res.headers))
     }
   }
   let body: unknown = null
@@ -72,15 +80,15 @@ function rateLimitMessage(headers: Headers): string {
   const seconds = Number.isFinite(retry) && retry > 0
     ? retry
     : Number.isFinite(reset) && reset > 0 ? Math.max(0, reset - Date.now() / 1000) : NaN
-  const when = Number.isFinite(seconds)
-    ? seconds < 90 ? `in about ${Math.ceil(seconds)} seconds` : `in about ${Math.ceil(seconds / 60)} minutes`
-    : 'later'
-  return `GitHub's limit for requests without an account has been reached. Try again ${when}.`
+  if (!Number.isFinite(seconds)) return t("GitHub's limit for requests without an account has been reached. Try again later.")
+  return seconds < 90
+    ? t("GitHub's limit for requests without an account has been reached. Try again in about {n} seconds.", { n: Math.ceil(seconds) })
+    : t("GitHub's limit for requests without an account has been reached. Try again in about {n} minutes.", { n: Math.ceil(seconds / 60) })
 }
 
 const githubError = (status: number, body: unknown): string => {
   const detail = (body as { message?: unknown } | null)?.message
-  return typeof detail === 'string' ? `GitHub answered ${status}: ${detail}` : `GitHub answered ${status}`
+  return typeof detail === 'string' ? t('GitHub answered {status}: {detail}', { status, detail }) : t('GitHub answered {status}', { status })
 }
 
 /** A hundred is the most GitHub returns a page; five pages is five hundred plugins, a long way off. */
@@ -109,7 +117,7 @@ export async function fetchCatalog(): Promise<MarketPlugin[]> {
     if (status !== 200) throw new Error(githubError(status, body))
 
     const items = (body as { items?: unknown } | null)?.items
-    if (!Array.isArray(items)) throw new Error('GitHub sent a search result Rigee cannot read')
+    if (!Array.isArray(items)) throw new Error(t('GitHub sent a search result Rigee cannot read'))
     for (const item of items) {
       const plugin = marketPluginOf(item)
       // Stars change between pages, so a repository can sit on two of them.
@@ -154,40 +162,40 @@ export async function latestRelease(owner: string, repo: string): Promise<Plugin
   const { status, body } = await getJson(
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/latest`
   )
-  if (status === 404) throw new Error(`${owner}/${repo} has no published release`)
+  if (status === 404) throw new Error(t('{owner}/{repo} has no published release', { owner, repo }))
   if (status !== 200) throw new Error(githubError(status, body))
 
   const r = body as Record<string, unknown> | null
   const tag = r?.tag_name
-  if (typeof tag !== 'string') throw new Error('GitHub sent a release Rigee cannot read')
+  if (typeof tag !== 'string') throw new Error(t('GitHub sent a release Rigee cannot read'))
   const version = versionOfTag(tag)
-  if (!version) throw new Error(`the latest release is tagged "${tag}", not v<version>`)
+  if (!version) throw new Error(t('the latest release is tagged "{tag}", not v<version>', { tag }))
 
   const want = assetName(repo, version)
   const asset = (Array.isArray(r?.assets) ? r.assets : []).find(
     (a): a is Record<string, unknown> => (a as Record<string, unknown> | null)?.name === want
   )
-  if (!asset) throw new Error(`release ${tag} has no ${want}`)
+  if (!asset) throw new Error(t('release {tag} has no {asset}', { tag, asset: want }))
 
   const size = asset.size
   const url = asset.browser_download_url
   const digest = asset.digest
   if (typeof size !== 'number' || typeof url !== 'string') {
-    throw new Error(`GitHub sent an asset Rigee cannot read (${want})`)
+    throw new Error(t('GitHub sent an asset Rigee cannot read ({asset})', { asset: want }))
   }
   // Downloaded from the release's own address on github.com and nowhere else: GitHub redirects that
   // to its storage, and the checksum covers what arrives, but an address elsewhere is not this
   // repository's release whatever the response says. The smoke stand-in serves its own addresses.
   const expected = `https://github.com/${owner}/${repo}/releases/download/`
   if (apiBase() === GITHUB_API && !url.toLowerCase().startsWith(expected.toLowerCase())) {
-    throw new Error(`${want} is not offered from ${owner}/${repo}'s own releases`)
+    throw new Error(t("{asset} is not offered from {owner}/{repo}'s own releases", { asset: want, owner, repo }))
   }
   // GitHub has reported a digest for every asset uploaded since June 2025. One without it was
   // uploaded before that, and there would be nothing to check the download against.
   const sha256 = typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/i.test(digest)
     ? digest.slice('sha256:'.length).toLowerCase()
     : null
-  if (!sha256) throw new Error(`GitHub reports no SHA-256 for ${want}; upload it again to get one`)
+  if (!sha256) throw new Error(t('GitHub reports no SHA-256 for {asset}; upload it again to get one', { asset: want }))
 
   return {
     owner,
@@ -209,15 +217,16 @@ export async function latestRelease(owner: string, repo: string): Promise<Plugin
  */
 export async function downloadRelease(release: PluginRelease, maxBytes: number): Promise<Buffer> {
   const { asset } = release
-  if (asset.size > maxBytes) throw new Error(`${asset.name} is larger than ${maxBytes} bytes`)
+  const tooLarge = (): Error => new Error(t('{asset} is larger than {max} bytes', { asset: asset.name, max: maxBytes }))
+  if (asset.size > maxBytes) throw tooLarge()
 
   let res: Response
   try {
     res = await net.fetch(asset.url)
   } catch (err) {
-    throw new Error(`could not download ${asset.name} (${message(err)})`)
+    throw new Error(t('could not download {asset} ({reason})', { asset: asset.name, reason: message(err) }))
   }
-  if (!res.ok || !res.body) throw new Error(`downloading ${asset.name}: HTTP ${res.status}`)
+  if (!res.ok || !res.body) throw new Error(t('downloading {asset}: HTTP {status}', { asset: asset.name, status: res.status }))
 
   const hash = createHash('sha256')
   const chunks: Buffer[] = []
@@ -229,14 +238,14 @@ export async function downloadRelease(release: PluginRelease, maxBytes: number):
     total += value.byteLength
     if (total > maxBytes) {
       await reader.cancel()
-      throw new Error(`${asset.name} is larger than ${maxBytes} bytes`)
+      throw tooLarge()
     }
     hash.update(value)
     chunks.push(Buffer.from(value))
   }
   const got = hash.digest('hex')
   if (got !== asset.sha256) {
-    throw new Error(`${asset.name} does not match the checksum GitHub reports for it`)
+    throw new Error(t('{asset} does not match the checksum GitHub reports for it', { asset: asset.name }))
   }
   return Buffer.concat(chunks, total)
 }

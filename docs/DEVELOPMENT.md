@@ -27,6 +27,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:catalog` | the plugin catalog on a quickened clock, against a stand-in that can hold, fail or change its answer: the kept list shown at once, refreshed by itself with the old one up meanwhile and the new one kept on disk, filtered without a request, a rate-limited fetch keeping the list and resting before it retries, recovering by itself, and Refresh pressed twice spending one search |
 | `pnpm smoke:published` | against the real GitHub, so not routine: finds Rigee's own four plugins in the catalog it fetches, installs each from its latest release, and opens a PDF, an image, a video and a Markdown file with them. Needs the network, spends five anonymous API calls, and needs `version` at least the plugins' `minAppVersion` |
 | `pnpm plugins:selftest` | the plugin convention, version order, the catalog file and its timetable, filtering, and hostile archives thrown at the tarball reader; reads a real `npm pack` |
+| `pnpm l10n:check` | every string the shell and the bundled plugins say through `t()`, held to each language's table: none missing, none left over, every `{placeholder}` kept — and the manifests' own words to their `l10n` (see Languages) |
 | `pnpm pack:plugin-api` | compiles and packs `@rigee/plugin-api` into `release/`, as a tagged release attaches it |
 | `pnpm smoke:split` | opens a terminal, splits it twice, asserts three distinct ptys and that a split starts where its pane had `cd`'d to |
 | `pnpm smoke:tabs` | the tab strip's menu on every kind of tab, a sweep that asks before stopping a running program, and the split buttons: copy a file and move a terminal, beside and below, nest a row in a column, and drag the divider across it |
@@ -41,6 +42,7 @@ Electron — that needs `--watch`, which `pnpm dev` already passes.
 | `pnpm smoke:heat` | boots on workspaces from before heat and asserts none comes up cold; then the list ordered and coloured by heat, held still under the pointer and re-sorted once it leaves, a switch and a minute of typing each counted once, a terminal printing in a workspace nobody is looking at counted and a prompt not; the list sorted the other three ways from the button in its header, the menu ticking the order it is in, a cold workspace keeping its place by name, and the order kept in Settings; the divider under it dragged for real, following the pointer, stopping at the last row and at one row, and leaving the view below its room in a short window, the height kept on disk; the cold ones removed through their checklist, and what reached the disk. `RIGEE_SHOT_DIR` leaves PNGs of the list, its cold run, the list by name, the divider pulled down and the checklist |
 | `pnpm smoke:fileops` | the explorer's file operations: the menus of a file, a folder and a workspace folder; a click opening a file and leaving the keyboard in the tree; Rename, New File and New Folder in a name box that refuses a taken name; Copy and Paste making `a copy.ts`; Cut and Paste and a drag moving, with tabs following; unsaved files refused a move; Delete asking first and closing the deleted file's tab; Copy Path; the arrows; and files from outside copied in, through the command a drop sends. Nothing reaches the real Trash unless `RIGEE_SMOKE_TRASH=1`. `RIGEE_SHOT_DIR` leaves PNGs of the name box, a cut row, a drop target and a selection |
 | `pnpm smoke:running` | an agent and a build at work in a workspace nobody is looking at, counted on its row; both counted as finished unseen once they stop, the agent alive and silent and the build gone; the count followed to its terminal, a tab's dot and a split pane's outline cleared by looking; and neither somebody typing nor a quick command counted. Real programs under a real shell with job control. `RIGEE_SHOT_DIR` leaves PNGs of the counts and of a finished pane |
+| `pnpm smoke:l10n` | boots on a system whose first language is Simplified Chinese and asserts its first frame is Chinese — the side bar, Scratch, a terminal's tab, the activity bar, a plugin's panel, the menu bar, Monaco's own words, the keyboard shortcuts' names; then chooses English in the real Settings dialog and asserts it all changed at once with the terminal still the same pty, and the system's language again. `RIGEE_SHOT_DIR` leaves PNGs of the window and both pages of the dialog in Chinese |
 | `pnpm pack:check` | package, then boot the packaged app and assert it actually starts |
 | `pnpm install:local` | build, package and install into /Applications, verified through `open` |
 | `pnpm pack:mac` / `pack:win` / `pack:linux` / `pack:all` | installers into `release/<version>/` |
@@ -114,13 +116,14 @@ cancelled, which is what keeps the menu from acting on it too.
 env -u ELECTRON_RUN_AS_NODE RIGEE_SMOKE=shot RIGEE_SHOT=/tmp/a.png electron .
 ```
 
-Three environment variables change what is in the frame, and they compose:
+Four environment variables change what is in the frame, and they compose:
 
 | variable | what it does before the capture |
 |---|---|
 | `RIGEE_SHOT_VIEW` | clicks that activity bar item, by title — `Explorer`, `Plugins`, … |
 | `RIGEE_SHOT_COLLAPSED` | shuts both side panels |
 | `RIGEE_SHOT_SPLIT` | splits the centre into two groups, with a terminal in the new one; `down` stacks them |
+| `RIGEE_SMOKE_LANGUAGES` | the system's preferred languages, comma-separated — `zh-Hans` photographs the window in Chinese. Any smoke mode honours it; without it they all run in English |
 
 `RIGEE_SHOT` also works with `smoke:pdf`, which leaves a PNG of the viewer it just asserted on.
 
@@ -581,6 +584,71 @@ printing is work and when it has stopped — and `paneWatch.ts` feeds it and wri
   keyboard and the window is in front; it is cleared when its xterm takes focus, which a click, a
   tab shown, a count followed and the window coming back all produce. The focused terminal is held
   as the handle, not its pane id: a new pane takes the keyboard before its shell has an id.
+
+## Languages
+
+Rigee speaks English and Simplified Chinese, chosen at the top of Settings → General; unset, it
+speaks the first of the system's preferred languages that it has (`resolveLocale`), the way macOS
+picks an app's language — Traditional Chinese falls through to the next one rather than being
+handed the other script. A choice takes effect on Save, everywhere at once, without a reload.
+
+It is gettext's design, not a table of keys. **The English is in the code and is the key**:
+`t('Close tab')` says "Close tab" until a table says otherwise, so the code reads as it always did,
+English needs no table at all, and a string nobody has translated yet still says something.
+
+| | where | what |
+|---|---|---|
+| the machinery | `@rigee/plugin-api/l10n` | `translator(tables, locale)`, `formatMessage` — pure, shared by the shell and every plugin |
+| the shell's words | `src/shared/l10n.ts` | `t`, `tn` (a count, in English's two forms; `{n}` is the count), the current language, `resolveLocale` |
+| the window | `src/renderer/src/i18n.ts` | fetches a table, speaks it, `useLocale()`, and `tx` for a sentence with an element in it |
+| main | `src/main/l10n.ts` | the same answer from the same setting, and the menu bar installed again when it changes |
+| the tables | `src/shared/locales/<locale>.ts`, `plugins/<id>/locales/<locale>.ts` | each English string to its translation |
+| a manifest | `l10n` in the manifest | its own name, description, titles and labels |
+
+Things to know before adding a string:
+
+- **Write the words at the call.** `t(label)` cannot be checked and is refused by `pnpm l10n:check`;
+  so is a template literal with `${}` in it. Values go in placeholders, `t('Rename “{name}”',
+  { name })`, which also lets a language put the name where its word order wants it.
+- **Never translate at module load.** A table of labels built with `t()` at the top of a file is
+  frozen in the language that was spoken when the file loaded, which at boot is English. Make it a
+  function (`sorts()` in Sidebar.tsx, `groupLabel` in keymap.ts).
+- **The whole window is drawn again on a change, and only that.** `App` subscribes with
+  `useLocale()` and nothing in the shell is memoized, so every component asks `t()` again on the
+  way down; a `useMemo` that makes words has to list the language among its dependencies. What is
+  not drawn by React is said again by whoever owns it: the registry rebuilds its contribution
+  tables, main installs the menu bar again, Scratch is renamed. Words stored with a tab — a title —
+  stay in the language they were said in until said again; the one exception is a terminal's tab,
+  every one of which is called "terminal", and which the strip says in the language of the moment.
+- **Never decide anything by reading a message.** Checking for updates used to stop at a rate limit
+  by testing the error for the word "limit"; in Chinese it never stopped. GitHub's limit is a class
+  now, `RateLimited`. Anything that has to recognise a failure needs a code or a type.
+- **Smoke modes run in English**, whatever the developer's Mac is in: main reports the system's
+  languages as `['en']` under `RIGEE_SMOKE` unless `RIGEE_SMOKE_LANGUAGES` names others, which is
+  how `smoke:l10n` boots in Chinese. The modes find buttons and read dialogs by their English words.
+- **The renderer's entry carries no translations.** A table is a chunk of its own, fetched at boot
+  before the first frame when its language is the one chosen, so English costs nothing and the
+  window is never drawn in English and then again. Only the bundled manifests' few translations are
+  in the entry, because the activity bar is drawn from them before any plugin loads.
+- **Monaco speaks the language it was loaded in.** Its words — the find widget, its context menu —
+  come from the language packs it ships, and the pack has to be in place before Monaco's first
+  module runs (`plugins/shared/monaco.ts`), so after a change they follow at the next launch; the
+  General page says so. What AppKit adds to the menu bar by itself — Start Dictation, the tiling
+  items — is in the system's language, as in every other app.
+
+**A plugin** gets the language from `@rigee/plugin-api`: `localize(tables)` gives a renderer half
+`t`, `tn` and a `useT()` hook that re-renders when the language changes; a main half asks
+`ctx.shell.locale()` each time it speaks — the user can switch while it runs — and makes a
+`translator` of its own. Its manifest translates its own words in `l10n`, which the shell reads
+without loading the plugin. The bundled plugins keep one table each, in `plugins/<id>/locales/`,
+shared by both halves.
+
+**Adding a language** is: its tag in `LOCALES` and its own name in `LOCALE_NAMES`
+(`src/shared/l10n.ts`); a `src/shared/locales/<tag>.ts` and a line for it in each realm's `TABLES`
+(`src/renderer/src/i18n.ts`, `src/main/l10n.ts`); a table per bundled plugin and a block in each
+manifest's `l10n`; its tag in `LOCALES` in `scripts/l10n-check.ts`; how `resolveLocale` recognises
+it among the system's languages; and, if Monaco ships a pack for it, a line in
+`plugins/shared/monaco.ts`. Then `pnpm l10n:check` lists every string still to translate.
 
 ## Things that will bite you
 

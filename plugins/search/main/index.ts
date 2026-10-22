@@ -2,8 +2,9 @@ import type { Context, Plugin } from 'cordis'
 import type { Worker } from 'node:worker_threads'
 import { registerSearchCommands } from '../protocol'
 import { MAX_RESULTS, type SearchQuery, type SearchResult } from '../types'
+import { translatorFor } from './l10n'
 import createSearchWorker from './worker?nodeWorker'
-import type { WorkerReply } from './worker'
+import type { WorkerReply, WorkerRequest } from './worker'
 
 /**
  * Search, main half: runs each search in its own worker thread (see worker.ts for why) and cancels
@@ -27,10 +28,16 @@ interface Running {
 
 const plugin: Plugin = {
   name: 'search',
-  inject: ['commands'],
+  // `shell` for the language alone: what this half says itself — that a search ran out of time, that
+  // a folder could not be read — is said in the one the shell is in.
+  inject: ['commands', 'shell'],
   apply(ctx: Context) {
     const commands = ctx.commands
     const register = commands.register.bind(commands)
+    const shell = ctx.shell
+    // Bound, for the reason plugins/scm/main/index.ts gives, and asked each time, never kept: the
+    // user can switch language between one search and the next.
+    const locale = shell.locale.bind(shell)
     const running = new Map<string, Running>()
 
     ctx.effect(() => () => {
@@ -74,10 +81,10 @@ const plugin: Plugin = {
             worker.postMessage({ type: 'cancel' })
             setTimeout(() => finish(empty(reason)), GRACE_MS).unref?.()
           }
-          const limit = setTimeout(
-            () => cancel(`Stopped after ${TIME_LIMIT_MS / 1000} s — showing what was found by then`),
-            TIME_LIMIT_MS
-          )
+          const limit = setTimeout(() => {
+            const { t } = translatorFor(locale())
+            cancel(t('Stopped after {seconds} s — showing what was found by then', { seconds: TIME_LIMIT_MS / 1000 }))
+          }, TIME_LIMIT_MS)
           limit.unref?.()
 
           worker.on('message', (reply: WorkerReply) => {
@@ -92,7 +99,7 @@ const plugin: Plugin = {
 
           running.set(id, { worker, cancel })
           const request: SearchQuery = { maxResults: MAX_RESULTS, ...query }
-          worker.postMessage({ type: 'find', query: request })
+          worker.postMessage({ type: 'find', query: request, locale: locale() } satisfies WorkerRequest)
         })
       },
       'search:cancel': ({ id }) => {

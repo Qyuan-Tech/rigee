@@ -1,5 +1,6 @@
 import { icons } from '@rigee/plugin-api'
 import { useActiveWorkspace } from '@rigee/plugin-api'
+import { useT } from './l10n'
 import { useRepoStatus } from './store'
 
 /**
@@ -13,6 +14,7 @@ import { useRepoStatus } from './store'
  * has brought the plugin up, and it reads whatever the watcher has pushed since.
  */
 export function BranchStatusItem(): React.ReactElement | null {
+  const { t } = useT()
   const workspace = useActiveWorkspace()
   const repo = workspace?.folders.find((f) => f.repoRoot)?.repoRoot ?? null
   const status = useRepoStatus(repo)
@@ -23,7 +25,7 @@ export function BranchStatusItem(): React.ReactElement | null {
   return (
     <span className="statusbar__item">
       <icons.Branch size={12} />
-      {status.branch ?? `detached @ ${status.detachedAt ?? '?'}`}
+      {status.branch ?? t('detached @ {commit}', { commit: status.detachedAt ?? '?' })}
       {dirty > 0 && <span style={{ color: 'var(--git-modified)' }}>{dirty}</span>}
       {status.operation !== 'none' && (
         <span style={{ color: 'var(--git-conflict)' }}>{status.operation}</span>

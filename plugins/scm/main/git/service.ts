@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { Locale } from '@rigee/plugin-api/l10n'
 import { BlobReader, looksBinary } from './blobs'
 import { git, gitText } from './exec'
 import { readStatus, resolveRepoPaths, type RepoPaths } from './status'
 import { buildSelectionPatch, parseUnifiedDiff, type ParsedDiff } from './patch'
 import { ScmWatchers } from './watcher'
+import { translatorFor } from '../l10n'
 import type { DiffTarget, RepoStatus, SelectionAction } from '../../protocol'
 
 /**
@@ -25,6 +27,13 @@ export class GitService {
   private watchers: ScmWatchers | null = null
   /** Last status emitted per repo, so unchanged refreshes stay silent. */
   private readonly lastStatusKey = new Map<string, string>()
+
+  /**
+   * `locale` is the shell's, asked each time the service has something of its own to say; what git
+   * says is passed on as git said it. English unless told otherwise, for the self-test, which has
+   * no shell to ask.
+   */
+  constructor(private readonly locale: () => Locale = () => 'en') {}
 
   private async repo(repoRoot: string): Promise<Repo> {
     let entry = this.repos.get(repoRoot)
@@ -174,7 +183,10 @@ export class GitService {
     const { paths } = await this.repo(repoRoot)
 
     const parsed = await this.hunks(repoRoot, path, action)
-    if (parsed.binary) throw new Error('cannot stage part of a binary file')
+    if (parsed.binary) {
+      const { t } = translatorFor(this.locale())
+      throw new Error(t('cannot stage part of a binary file'))
+    }
 
     const reverse = action !== 'stage'
     const patch = buildSelectionPatch(parsed, new Set(selectedIds), reverse)
@@ -190,10 +202,11 @@ export class GitService {
     ]
     const res = await git(paths.root, args, { stdin: patch })
     if (res.code !== 0) {
+      const { t } = translatorFor(this.locale())
       const detail = res.stderr.trim()
       throw new Error(
         /patch failed|does not apply/.test(detail)
-          ? `${detail}\nThe file changed on disk. Refresh and try again.`
+          ? `${detail}\n${t('The file changed on disk. Refresh and try again.')}`
           : detail || 'git apply failed'
       )
     }

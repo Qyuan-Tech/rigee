@@ -1,5 +1,6 @@
 import { icons, useFocusedTabId } from '@rigee/plugin-api'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useT } from './l10n'
 import { invoke, on } from './rpc'
 import {
   ensureView,
@@ -40,6 +41,7 @@ export function BrowserPane({
   patchState,
   setTitle
 }: PluginTabProps): React.ReactElement {
+  const { t } = useT()
   const host = useRef<HTMLDivElement>(null)
   const { url, canGoBack, canGoForward, loading } = readState(state)
   const [address, setAddress] = useState(url)
@@ -211,7 +213,7 @@ export function BrowserPane({
         <button
           className="icon-button"
           disabled={!canGoBack}
-          title="Back"
+          title={t('Back')}
           onClick={() => act('browser:goBack')}
         >
           <icons.Back size={14} />
@@ -219,14 +221,14 @@ export function BrowserPane({
         <button
           className="icon-button"
           disabled={!canGoForward}
-          title="Forward"
+          title={t('Forward')}
           onClick={() => act('browser:goForward')}
         >
           <icons.Forward size={14} />
         </button>
         <button
           className="icon-button"
-          title={loading ? 'Stop' : 'Reload'}
+          title={loading ? t('Stop') : t('Reload')}
           onClick={() => act(loading ? 'browser:stop' : 'browser:reload')}
         >
           {loading ? <icons.Stop size={13} /> : <icons.Reload size={14} />}
@@ -243,10 +245,10 @@ export function BrowserPane({
             if (e.key === 'Escape') { setAddress(url); e.currentTarget.blur() }
           }}
           spellCheck={false}
-          placeholder="Search or enter address"
+          placeholder={t('Search or enter address')}
         />
 
-        <button className="icon-button" title="DevTools" onClick={() => act('browser:openDevTools')}>
+        <button className="icon-button" title={t('DevTools')} onClick={() => act('browser:openDevTools')}>
           <icons.DevTools size={14} />
         </button>
       </div>

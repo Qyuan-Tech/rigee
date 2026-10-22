@@ -1469,8 +1469,8 @@ console.log('\nterminals at work')
   eq('every pane with a shell, tab by tab from the left, and none without',
     terminalPanes(row).map((p) => `${p.tabId}/${p.leafId}/${p.paneId}`).join(' '), 't1/a/p1 t1/c/p2 t2/x/p3')
   eq('a count, and what it counts, each program once',
-    describePanes(2, 'at work', ['claude', 'npm', 'claude', '']), '2 terminals at work — claude, npm')
-  eq('one, with nothing to name', describePanes(1, 'finished since you last looked', ['']), '1 terminal finished since you last looked')
+    describePanes(2, 'working', ['claude', 'npm', 'claude', '']), '2 terminals at work — claude, npm')
+  eq('one, with nothing to name', describePanes(1, 'finished', ['']), '1 terminal finished since you last looked')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

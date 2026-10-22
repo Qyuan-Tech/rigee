@@ -6,6 +6,8 @@
  * to apply alike, which names a file may have.
  */
 
+import type { Translator } from '@rigee/plugin-api/l10n'
+
 export interface ExplorerCommands {
   /**
    * Watch exactly these folders — the active workspace's — for entries appearing and disappearing,
@@ -65,17 +67,18 @@ export interface TransferResult {
  * would do real damage. Whether the name is already taken is a separate question — the tree reads
  * its listing, main the disk.
  *
- * `nested` allows slashes, for New File's `src/lib/new.ts`; a rename never does.
+ * `nested` allows slashes, for New File's `src/lib/new.ts`; a rename never does. Each half brings
+ * its own `t` to say the reason with, this file being shared by both and so having none.
  */
-export function nameProblem(name: string, options: { nested: boolean; windows: boolean }): string | null {
-  if (name.trim() === '') return 'A file or folder name must be provided.'
-  if (name.includes('\0')) return 'A name cannot contain a NUL character.'
+export function nameProblem(name: string, options: { nested: boolean; windows: boolean }, t: Translator['t']): string | null {
+  if (name.trim() === '') return t('A file or folder name must be provided.')
+  if (name.includes('\0')) return t('A name cannot contain a NUL character.')
   const parts = name.split(options.windows ? /[\\/]/ : '/')
-  if (parts.length > 1 && !options.nested) return 'A name cannot contain a slash.'
+  if (parts.length > 1 && !options.nested) return t('A name cannot contain a slash.')
   for (const part of parts) {
-    if (part === '') return 'A name cannot start or end with a slash, or have two in a row.'
-    if (part === '.' || part === '..') return `“${part}” is not a valid file or folder name.`
-    if (options.windows && /[<>:"|?*]/.test(part)) return 'A name cannot contain any of < > : " | ? *'
+    if (part === '') return t('A name cannot start or end with a slash, or have two in a row.')
+    if (part === '.' || part === '..') return t('“{name}” is not a valid file or folder name.', { name: part })
+    if (options.windows && /[<>:"|?*]/.test(part)) return t('A name cannot contain any of < > : " | ? *')
   }
   return null
 }

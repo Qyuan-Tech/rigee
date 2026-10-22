@@ -2,6 +2,7 @@ import { Service, type Context } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
 import type { PluginEventEnvelope } from '@rigee/plugin-api/manifest'
 import type { AskOptions, PluginShellService } from '@rigee/plugin-api/context'
+import { currentLocale } from '@shared/l10n'
 import { serveMedia } from '../media'
 
 // `ctx.shell` is declared on Context by @rigee/plugin-api (context.ts), as the interface this class
@@ -97,6 +98,11 @@ export class ShellService extends Service implements PluginShellService {
    */
   ask(options: AskOptions): Promise<number> {
     return this.deps.ask(options)
+  }
+
+  /** The language the shell is in now, for what a main half says itself. */
+  locale(): string {
+    return currentLocale()
   }
 
   /** Stop serving a URL `serveFile` returned. Unknown or already released is not an error. */

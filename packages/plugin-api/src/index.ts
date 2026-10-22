@@ -17,6 +17,7 @@
 
 export * from './data'
 export * from './manifest'
+export * from './l10n'
 export * from './ui'
 export * from './host'
 export * from './context'

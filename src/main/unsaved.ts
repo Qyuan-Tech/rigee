@@ -1,5 +1,6 @@
 import { dialog, type BrowserWindow, type WebContents } from 'electron'
 import { basename } from 'node:path'
+import { t, tn } from '@shared/l10n'
 import { emit, handle } from './ipc'
 
 /**
@@ -48,16 +49,18 @@ async function ask(files: readonly string[], quitting: boolean, win?: BrowserWin
   const one = files.length === 1
   const options = {
     type: 'warning' as const,
-    buttons: [one ? 'Save' : 'Save All', "Don't Save", 'Cancel'],
+    buttons: [one ? t('Save') : t('Save All'), t("Don't Save"), t('Cancel')],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
     message: one
-      ? `Do you want to save the changes you made to ${basename(files[0]!)}?`
-      : `Do you want to save the changes you made to ${files.length} files?`,
+      ? t('Do you want to save the changes you made to {name}?', { name: basename(files[0]!) })
+      : tn(files.length, 'Do you want to save the changes you made to 1 file?', 'Do you want to save the changes you made to {n} files?'),
     detail:
       (one ? '' : `${files.map((f) => basename(f)).join('\n')}\n\n`) +
-      `Your changes will be lost if you don't save them${quitting ? ' before quitting' : ''}.`
+      (quitting
+        ? t("Your changes will be lost if you don't save them before quitting.")
+        : t("Your changes will be lost if you don't save them."))
   }
   const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
   return response === 0 ? 'save' : response === 1 ? 'discard' : 'cancel'

@@ -1,6 +1,7 @@
 import { activateTab, openPluginTab, subscribeTabs } from '@rigee/plugin-api'
 import { AuthDialog } from './AuthDialog'
 import { BrowserPane, HOME_URL } from './BrowserPane'
+import { t } from './l10n'
 import { bindRpc, dispatch } from './rpc'
 import { adoptView, reap, subscribeVisibleViews, tabIdFor } from './views'
 import './browser.css'
@@ -82,9 +83,10 @@ const plugin: Plugin = {
 
     ctx.contributions.tab('browser.page', BrowserPane)
     // What the tab strip's globe button makes. It lived in TabStrip as a literal tab object; the
-    // plugin that owns the tab type is the only thing that knows what an empty one looks like.
+    // plugin that owns the tab type is the only thing that knows what an empty one looks like. Its
+    // title is said as each tab is made, in the language of that moment.
     ctx.contributions.tabFactory('browser.page', () => ({
-      title: 'new tab',
+      title: t('new tab'),
       state: { url: HOME_URL }
     }))
     ctx.contributions.overlay('browser.auth', AuthDialog)

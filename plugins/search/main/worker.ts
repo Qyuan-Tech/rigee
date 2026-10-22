@@ -1,4 +1,5 @@
 import { parentPort } from 'node:worker_threads'
+import type { Locale } from '@rigee/plugin-api/l10n'
 import { runSearch, watchChildren } from './engine'
 import type { SearchQuery, SearchResult } from '../types'
 
@@ -12,7 +13,10 @@ import type { SearchQuery, SearchResult } from '../types'
  * simply terminate the worker, which no AbortSignal could ever interrupt mid-match.
  */
 
-export type WorkerRequest = { type: 'find'; query: SearchQuery } | { type: 'cancel' }
+export type WorkerRequest =
+  /** `locale` is the shell's, for what the engine notes in its own words: a worker has no `ctx` to ask. */
+  | { type: 'find'; query: SearchQuery; locale: Locale }
+  | { type: 'cancel' }
 export type WorkerReply =
   | { type: 'result'; result: SearchResult }
   | { type: 'error'; message: string }
@@ -26,7 +30,7 @@ parentPort?.on('message', (message: WorkerRequest) => {
     controller.abort()
     return
   }
-  runSearch(message.query, controller.signal).then(
+  runSearch(message.query, controller.signal, { locale: message.locale }).then(
     (result) => parentPort?.postMessage({ type: 'result', result } satisfies WorkerReply),
     (err: unknown) => parentPort?.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) } satisfies WorkerReply)
   )

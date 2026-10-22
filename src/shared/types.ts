@@ -311,6 +311,12 @@ export interface AppSettings {
    * newer build wrote — is kept, and read as heat.
    */
   workspaceSort?: WorkspaceSort
+  /**
+   * The language Rigee speaks, from the General page: one of `LOCALES` in l10n.ts. Unset means the
+   * system's, or English when the system's is not one Rigee speaks. A value this build does not
+   * know — a language a newer build added — is kept, and read as unset.
+   */
+  language?: string
 }
 
 /**

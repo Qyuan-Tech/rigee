@@ -65,6 +65,7 @@ import {
   takeStartDir
 } from '../terminals'
 import { rowOf, useApp } from '../store'
+import { t } from '../i18n'
 import { remindsToSave, terminalCwd } from '../workspaces'
 import { SaveReminder } from './LazySaveWorkspace'
 import type { PaneNode, TerminalTab } from '@shared/types'
@@ -485,7 +486,7 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
     }
   }, [searchOpen, searchReady, query, activeKey])
 
-  if (!workspaceId || !workspace) return <div className="empty">No workspace.</div>
+  if (!workspaceId || !workspace) return <div className="empty">{t('No workspace.')}</div>
 
   if (askingToSave) {
     return (
@@ -532,8 +533,8 @@ export function TerminalPane({ tab }: { tab: TerminalTab }): React.ReactElement 
         />
       )}
 
-      {prefixArmed && <div className="term__prefix">prefix</div>}
-      {zoomedLeaf && <div className="term__prefix term__prefix--left">zoomed</div>}
+      {prefixArmed && <div className="term__prefix">{t('prefix')}</div>}
+      {zoomedLeaf && <div className="term__prefix term__prefix--left">{t('zoomed')}</div>}
 
       {menu && (
         <PaneMenu
@@ -620,30 +621,30 @@ function PaneMenu({
       onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
     >
       <button className="menu__item" disabled={!selection} onClick={onCopy}>
-        <span>Copy</span>
+        <span>{t('Copy')}</span>
         <span className="menu__hint">{hints.copy}</span>
       </button>
       <button className="menu__item" onClick={onPaste}>
-        <span>Paste</span>
+        <span>{t('Paste')}</span>
         <span className="menu__hint">{hints.paste}</span>
       </button>
       {/* Reachable no matter what the running program has done with the mouse. */}
       <button className="menu__item" onClick={onSelectAll}>
-        <span>Select All</span>
-        <span className="menu__hint">{isMac() ? '⌥ drag' : 'shift drag'}</span>
+        <span>{t('Select All')}</span>
+        <span className="menu__hint">{isMac() ? t('⌥ drag') : t('shift drag')}</span>
       </button>
       <div className="menu__sep" />
       <button className="menu__item" onClick={onSplitRight}>
-        <span>Split right</span>
+        <span>{t('Split right')}</span>
         <span className="menu__hint">{hints.splitRight}</span>
       </button>
       <button className="menu__item" onClick={onSplitDown}>
-        <span>Split down</span>
+        <span>{t('Split down')}</span>
         <span className="menu__hint">{hints.splitDown}</span>
       </button>
       <div className="menu__sep" />
       <button className="menu__item" onClick={onClose}>
-        <span>Close pane</span>
+        <span>{t('Close pane')}</span>
         <span className="menu__hint">{hints.closePane}</span>
       </button>
     </div>
@@ -687,17 +688,17 @@ function SearchBar({
   const status = !query
     ? ''
     : !results || results.count === 0
-      ? 'No results'
+      ? t('No results')
       : results.index < 0
         ? `${results.count}+`
-        : `${results.index + 1} of ${results.count}`
+        : t('{index} of {count}', { index: results.index + 1, count: results.count })
 
   return (
     <div className="term__search" onMouseDown={(e) => e.stopPropagation()}>
       <input
         ref={inputRef}
         value={query}
-        placeholder="Find"
+        placeholder={t('Find')}
         spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
@@ -727,9 +728,9 @@ function SearchBar({
         }}
       />
       <span className="term__search-count">{status}</span>
-      <button className="icon-button" title="Previous match" onClick={() => onNavigate('previous')}>↑</button>
-      <button className="icon-button" title="Next match" onClick={() => onNavigate('next')}>↓</button>
-      <button className="icon-button" title="Close" onClick={() => onClose()}>×</button>
+      <button className="icon-button" title={t('Previous match')} onClick={() => onNavigate('previous')}>↑</button>
+      <button className="icon-button" title={t('Next match')} onClick={() => onNavigate('next')}>↓</button>
+      <button className="icon-button" title={t('Close')} onClick={() => onClose()}>×</button>
     </div>
   )
 }
@@ -1010,7 +1011,7 @@ function LeafView({
       <div ref={host} className="term__surface" />
       <button
         className="term__close"
-        title="Close pane"
+        title={t('Close pane')}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={() => onClose(leaf.id)}
       >

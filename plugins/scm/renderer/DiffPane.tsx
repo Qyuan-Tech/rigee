@@ -4,6 +4,7 @@ import { Notice } from '@rigee/plugin-api'
 import { loadMonaco, MONACO_THEME } from '@plugins/shared/monaco'
 import { HunkView } from './HunkView'
 import { readDiffTabState, type DiffTabState } from './diffTab'
+import { useT } from './l10n'
 import { scm } from './rpc'
 import type { PluginTabProps } from '@rigee/plugin-api'
 import type * as Monaco from 'monaco-editor'
@@ -17,6 +18,7 @@ import type * as Monaco from 'monaco-editor'
  * arrive here from an old workspace file.
  */
 export function DiffPane({ state }: PluginTabProps): React.ReactElement {
+  const { t } = useT()
   const [mode, setMode] = useState<'hunks' | 'split'>('hunks')
   const [nonce, setNonce] = useState(0)
 
@@ -24,7 +26,7 @@ export function DiffPane({ state }: PluginTabProps): React.ReactElement {
   // fresh one each render would re-run MonacoDiff's effect and rebuild the diff editor every time
   // anything in this tab changed.
   const target = useMemo(() => readDiffTabState(state), [state])
-  if (!target) return <Notice tone="error">This diff tab is missing the file it pointed at.</Notice>
+  if (!target) return <Notice tone="error">{t('This diff tab is missing the file it pointed at.')}</Notice>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -34,13 +36,13 @@ export function DiffPane({ state }: PluginTabProps): React.ReactElement {
           className={mode === 'hunks' ? 'btn btn--primary' : 'btn'}
           onClick={() => setMode('hunks')}
         >
-          Hunks
+          {t('Hunks')}
         </button>
         <button
           className={mode === 'split' ? 'btn btn--primary' : 'btn'}
           onClick={() => setMode('split')}
         >
-          Side by side
+          {t('Side by side')}
         </button>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -55,8 +57,12 @@ export function DiffPane({ state }: PluginTabProps): React.ReactElement {
 }
 
 function MonacoDiff({ target }: { target: DiffTabState }): React.ReactElement {
+  const { t } = useT()
   const host = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
+  // Why main would not diff the file, kept as a reason rather than a sentence: put into words when
+  // it is shown, it is said in the language the window is in then, not the one it was in on load.
+  const [refused, setRefused] = useState<'binary' | 'tooLarge' | null>(null)
 
   useEffect(() => {
     let disposed = false
@@ -75,8 +81,8 @@ function MonacoDiff({ target }: { target: DiffTabState }): React.ReactElement {
           })
         ])
         if (disposed || !host.current) return
-        if (diff.binary) { setError('Binary file — no text diff available.'); return }
-        if (diff.tooLarge) { setError('File is too large to diff.'); return }
+        if (diff.binary) { setRefused('binary'); return }
+        if (diff.tooLarge) { setRefused('tooLarge'); return }
 
         // Anonymous models: these are revision snapshots, not the file on disk, so they must not
         // collide with the editable model registered under the file's URI.
@@ -106,6 +112,8 @@ function MonacoDiff({ target }: { target: DiffTabState }): React.ReactElement {
     }
   }, [target.filePath, target.repoId, target.against])
 
+  if (refused === 'binary') return <Notice tone="error">{t('Binary file — no text diff available.')}</Notice>
+  if (refused === 'tooLarge') return <Notice tone="error">{t('File is too large to diff.')}</Notice>
   if (error) return <Notice tone="error">{error}</Notice>
   return <div ref={host} style={{ height: '100%', width: '100%' }} />
 }

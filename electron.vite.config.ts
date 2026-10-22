@@ -227,6 +227,10 @@ const PLUGIN_API_ALIASES = [
     find: '@rigee/plugin-api/context',
     replacement: resolve(__dirname, 'packages/plugin-api/src/context.ts')
   },
+  {
+    find: '@rigee/plugin-api/l10n',
+    replacement: resolve(__dirname, 'packages/plugin-api/src/l10n.ts')
+  },
   { find: '@rigee/plugin-api', replacement: resolve(__dirname, 'packages/plugin-api/src/index.ts') }
 ]
 

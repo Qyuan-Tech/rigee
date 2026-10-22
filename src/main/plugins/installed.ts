@@ -30,6 +30,7 @@ import { sourceOf, type PluginSource } from './sources'
 import { grantTrust, revokeTrust, trustStateOf, type TrustState } from './trust'
 import type { MainPluginLoader } from './host'
 import type { PluginId, PluginManifest, PluginPermission } from '@rigee/plugin-api/manifest'
+import { t } from '@shared/l10n'
 
 export const PLUGIN_SCHEME = 'rigee-plugin'
 
@@ -182,9 +183,9 @@ export function diskLoaders(): Record<PluginId, MainPluginLoader> {
  */
 export function approvePlugin(id: PluginId, expectedHash?: string): { ok: boolean; reason?: string } {
   const plugin = byId.get(id)
-  if (!plugin) return { ok: false, reason: `no plugin "${id}" is installed` }
+  if (!plugin) return { ok: false, reason: t('no plugin "{id}" is installed', { id }) }
   if (expectedHash !== undefined && plugin.hash !== expectedHash) {
-    return { ok: false, reason: `"${id}" changed on disk after it was checked; it was not approved` }
+    return { ok: false, reason: t('"{id}" changed on disk after it was checked; it was not approved', { id }) }
   }
   grantTrust(id, plugin.hash, plugin.manifest.permissions ?? [], plugin.manifest.version)
   return { ok: true }

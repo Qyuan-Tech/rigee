@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, net, protocol, shell, type WebContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, net, protocol, shell, type WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -27,6 +27,8 @@ import { deflateSync, gzipSync } from 'node:zlib'
 import { popupContextMenu } from './contextMenu'
 import { mediaScheme, registerMediaProtocol, servedCount } from './media'
 import { ensureShellPath } from './env'
+import { applyLocale, systemLanguages } from './l10n'
+import { t } from '@shared/l10n'
 import { installMenu } from './menu'
 import { forwardShortcuts } from './shortcuts'
 import { confirmUnsaved, hasUnsavedChanges, registerUnsavedHandlers, resetUnsaved } from './unsaved'
@@ -394,6 +396,7 @@ function createWindow(): void {
     else if (process.env.RIGEE_SMOKE === 'markdown') void runMarkdownSmoke()
     else if (process.env.RIGEE_SMOKE === 'heat') void runHeatSmoke()
     else if (process.env.RIGEE_SMOKE === 'running') void runRunningSmoke()
+    else if (process.env.RIGEE_SMOKE === 'l10n') void runL10nSmoke()
     else if (process.env.RIGEE_SMOKE) void runSmokeTest()
   })
 
@@ -3147,7 +3150,8 @@ async function runWorkspaceFilesSmoke(): Promise<void> {
       if (!refused) return { ok: false, stage: 'relative-folder-not-refused' }
       type(box, ${JSON.stringify(filed)})
       await sleep(150)
-      return { ok: true, note: document.querySelector('.settings__note')?.textContent || '' }
+      // The folder's own note, under its field: the language above it has a note of its own.
+      return { ok: true, note: box.closest('.settings__field')?.nextElementSibling?.textContent || '' }
     })()`)
     if (!page.ok) return finish(false, page.stage ?? 'settings')
     trail.push(`General page says: ${page.note}`)
@@ -5375,6 +5379,226 @@ async function runRunningSmoke(): Promise<void> {
   } catch (err) {
     console.error('[smoke:running] threw:', err)
     finish(false, 'threw')
+  }
+}
+
+/**
+ * The languages, end to end, on a system whose first language is Simplified Chinese — the script
+ * says so through `RIGEE_SMOKE_LANGUAGES` — and with nothing chosen in Settings:
+ *
+ *   1. It comes up in Chinese, with no English on its first frame: the side bar and Scratch's name,
+ *      the tab strip and a terminal's tab, the activity bar and a plugin's own panel, the document's
+ *      `lang`, and in main the menu bar. The text editor loads Monaco with Monaco's Chinese, and the
+ *      keyboard shortcuts are listed by Chinese names, under Chinese headings.
+ *   2. English, chosen on the General page through the dialog itself — its menu, its Save — puts
+ *      all of that into English at once, with no reload: the terminal that was open is the same
+ *      xterm on the same pty, and main has redrawn the menu bar. The choice is what reached disk.
+ *   3. The system's language, chosen the same way, brings Chinese back, and the disk forgets the
+ *      choice.
+ *
+ * `RIGEE_SHOT_DIR` leaves PNGs of the window and of both pages of the Settings dialog, in Chinese.
+ */
+async function runL10nSmoke(): Promise<void> {
+  const wc = shellWc()
+  if (!wc) { app.exit(1); return }
+  const dir = app.getPath('userData')
+  const trail: string[] = []
+  const js = async <T>(code: string): Promise<T> => (await wc.executeJavaScript(code, true)) as T
+  const finish = (ok: boolean, stage: string, extra?: unknown): void => {
+    console.log('[smoke:l10n]', JSON.stringify({ ok, stage, trail, ...(extra === undefined ? {} : { extra }) }))
+    app.exit(ok ? 0 : 1)
+  }
+  const shoot = async (name: string): Promise<void> => {
+    const to = process.env.RIGEE_SHOT_DIR
+    if (!to) return
+    writeFileSync(join(to, `${name}.png`), (await wc.capturePage()).toPNG())
+    trail.push(`photographed ${name}`)
+  }
+  /** The menu bar's titles, and the Edit menu's first few items: what main says. */
+  const menuBar = (): { top: string[]; edit: string[] } => {
+    const items = Menu.getApplicationMenu()?.items ?? []
+    const edit = items.find((i) => i.role?.toLowerCase() === 'editmenu')
+    return {
+      top: items.filter((i) => i.role?.toLowerCase() !== 'appmenu').map((i) => i.label),
+      edit: edit?.submenu?.items.slice(0, 2).map((i) => i.label) ?? []
+    }
+  }
+  const project = join(dir, 'l10n', 'demo')
+  mkdirSync(project, { recursive: true })
+  writeFileSync(join(project, 'hello.ts'), "export const greeting = '你好'\n")
+  const helpers = `
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    const { store, getTerminal, paneKey } = window.__rigee
+    const s = () => store.getState()
+    const until = async (test, ms = 10000) => {
+      for (let waited = 0; waited < ms; waited += 100) { const v = test(); if (v) return v; await sleep(100) }
+      return null
+    }
+    const text = (selector) => document.querySelector(selector)?.textContent ?? null
+    /** What a reader sees of the window, in the places this mode reads it. */
+    const seen = () => ({
+      lang: document.documentElement.lang,
+      header: text('.workspace-list .section-header__title'),
+      scratch: [...document.querySelectorAll('.workspace-list .row__label')].map(e => e.textContent)[0] ?? null,
+      tab: [...document.querySelectorAll('.tab__label')].map(e => e.textContent).find(l => l !== 'hello.ts') ?? null,
+      newTerminal: document.querySelector('.tabstrip__actions .icon-button')?.title ?? null,
+      rail: [...document.querySelectorAll('.activitybar__item')].map(e => e.getAttribute('aria-label')),
+      panel: [...document.querySelectorAll('.pane .section-header__title')].map(e => e.textContent)[1] ?? null
+    })
+    /** The language menu on the General page, set as a person would set it, and Saved. */
+    const choose = async (value) => {
+      s().setSettingsOpen(true)
+      const select = await until(() => document.querySelector('.modal--settings .settings__select'), 10000)
+      if (!select) return { ok: false, stage: 'no-language-menu' }
+      const options = [...select.options].map(o => o.textContent)
+      const before = select.value
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, value)
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await sleep(50)
+      const title = text('.modal--settings .modal__title')
+      ;[...document.querySelectorAll('.modal--settings .modal__actions .btn--primary')].pop()?.click()
+      const closed = await until(() => !document.querySelector('.modal--settings'), 5000)
+      return { ok: !!closed, stage: closed ? '' : 'settings-did-not-close', options, before, title }
+    }`
+
+  try {
+    // --- 1. Chinese from the first frame ----------------------------------------------------------
+    const boot = await js<{ ok: boolean; stage?: string; seen?: Record<string, unknown>; key?: string }>(`(async () => {
+      ${helpers}
+      if (!(await until(() => s().ready, 15000))) return { ok: false, stage: 'never-ready' }
+      // Scratch opens a terminal on arrival; its pty is the one that must outlive the switches below.
+      const tab = await until(() => s().rowsByWorkspace['__scratch__']?.groups[0]?.tabs.find(t => t.kind === 'terminal'), 10000)
+      if (!tab) return { ok: false, stage: 'no-terminal-in-scratch' }
+      const key = paneKey(tab.id, tab.activeLeafId)
+      if (!(await until(() => getTerminal(key)?.paneId, 15000))) return { ok: false, stage: 'terminal-never-started' }
+      window.__l10nTerm = getTerminal(key).term
+      window.__l10nPane = getTerminal(key).paneId
+      await until(() => seen().panel, 10000)
+      return { ok: true, seen: seen(), key }
+    })()`)
+    if (!boot.ok) return finish(false, boot.stage ?? 'boot', boot)
+    trail.push(`booted: ${JSON.stringify(boot.seen)}`)
+    const chinese = {
+      lang: 'zh-CN', header: '工作区', scratch: '草稿区', tab: '终端', newTerminal: '新建终端',
+      rail: ['资源管理器', '搜索', '插件'], panel: '资源管理器'
+    }
+    if (JSON.stringify(boot.seen) !== JSON.stringify(chinese)) return finish(false, 'not-chinese-at-boot', { want: chinese, got: boot.seen })
+    const zhMenu = menuBar()
+    trail.push(`menu bar: ${JSON.stringify(zhMenu)}`)
+    if (!zhMenu.top.includes('编辑') || !zhMenu.top.includes('窗口') || zhMenu.edit.join() !== '撤销,重做') {
+      return finish(false, 'menu-bar-not-chinese', zhMenu)
+    }
+
+    // A file in the text editor: Monaco is loaded for the first time now, and with its Chinese.
+    const editor = await js<{ ok: boolean; stage?: string; nls?: string }>(`(async () => {
+      ${helpers}
+      s().setWorkspaces([...s().workspaces, { id: 'ws-demo', name: 'demo', createdAt: Date.now(), lastOpenedAt: Date.now(),
+        folders: [{ path: ${JSON.stringify(project)}, name: 'demo', isGitRepo: false, repoRoot: null }] }])
+      s().setActiveWorkspace('ws-demo')
+      s().openTab('ws-demo', { id: 'l10n-hello', kind: 'editor', title: 'hello.ts', pinned: false,
+        filePath: ${JSON.stringify(join(project, 'hello.ts'))}, repoId: null, readOnly: false, viewType: 'text-editor.monaco' })
+      if (!(await until(() => document.querySelector('.monaco-editor .view-lines'), 20000))) return { ok: false, stage: 'editor-never-drew' }
+      await sleep(800)
+      return { ok: true, nls: globalThis._VSCODE_NLS_LANGUAGE }
+    })()`)
+    trail.push(`Monaco's language: ${editor.nls}`)
+    if (!editor.ok) return finish(false, editor.stage ?? 'editor', editor)
+    if (editor.nls !== 'zh-cn') return finish(false, 'monaco-not-loaded-in-chinese', editor)
+    await shoot('l10n-window')
+
+    // The keyboard shortcuts: the actions' names and their groups are the keymap's, said in Chinese.
+    const shortcuts = await js<{ ok: boolean; stage?: string; groups?: string[]; labels?: string[] }>(`(async () => {
+      ${helpers}
+      s().setSettingsOpen(true)
+      const tab = await until(() => [...document.querySelectorAll('.settings__tab')].find(b => b.textContent === '键盘快捷方式'), 10000)
+      if (!tab) return { ok: false, stage: 'no-shortcuts-tab' }
+      tab.click()
+      if (!(await until(() => document.querySelector('.shortcuts__row'), 5000))) return { ok: false, stage: 'no-shortcuts-table' }
+      await sleep(200)
+      const groups = [...document.querySelectorAll('.shortcuts__scroll > div > .shortcuts__group')].map(e => e.textContent)
+      const labels = [...document.querySelectorAll('.shortcuts__label')].map(e => e.firstChild?.textContent ?? '')
+      return { ok: true, groups, labels }
+    })()`)
+    if (!shortcuts.ok) return finish(false, shortcuts.stage ?? 'shortcuts', shortcuts)
+    trail.push(`shortcuts grouped ${JSON.stringify(shortcuts.groups)}`)
+    if (shortcuts.groups?.[0] !== '剪贴板' || !shortcuts.labels?.includes('新建终端标签页') || !shortcuts.labels?.includes('向右拆分')) {
+      return finish(false, 'shortcuts-not-in-chinese', shortcuts)
+    }
+    await shoot('l10n-shortcuts')
+    // Back to the General page for what follows, which the dialog remembers, and closed.
+    await js(`(async () => {
+      ${helpers}
+      ;[...document.querySelectorAll('.settings__tab')].find(b => b.textContent === '常规')?.click()
+      await sleep(100)
+      s().setSettingsOpen(false)
+      await until(() => !document.querySelector('.modal--settings'), 5000)
+    })()`)
+
+    // --- 2. English, from the General page ------------------------------------------------------
+    const toEnglish = await js<{ ok: boolean; stage?: string; options?: string[]; before?: string; title?: string }>(`(async () => {
+      ${helpers}
+      s().setSettingsOpen(true)
+      await until(() => document.querySelector('.modal--settings .settings__select'), 10000)
+      await sleep(300)
+      return { ok: true }
+    })()`)
+    if (!toEnglish.ok) return finish(false, 'no-settings')
+    await shoot('l10n-settings')
+    const chose = await js<{ ok: boolean; stage: string; options?: string[]; before?: string; title?: string }>(`(async () => {
+      ${helpers}
+      return await choose('en')
+    })()`)
+    trail.push(`the dialog said ${JSON.stringify(chose.title)}, offered ${JSON.stringify(chose.options)}, was at ${JSON.stringify(chose.before)}`)
+    if (!chose.ok) return finish(false, chose.stage, chose)
+    if (chose.title !== '设置' || JSON.stringify(chose.options) !== JSON.stringify(['跟随系统（简体中文）', 'English', '简体中文']) || chose.before !== '') {
+      return finish(false, 'language-menu-not-as-expected', chose)
+    }
+    const english = await js<{ ok: boolean; seen: Record<string, unknown>; sameTerminal: boolean; samePane: boolean }>(`(async () => {
+      ${helpers}
+      s().setActiveWorkspace('__scratch__')
+      const ok = !!(await until(() => document.documentElement.lang === 'en' && seen().tab === 'terminal', 5000))
+      await sleep(300)
+      const key = ${JSON.stringify(boot.key)}
+      return { ok, seen: seen(), sameTerminal: getTerminal(key)?.term === window.__l10nTerm, samePane: getTerminal(key)?.paneId === window.__l10nPane }
+    })()`)
+    trail.push(`after choosing English: ${JSON.stringify(english.seen)}, same terminal ${english.sameTerminal}, same pty ${english.samePane}`)
+    const englishWant = {
+      lang: 'en', header: 'Workspaces', scratch: 'Scratch', tab: 'terminal', newTerminal: 'New terminal',
+      rail: ['Explorer', 'Search', 'Plugins'], panel: 'Explorer'
+    }
+    if (!english.ok || JSON.stringify(english.seen) !== JSON.stringify(englishWant)) {
+      return finish(false, 'not-english-after-choosing-it', { want: englishWant, got: english.seen })
+    }
+    if (!english.sameTerminal || !english.samePane) return finish(false, 'the-terminal-did-not-survive-the-switch', english)
+    const enMenu = menuBar()
+    trail.push(`menu bar: ${JSON.stringify(enMenu)}`)
+    if (!enMenu.top.includes('Edit') || !enMenu.top.includes('Window') || enMenu.edit.join() !== 'Undo,Redo') {
+      return finish(false, 'menu-bar-not-redrawn-in-english', enMenu)
+    }
+    const stored = (): unknown =>
+      (JSON.parse(readFileSync(join(dir, 'workspaces.json'), 'utf8')) as { settings?: { language?: unknown } }).settings?.language
+    if (stored() !== 'en') return finish(false, 'english-not-on-disk', { stored: stored() })
+
+    // --- 3. The system's language again -----------------------------------------------------------
+    const back = await js<{ ok: boolean; stage: string; seen?: Record<string, unknown>; options?: string[] }>(`(async () => {
+      ${helpers}
+      const chose = await choose('')
+      if (!chose.ok) return chose
+      const ok = !!(await until(() => document.documentElement.lang === 'zh-CN' && seen().scratch === '草稿区', 5000))
+      return { ok, stage: ok ? '' : 'not-chinese-again', seen: seen(), options: chose.options }
+    })()`)
+    trail.push(`after choosing the system's: ${JSON.stringify(back.seen)}, the menu offering ${JSON.stringify(back.options)}`)
+    if (!back.ok) return finish(false, back.stage, back)
+    // Offered in English — the dialog opened in it — with each language named in its own words.
+    if (JSON.stringify(back.options) !== JSON.stringify(['System (简体中文)', 'English', '简体中文'])) {
+      return finish(false, 'the-system-option-does-not-name-the-system-language', back)
+    }
+    if (stored() !== undefined) return finish(false, 'the-system-choice-left-a-language-on-disk', { stored: stored() })
+    if (menuBar().edit.join() !== '撤销,重做') return finish(false, 'menu-bar-not-chinese-again', menuBar())
+    finish(true, 'done')
+  } catch (err) {
+    console.error('[smoke:l10n] threw:', err)
+    app.exit(1)
   }
 }
 
@@ -7644,6 +7868,7 @@ app.whenReady().then(() => {
   void ensureShellPath().then(() => mark('shell PATH resolved'))
   registerHandlers()
   registerUnsavedHandlers()
+  applyLocale()
   installMenu()
   forwardShortcuts(shellWc, (action) => emit(shellWc(), 'shortcuts:run', { action }))
   createWindow()
@@ -7716,7 +7941,8 @@ function registerHandlers(): void {
         process.platform === 'win32'
           ? (process.env.COMSPEC ?? 'powershell.exe')
           : (process.env.SHELL ?? '/bin/bash'),
-      homeDir: homedir()
+      homeDir: homedir(),
+      languages: systemLanguages()
     }
   })
 
@@ -7739,7 +7965,11 @@ function registerHandlers(): void {
     saveAllUi(ui)
   })
   handle('state:saveKeybindings', ({ keybindings }) => { saveKeybindings(keybindings) })
-  handle('state:saveSettings', ({ settings }) => { saveSettings(settings) })
+  handle('state:saveSettings', ({ settings }) => {
+    saveSettings(settings)
+    // The renderer has already switched; the menu is main's to redraw.
+    if (applyLocale()) installMenu()
+  })
   handle('plugins:list', () =>
     installedPlugins().map((p) => ({ ...p, rendererUrl: rendererEntryUrl(p.manifest.id) }))
   )
@@ -7780,7 +8010,7 @@ function registerHandlers(): void {
     if (!window) return null
     const res = await dialog.showOpenDialog(window, {
       properties: ['openDirectory', 'createDirectory'],
-      message: args?.message ?? 'Add a folder to this workspace',
+      message: args?.message ?? t('Add a folder to this workspace'),
       ...(args?.defaultPath ? { defaultPath: resolveWorkspaceFilesDir(args.defaultPath, homedir()) ?? undefined } : {})
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]!
@@ -7801,8 +8031,8 @@ function registerHandlers(): void {
     const filed = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
     const res = await dialog.showOpenDialog(window, {
       properties: ['openFile'],
-      filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
-      message: 'Open a workspace file',
+      filters: [{ name: t('Workspace'), extensions: ['code-workspace'] }],
+      message: t('Open a workspace file'),
       ...(filed ? { defaultPath: filed } : {})
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]!
@@ -7836,7 +8066,7 @@ function registerHandlers(): void {
       const problem = workspaceNameProblem(name)
       if (problem) throw new Error(problem)
       const dir = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
-      if (!dir) throw new Error('Choose a folder for workspace files in Settings first.')
+      if (!dir) throw new Error(t('Choose a folder for workspace files in Settings first.'))
       target = namedWorkspaceFile(dir, name, sep)
       // Another workspace's file of the same name is asked about, as a save dialog would ask. This
       // workspace's own file is simply the save the user asked for.
@@ -7846,8 +8076,8 @@ function registerHandlers(): void {
     } else {
       const res = await dialog.showSaveDialog(window, {
         defaultPath: current ?? `${name}${WORKSPACE_FILE_EXTENSION}`,
-        filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
-        message: 'Save workspace as'
+        filters: [{ name: t('Workspace'), extensions: ['code-workspace'] }],
+        message: t('Save workspace as')
       })
       if (res.canceled || !res.filePath) return null
       target = res.filePath
@@ -7869,7 +8099,7 @@ function registerHandlers(): void {
     // could climb out of its folder must never reach the filesystem.
     const problem = workspaceNameProblem(name)
     if (problem) throw new Error(problem)
-    if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
+    if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(t('{name} is not a workspace file', { name: basename(file) }))
     const from = resolve(file)
     const filesDir = resolveWorkspaceFilesDir(appSettings().workspaceFilesDir, homedir())
     const plan = renamedWorkspaceFile(from, name, filesDir, keep.map((path) => resolve(path)))
@@ -7880,21 +8110,25 @@ function registerHandlers(): void {
     try {
       lstatSync(from)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(from)} is no longer in ${dirname(from)}`)
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(t('{name} is no longer in {folder}', { name: basename(from), folder: dirname(from) }))
+      }
       throw err
     }
     // What moved, for tabs to follow: the file to where it ends up, then the rest of its folder.
     const moves = [{ from, to: plan.file }, ...(plan.folder ? [plan.folder] : [])]
     const held = unsaved.map((path) => resolve(path)).find((path) => moves.some((m) => path === m.from || path.startsWith(m.from + sep)))
-    if (held) throw new Error(`${basename(held)} has unsaved changes. Save or undo them first.`)
-    refuseTaken(from, inPlace, `A workspace file called “${basename(inPlace)}” is already in ${dirname(from)}.`)
-    if (plan.folder) refuseTaken(plan.folder.from, plan.folder.to, `A folder called “${name}” is already in ${dirname(plan.folder.to)}.`)
+    if (held) throw new Error(t('{name} has unsaved changes. Save or undo them first.', { name: basename(held) }))
+    refuseTaken(from, inPlace, t('A workspace file called “{name}” is already in {folder}.', { name: basename(inPlace), folder: dirname(from) }))
+    if (plan.folder) {
+      refuseTaken(plan.folder.from, plan.folder.to, t('A folder called “{name}” is already in {folder}.', { name, folder: dirname(plan.folder.to) }))
+    }
     if (!apply) return { file: plan.file, moves }
 
     try {
       renameSync(from, inPlace)
     } catch (err) {
-      throw new Error(`${basename(from)} could not be renamed: ${renameReason(err)}`)
+      throw new Error(t('{name} could not be renamed: {reason}', { name: basename(from), reason: renameReason(err) }))
     }
     if (plan.folder) {
       try {
@@ -7902,7 +8136,7 @@ function registerHandlers(): void {
       } catch (err) {
         // Put back, rather than leave a file renamed in a folder that was not: they go together.
         try { renameSync(inPlace, from) } catch { /* then it stays renamed; the reason below still stands */ }
-        throw new Error(`${basename(plan.folder.from)} could not be renamed: ${renameReason(err)}`)
+        throw new Error(t('{name} could not be renamed: {reason}', { name: basename(plan.folder.from), reason: renameReason(err) }))
       }
     }
     return { file: plan.file, moves }
@@ -7957,13 +8191,15 @@ function registerHandlers(): void {
  * that is a workspace file by name, and by content — `edit` throws for one that is not.
  */
 function editWorkspaceFile(file: string, edit: (text: string) => string): void {
-  if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(`${basename(file)} is not a workspace file`)
+  if (!file.toLowerCase().endsWith(WORKSPACE_FILE_EXTENSION)) throw new Error(t('{name} is not a workspace file', { name: basename(file) }))
   let text: string
   try {
     text = readFileSync(file, 'utf8')
   } catch (err) {
     // The likely way for this to fail: the file was moved or deleted since the workspace was saved.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${basename(file)} is no longer in ${dirname(file)}`)
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(t('{name} is no longer in {folder}', { name: basename(file), folder: dirname(file) }))
+    }
     throw err
   }
   const next = edit(text)
@@ -7989,13 +8225,13 @@ function renameReason(err: unknown): string {
   switch ((err as NodeJS.ErrnoException | null)?.code) {
     case 'EACCES':
     case 'EPERM':
-      return 'permission denied.'
+      return t('permission denied.')
     case 'EBUSY':
-      return 'it is in use by another program.'
+      return t('it is in use by another program.')
     case 'EROFS':
-      return 'the disk is read-only.'
+      return t('the disk is read-only.')
     case 'ENAMETOOLONG':
-      return 'the name is too long.'
+      return t('the name is too long.')
     default:
       return err instanceof Error ? err.message : String(err)
   }
@@ -8008,12 +8244,14 @@ async function confirmReplace(win: BrowserWindow, file: string): Promise<boolean
   if (scripted === 'replace' || scripted === 'cancel') return scripted === 'replace'
   const { response } = await dialog.showMessageBox(win, {
     type: 'warning',
-    buttons: ['Replace', 'Cancel'],
+    buttons: [t('Replace'), t('Cancel')],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-    message: `“${basename(file)}” already exists. Do you want to replace it?`,
-    detail: `A workspace file with the same name is already in ${dirname(file)}. Replacing it overwrites the folders it lists.`
+    message: t('“{name}” already exists. Do you want to replace it?', { name: basename(file) }),
+    detail: t('A workspace file with the same name is already in {folder}. Replacing it overwrites the folders it lists.', {
+      folder: dirname(file)
+    })
   })
   return response === 0
 }
@@ -8038,16 +8276,24 @@ function registerTerminalHandlers(): void {
     const scripted = process.env.RIGEE_SMOKE ? process.env.RIGEE_SMOKE_RUNNING_ANSWER : undefined
     if (scripted === 'close' || scripted === 'cancel') return scripted === 'close'
     const one = processes.length === 1
+    const programs = [...new Set(processes)].join(', ')
     const options = {
       type: 'warning' as const,
-      buttons: ['Close', 'Cancel'],
+      buttons: [t('Close'), t('Cancel')],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
-      message: one ? `“${processes[0]}” is still running` : `${processes.length} programs are still running`,
+      message: one
+        ? t('“{program}” is still running', { program: processes[0]! })
+        : t('{n} programs are still running', { n: processes.length }),
       detail:
-        `Closing ${tabs === 1 ? 'the tab' : `these ${tabs} tabs`} will stop ` +
-        (one ? 'it.' : `them: ${[...new Set(processes)].join(', ')}.`)
+        tabs === 1
+          ? one
+            ? t('Closing the tab will stop it.')
+            : t('Closing the tab will stop them: {programs}.', { programs })
+          : one
+            ? t('Closing these {n} tabs will stop it.', { n: tabs })
+            : t('Closing these {n} tabs will stop them: {programs}.', { n: tabs, programs })
     }
     const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options)
     return response === 0

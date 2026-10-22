@@ -14,10 +14,17 @@
  * one shared chunk, so nothing is duplicated by there being two callers.
  */
 
+import { locale } from '@rigee/plugin-api'
+
 let monacoP: Promise<typeof import('monaco-editor')> | null = null
 
 export function loadMonaco(): Promise<typeof import('monaco-editor')> {
   monacoP ??= (async () => {
+    // Monaco's own words — its find widget, its context menu — come from the language packs it
+    // ships, and the pack has to be in place before Monaco's first module runs: its actions are
+    // named as they are defined. So it speaks the language the shell spoke when it loaded, until
+    // Rigee starts again, which the language setting says. A chunk of its own, fetched only then.
+    if (locale() === 'zh-CN') await import('monaco-editor/nls/lang/zh-cn.js')
     const monaco = await import('monaco-editor')
     await configureMonacoWorkers()
     defineTheme(monaco)

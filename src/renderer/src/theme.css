@@ -1556,6 +1556,27 @@ textarea:focus {
   font-size: 12px;
 }
 
+/* The language: the platform's own menu, in a box drawn like the text boxes beside it. */
+.settings__select {
+  min-width: 240px;
+  height: 28px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.settings__select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
 .settings__note {
   margin-top: 8px;
   font-size: 11.5px;

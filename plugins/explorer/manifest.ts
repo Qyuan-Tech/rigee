@@ -16,5 +16,12 @@ export const manifest: PluginManifest = {
   permissions: ['files:read', 'files:write'],
   contributes: {
     views: [{ id: 'explorer.files', title: 'Explorer', slot: 'left', icon: 'files', order: 0 }]
+  },
+  l10n: {
+    'zh-CN': {
+      Explorer: '资源管理器',
+      'The file tree, kept current as files come and go: create, rename, move, copy and delete files.':
+        '文件树，随文件的增删保持最新：新建、重命名、移动、复制和删除文件。'
+    }
   }
 }

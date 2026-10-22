@@ -1,6 +1,8 @@
 import { WebContentsView, type BaseWindow, type WebContents } from 'electron'
+import { translatorFor } from './l10n'
 import type { EmitBrowserEvent } from '../protocol'
 import type { ViewBounds } from '@rigee/plugin-api/data'
+import type { Locale } from '@rigee/plugin-api/l10n'
 
 /**
  * Manager for the in-app Chromium browser tabs.
@@ -50,7 +52,12 @@ export class BrowserTabs {
   constructor(
     private readonly window: BaseWindow,
     /** Where 'state', 'tabRequested' and 'error' go: the plugin's renderer half. */
-    private readonly emit: EmitBrowserEvent
+    private readonly emit: EmitBrowserEvent,
+    /**
+     * The language the shell is in: the plugin's bound `ctx.shell.locale`. Asked each time a
+     * failure is put into words, not once here — the user can switch while the tab is open.
+     */
+    private readonly locale: () => Locale
   ) {}
 
   create(url: string, bounds: ViewBounds): string {
@@ -111,9 +118,12 @@ export class BrowserTabs {
       // This was `app:error` on the shell's channel, where nothing has ever listened to it. As a
       // plugin event it reaches the pane that owns the view, which is the only surface that can
       // say which tab failed — and the plugin no longer has to reach into the shell's IPC.
+      // Chromium's description and the URL go in as they come; only the sentence around them is
+      // ours, and said in the language the shell is in now.
+      const { t } = translatorFor(this.locale())
       this.emit('error', {
         viewId: entry.id,
-        message: `${desc} (${code}) while loading ${failedUrl}`
+        message: t('{desc} ({code}) while loading {url}', { desc, code, url: failedUrl })
       })
       push()
     })

@@ -31,6 +31,7 @@ import {
 } from '../heat'
 import { describePanes, terminalPanes } from '../paneWork'
 import { revealPane } from '../terminals'
+import { t, tn } from '../i18n'
 import { RenameForm, SaveAsForm } from './LazySaveWorkspace'
 import { Splitter } from './Splitter'
 import {
@@ -236,7 +237,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     const ws = useApp.getState().workspaces.find((w) => w.id === workspaceId)
     // Named in the picker: from the right-click menu the workspace need not be the one on screen.
     const named = ws && ws.id !== SCRATCH_WORKSPACE_ID
-    const path = await rpc['workspace:pickFolder'](named ? { message: `Add a folder to “${ws.name}”` } : undefined)
+    const path = await rpc['workspace:pickFolder'](named ? { message: t('Add a folder to “{name}”', { name: ws.name }) } : undefined)
     if (path) await addFolders(workspaceId, [path])
   }, [])
 
@@ -279,11 +280,11 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
     async (w: Workspace) => {
       const scratch = w.id === SCRATCH_WORKSPACE_ID
       const choice = await popupMenu([
-        { kind: 'item', id: 'add-folder', label: 'Add Folder to Workspace…', enabled: !scratch },
-        { kind: 'item', id: 'save-as', label: 'Save Workspace As…', enabled: w.folders.length > 0 },
-        { kind: 'item', id: 'rename', label: 'Rename Workspace…', enabled: !scratch },
+        { kind: 'item', id: 'add-folder', label: t('Add Folder to Workspace…'), enabled: !scratch },
+        { kind: 'item', id: 'save-as', label: t('Save Workspace As…'), enabled: w.folders.length > 0 },
+        { kind: 'item', id: 'rename', label: t('Rename Workspace…'), enabled: !scratch },
         { kind: 'separator' },
-        { kind: 'item', id: 'remove', label: 'Remove Workspace', enabled: !scratch }
+        { kind: 'item', id: 'remove', label: t('Remove Workspace'), enabled: !scratch }
       ])
       if (choice === 'add-folder') void addFolder(w.id)
       else if (choice === 'save-as') saveWorkspaceAs(w.id)
@@ -299,7 +300,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
    */
   const chooseSort = useCallback(async () => {
     const choice = await popupMenu(
-      WORKSPACE_SORTS.map((s) => ({ kind: 'item' as const, id: s, label: SORTS[s].label, checked: s === sort }))
+      WORKSPACE_SORTS.map((s) => ({ kind: 'item' as const, id: s, label: sorts()[s].label, checked: s === sort }))
     )
     const picked = WORKSPACE_SORTS.find((s) => s === choice)
     if (picked && picked !== sort) setWorkspaceSort(picked)
@@ -392,33 +393,38 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         */}
         <div style={{ flex: '0 0 auto', position: 'relative' }}>
           <div className="section-header">
-            <span className="section-header__title">Workspaces</span>
+            <span className="section-header__title">{t('Workspaces')}</span>
             {cold.length > 0 && (
               <button
                 className="heat-hint"
-                title={`Nothing has happened in ${cold.length === 1 ? 'one workspace' : `${cold.length} workspaces`} in your last ${COLD_AFTER} days with Rigee. Choose which to remove.`}
+                title={tn(
+                  cold.length,
+                  'Nothing has happened in one workspace in your last {days} days with Rigee. Choose which to remove.',
+                  'Nothing has happened in {n} workspaces in your last {days} days with Rigee. Choose which to remove.',
+                  { days: COLD_AFTER }
+                )}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => setReviewing((r) => !r)}
               >
-                {cold.length} cold
+                {t('{n} cold', { n: cold.length })}
               </button>
             )}
             <button
               className="icon-button"
-              aria-label="Sort workspaces"
-              title={`${SORTS[sort].title}. Click to sort another way.`}
+              aria-label={t('Sort workspaces')}
+              title={t('{order}. Click to sort another way.', { order: sorts()[sort].title })}
               onClick={() => void chooseSort()}
             >
               <SortIcon size={14} />
             </button>
             <button
               className="icon-button"
-              title="Open…"
+              title={t('Open…')}
               onMouseDown={(e) => { e.stopPropagation(); setMenuOpen((o) => !o) }}
             >
               <PlusIcon size={14} />
             </button>
-            <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+            <button className="icon-button" title={t('Collapse panel')} onClick={onCollapse}>
               <CollapseLeftIcon size={14} />
             </button>
           </div>
@@ -449,7 +455,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
                 key={namingWorkspace.id}
                 className="menu menu--inline"
                 popup
-                title={namingWorkspace.id === activeId ? 'Save workspace as' : `Save “${namingWorkspace.name}” as`}
+                title={namingWorkspace.id === activeId ? t('Save workspace as') : t('Save “{name}” as', { name: namingWorkspace.name })}
                 initialName={namingWorkspace.name}
                 dir={workspaceFilesDir}
                 onSave={async (name) => { if (await save(namingWorkspace.id, name, 'named')) setNaming(null) }}
@@ -473,7 +479,7 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
         </div>
 
         {error && (
-          <div className="error-banner" onClick={() => setError(null)} title="Dismiss">
+          <div className="error-banner" onClick={() => setError(null)} title={t('Dismiss')}>
             {error}
           </div>
         )}
@@ -490,24 +496,24 @@ function WorkspaceList({ onCollapse }: { onCollapse: () => void }): React.ReactE
           {stillCold > 0 && (
             <div
               className="heat-divider"
-              title={`Nothing has happened in these in your last ${COLD_AFTER} days with Rigee`}
+              title={t('Nothing has happened in these in your last {days} days with Rigee', { days: COLD_AFTER })}
             >
-              <span>Cold · {stillCold}</span>
+              <span>{t('Cold · {n}', { n: stillCold })}</span>
               <span className="heat-divider__rule" />
               <button
                 className="heat-divider__review"
-                title="Choose which to remove"
+                title={t('Choose which to remove')}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => setReviewing((r) => !r)}
               >
-                Review…
+                {t('Review…')}
               </button>
             </div>
           )}
           {ranking.cold.map((id) => renderRow(byId.get(id)))}
           {workspaces.length <= 1 && (
             <div className="muted" style={{ paddingTop: 4 }}>
-              Scratch is always here for terminals. Press + to add a folder as a workspace.
+              {t('Scratch is always here for terminals. Press + to add a folder as a workspace.')}
             </div>
           )}
         </div>
@@ -548,21 +554,21 @@ function OpenMenu({
       onMouseDown={(e) => e.stopPropagation()}
     >
       <button className="menu__item" onClick={onFolder}>
-        <span>Open Folder…</span>
+        <span>{t('Open Folder…')}</span>
       </button>
       <button className="menu__item" onClick={onWorkspaceFile}>
-        <span>Open Workspace File…</span>
+        <span>{t('Open Workspace File…')}</span>
         <span className="menu__hint">.code-workspace</span>
       </button>
       <div className="menu__sep" />
       <button className="menu__item" disabled={!canAddFolder} onClick={onAddFolder}>
-        <span>Add Folder to Workspace…</span>
+        <span>{t('Add Folder to Workspace…')}</span>
       </button>
       <button className="menu__item" disabled={!canSave} onClick={onSaveAs}>
-        <span>Save Workspace As…</span>
+        <span>{t('Save Workspace As…')}</span>
       </button>
       <button className="menu__item" disabled={!canAddFolder} onClick={onRename}>
-        <span>Rename Workspace…</span>
+        <span>{t('Rename Workspace…')}</span>
       </button>
     </div>
   )
@@ -628,7 +634,7 @@ function WorkspaceRow({
       {working.length > 0 && (
         <button
           className="job-badge job-badge--working"
-          title={`${describePanes(working.length, 'at work', working.map((id) => workingPanes[id] ?? ''))}. Click to go to it.`}
+          title={t('{panes}. Click to go to it.', { panes: describePanes(working.length, 'working', working.map((id) => workingPanes[id] ?? '')) })}
           onClick={(e) => {
             e.stopPropagation()
             revealPane(w.id, working[0]!)
@@ -641,7 +647,7 @@ function WorkspaceRow({
       {finished.length > 0 && (
         <button
           className="job-badge job-badge--finished"
-          title={`${describePanes(finished.length, 'finished since you last looked', finished.map((id) => unseenPanes[id] ?? ''))}. Click to go to it.`}
+          title={t('{panes}. Click to go to it.', { panes: describePanes(finished.length, 'finished', finished.map((id) => unseenPanes[id] ?? '')) })}
           onClick={(e) => {
             e.stopPropagation()
             revealPane(w.id, finished[0]!)
@@ -657,7 +663,7 @@ function WorkspaceRow({
         <span className="row__actions">
           <button
             className="icon-button"
-            title="Remove workspace"
+            title={t('Remove workspace')}
             onClick={(e) => {
               e.stopPropagation()
               onRemove()
@@ -679,13 +685,16 @@ function warmthOf(activity: WorkspaceActivity | undefined, clock: readonly strin
   }
 }
 
-/** Each order as the sort menu offers it, and as the sort button's tooltip says the list is in it. */
-const SORTS: Record<WorkspaceSort, { label: string; title: string }> = {
-  heat: { label: 'Sort by Heat', title: 'Sorted by heat: the most recently, and most, used first' },
-  recent: { label: 'Sort by Last Active', title: 'Sorted by when anything last happened in each, the latest first' },
-  created: { label: 'Sort by Date Added', title: 'Sorted by when each was added, the newest first' },
-  name: { label: 'Sort by Name', title: 'Sorted by name' }
-}
+/**
+ * Each order as the sort menu offers it, and as the sort button's tooltip says the list is in it —
+ * in the language the window is in when asked, so a function rather than a table.
+ */
+const sorts = (): Record<WorkspaceSort, { label: string; title: string }> => ({
+  heat: { label: t('Sort by Heat'), title: t('Sorted by heat: the most recently, and most, used first') },
+  recent: { label: t('Sort by Last Active'), title: t('Sorted by when anything last happened in each, the latest first') },
+  created: { label: t('Sort by Date Added'), title: t('Sorted by when each was added, the newest first') },
+  name: { label: t('Sort by Name'), title: t('Sorted by name') }
+})
 
 /**
  * The shortest the divider makes the list: its header and one row, so that Scratch at least stays
@@ -706,18 +715,18 @@ function heightOf(stored: unknown): number | undefined {
  */
 function describe(w: Workspace, cold: boolean, activity: WorkspaceActivity | undefined, now: number): string {
   const lines = [w.name]
-  if (cold) lines.push(`Cold — nothing in your last ${COLD_AFTER} days with Rigee`)
-  if (activity?.usedAt) lines.push(`Last used ${longAgo(activity.usedAt, now)}`)
+  if (cold) lines.push(t('Cold — nothing in your last {days} days with Rigee', { days: COLD_AFTER }))
+  if (activity?.usedAt) lines.push(t('Last used {ago}', { ago: longAgo(activity.usedAt, now) }))
   const today = activity?.days.find((d) => d.day === localDay(now))?.used ?? 0
-  if (today > 0) lines.push(`Used ${today === 1 ? '1 minute' : `${today} minutes`} today`)
-  if (activity?.outputAt) lines.push(`Terminal output ${longAgo(activity.outputAt, now)}`)
-  if (!activity?.usedAt && !activity?.outputAt) lines.push('Nothing recorded yet')
+  if (today > 0) lines.push(tn(today, 'Used 1 minute today', 'Used {n} minutes today'))
+  if (activity?.outputAt) lines.push(t('Terminal output {ago}', { ago: longAgo(activity.outputAt, now) }))
+  if (!activity?.usedAt && !activity?.outputAt) lines.push(t('Nothing recorded yet'))
   if (w.id === SCRATCH_WORKSPACE_ID) {
-    lines.push('Always available; no folders')
+    lines.push(t('Always available; no folders'))
   } else {
-    lines.push(w.folders.length === 1 ? '1 folder' : `${w.folders.length} folders`)
+    lines.push(tn(w.folders.length, '1 folder', '{n} folders'))
     // What the list goes by sorted by date added, and nothing else on the row says.
-    if (Number.isFinite(w.createdAt) && w.createdAt > 0) lines.push(`Added ${longAgo(w.createdAt, now)}`)
+    if (Number.isFinite(w.createdAt) && w.createdAt > 0) lines.push(t('Added {ago}', { ago: longAgo(w.createdAt, now) }))
   }
   return lines.join('\n')
 }

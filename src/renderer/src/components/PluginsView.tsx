@@ -6,8 +6,11 @@ import { disabledPlugins, setDisabledPlugins, setDiskPlugins } from '../plugins/
 import { onPluginSearch } from '../plugins/market'
 import { pluginUiVersion, subscribePluginUi } from '../plugins/signal'
 import { onEvent, rpc } from '../ipc'
-import { PERMISSION_LABELS, type PluginContributions } from '@rigee/plugin-api/manifest'
+import { currentLocale, t, tx } from '../i18n'
+import type { PluginContributions } from '@rigee/plugin-api/manifest'
+import { manifestText } from '@shared/l10n'
 import { ageText, matchesPluginQuery } from '@shared/pluginCatalog'
+import { permissionLabel } from '@shared/permissions'
 import type { InstalledPluginInfo, MarketPlugin, PluginCatalog } from '@shared/ipc'
 import type { PluginViewProps } from '../plugins/bindings'
 
@@ -175,7 +178,7 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
       try {
         const result = await rpc['plugins:uninstall']({ id })
         if (!result.ok) {
-          if (!result.cancelled) setError(result.reason ?? 'could not uninstall')
+          if (!result.cancelled) setError(result.reason ?? t('could not uninstall'))
           return
         }
         setError(null)
@@ -194,7 +197,7 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
     async (id: string, trusted: boolean) => {
       try {
         const result = await rpc['plugins:setTrust']({ id, trusted })
-        if (!result.ok) { setError(result.reason ?? 'could not change trust'); return }
+        if (!result.ok) { setError(result.reason ?? t('could not change trust')); return }
         setError(null)
         await refresh()
       } catch (e) {
@@ -244,10 +247,10 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   const market = (
     <div className="plugins__market">
       <div className="plugins__section">
-        <span>On GitHub</span>
+        <span>{t('On GitHub')}</span>
         {catalog && (
           <button className="plugins__link" disabled={catalog.refreshing} onClick={() => void refreshCatalog()}>
-            {catalog.error && !catalog.refreshing ? 'retry' : 'refresh'}
+            {catalog.error && !catalog.refreshing ? t('retry') : t('refresh')}
           </button>
         )}
       </div>
@@ -257,14 +260,15 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
         someone decides what is worth a look, and it should not read like a store somebody curated.
       */}
       <div className="plugins__notice">
-        From public GitHub repositories tagged <code>rigee-plugin</code>. Rigee does not review them
-        and cannot vouch for their safety.
+        {tx('From public GitHub repositories tagged {topic}. Rigee does not review them and cannot vouch for their safety.', {
+          topic: <code>rigee-plugin</code>
+        })}
       </div>
       {catalog?.fetchedAt != null && catalog.plugins.length === 0 && (
-        <div className="plugins__empty">No plugins on GitHub yet.</div>
+        <div className="plugins__empty">{t('No plugins on GitHub yet.')}</div>
       )}
       {catalog?.fetchedAt != null && catalog.plugins.length > 0 && shown.length === 0 && (
-        <div className="plugins__empty">No plugins match “{query.trim()}”.</div>
+        <div className="plugins__empty">{t('No plugins match “{query}”.', { query: query.trim() })}</div>
       )}
       {shown.map((plugin) => (
         <MarketRow
@@ -282,8 +286,8 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="section-header">
-        <span className="section-header__title">Plugins</span>
-        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+        <span className="section-header__title">{t('Plugins')}</span>
+        <button className="icon-button" title={t('Collapse panel')} onClick={onCollapse}>
           <CollapseLeftIcon size={14} />
         </button>
       </div>
@@ -300,7 +304,7 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
           <input
             className="plugins__search-input"
             type="search"
-            placeholder="Search plugins"
+            placeholder={t('Search plugins')}
             spellCheck={false}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -314,10 +318,10 @@ export function PluginsView({ onCollapse }: PluginViewProps): React.ReactElement
         {query.trim() !== '' && market}
 
         <div className="plugins__section">
-          <span>Installed</span>
+          <span>{t('Installed')}</span>
           {fromDisk.some((p) => p.source) && (
             <button className="plugins__link" onClick={() => void checkUpdates()}>
-              check for updates
+              {t('check for updates')}
             </button>
           )}
         </div>
@@ -365,10 +369,10 @@ function CatalogStatus({ catalog, now }: { catalog: PluginCatalog | null; now: n
   const { fetchedAt, refreshing, error } = catalog
   const age = fetchedAt === null ? null : ageText(fetchedAt, now)
   const text = refreshing
-    ? fetchedAt === null ? 'Fetching the list…' : 'Updating…'
+    ? fetchedAt === null ? t('Fetching the list…') : t('Updating…')
     : error
-      ? age ? `Could not update: ${error} This list is from ${age}.` : `Could not fetch the list: ${error}`
-      : age ? `Updated ${age}.` : 'Not fetched yet.'
+      ? age ? t('Could not update: {error} This list is from {age}.', { error, age }) : t('Could not fetch the list: {error}', { error })
+      : age ? t('Updated {age}.', { age }) : t('Not fetched yet.')
   return <div className={`plugins__catalog${error && !refreshing ? ' plugins__catalog--error' : ''}`}>{text}</div>
 }
 
@@ -397,11 +401,12 @@ function PluginRow({
 }): React.ReactElement {
   const { manifest, trust, source } = plugin
   const trusted = trust.status === 'trusted'
+  const name = manifestText(manifest, manifest.displayName)
 
   return (
     <div className={`plugins__row${enabled && trusted ? '' : ' plugins__row--off'}`}>
       <div className="plugins__head">
-        <span className="plugins__name">{manifest.displayName}</span>
+        <span className="plugins__name">{name}</span>
         <span className="plugins__version">{manifest.version}</span>
         {/*
           The on/off switch is only meaningful for a plugin that is allowed to run at all. An
@@ -413,7 +418,7 @@ function PluginRow({
             className={`plugins__toggle${enabled ? ' plugins__toggle--on' : ''}`}
             role="switch"
             aria-checked={enabled}
-            title={enabled ? `Disable ${manifest.displayName}` : `Enable ${manifest.displayName}`}
+            title={enabled ? t('Disable {name}', { name }) : t('Enable {name}', { name })}
             onClick={() => onToggle(!enabled)}
           >
             <span className="plugins__knob" />
@@ -421,17 +426,17 @@ function PluginRow({
         )}
       </div>
 
-      {manifest.description && <div className="plugins__desc">{manifest.description}</div>}
+      {manifest.description && <div className="plugins__desc">{manifestText(manifest, manifest.description)}</div>}
 
       {source && (
         <a className="plugins__repo" href={`https://github.com/${source.owner}/${source.repo}`} target="_blank" rel="noreferrer">
-          from github.com/{source.owner}/{source.repo}
+          {t('from github.com/{owner}/{repo}', { owner: source.owner, repo: source.repo })}
         </a>
       )}
 
       {source && update && onUpdate && (
         <button className="plugins__install" disabled={busy} onClick={() => onUpdate(source)}>
-          Update to {update.version}
+          {t('Update to {version}', { version: update.version })}
         </button>
       )}
 
@@ -439,20 +444,20 @@ function PluginRow({
 
       <div className="plugins__meta">
         <span className={`plugins__state${running ? ' plugins__state--on' : ''}`}>
-          {!trusted ? 'not trusted' : !enabled ? 'disabled' : running ? 'running' : 'idle'}
+          {!trusted ? t('not trusted') : !enabled ? t('disabled') : running ? t('running') : t('idle')}
         </span>
-        {!bundled && <span className="plugins__contribution">installed</span>}
+        {!bundled && <span className="plugins__contribution">{t('installed')}</span>}
         {summarise(manifest.contributes).map((line) => (
           <span key={line} className="plugins__contribution">{line}</span>
         ))}
         {!bundled && trusted && (
           <button className="plugins__link" onClick={() => onSetTrust(false)}>
-            withdraw trust
+            {t('withdraw trust')}
           </button>
         )}
         {!bundled && onUninstall && (
           <button className="plugins__link" disabled={busy} onClick={onUninstall}>
-            uninstall
+            {t('uninstall')}
           </button>
         )}
       </div>
@@ -485,16 +490,18 @@ function MarketRow({
 
   let action: React.ReactNode
   if (bundled) {
-    action = <span className="plugins__note">Its id belongs to a plugin that ships with Rigee</span>
+    action = <span className="plugins__note">{t('Its id belongs to a plugin that ships with Rigee')}</span>
   } else if (installing) {
-    action = <span className="plugins__note">Installing…</span>
+    action = <span className="plugins__note">{t('Installing…')}</span>
   } else if (installed && fromHere) {
-    action = <span className="plugins__note">Installed</span>
+    action = <span className="plugins__note">{t('Installed')}</span>
   } else {
     action = (
       <button className="plugins__install" disabled={busy} onClick={onInstall}>
         {/* Another repository already has this id here. Main says so in the dialog. */}
-        {installed ? `Replace ${installed.manifest.displayName}` : 'Install'}
+        {installed
+          ? t('Replace {name}', { name: manifestText(installed.manifest, installed.manifest.displayName) })
+          : t('Install')}
       </button>
     )
   }
@@ -505,11 +512,11 @@ function MarketRow({
       <div className="plugins__head">
         <span className="plugins__name">{plugin.id}</span>
         {plugin.official && (
-          <span className="plugins__badge" title={`Published by ${plugin.owner}, the organisation Rigee is published from`}>
+          <span className="plugins__badge" title={t('Published by {owner}, the organisation Rigee is published from', { owner: plugin.owner })}>
             Rigee
           </span>
         )}
-        <span className="plugins__stars" title="GitHub stars">★ {plugin.stars}</span>
+        <span className="plugins__stars" title={t('GitHub stars')}>★ {plugin.stars}</span>
       </div>
       <a className="plugins__repo" href={plugin.url} target="_blank" rel="noreferrer">
         {plugin.owner}/{plugin.repo}
@@ -518,7 +525,7 @@ function MarketRow({
       <div className="plugins__meta">
         <span className="plugins__contribution">
           {[
-            updated && !Number.isNaN(updated.getTime()) ? `updated ${updated.toLocaleDateString()}` : null,
+            updated && !Number.isNaN(updated.getTime()) ? t('updated {date}', { date: updated.toLocaleDateString(currentLocale()) }) : null,
             plugin.license
           ]
             .filter(Boolean)
@@ -555,30 +562,29 @@ function TrustPrompt({
 
   const headline =
     trust.status === 'changed'
-      ? `This plugin has changed since you approved version ${trust.approvedVersion}.`
+      ? t('This plugin has changed since you approved version {version}.', { version: trust.approvedVersion })
       : trust.status === 'needs-permissions'
-        ? `This version declares something the last one did not: ${trust.added
-            .map((p) => PERMISSION_LABELS[p].toLowerCase())
-            .join(', ')}.`
-        : 'This plugin did not come with Rigee.'
+        ? t('This version declares something the last one did not: {permissions}.', {
+            permissions: trust.added.map((p) => permissionLabel(p).toLowerCase()).join(', ')
+          })
+        : t('This plugin did not come with Rigee.')
 
   return (
     <div className="plugins__trust">
       <div className="plugins__trust-headline">{headline}</div>
       <div className="plugins__trust-body">
-        Running it gives its code the same access Rigee has — your files, your terminals, the
-        network. Rigee does not restrict it. Only approve plugins from somewhere you trust.
+        {t('Running it gives its code the same access Rigee has — your files, your terminals, the network. Rigee does not restrict it. Only approve plugins from somewhere you trust.')}
       </div>
       {permissions.length > 0 && (
         <ul className="plugins__trust-perms">
           {permissions.map((p) => (
-            <li key={p}>{PERMISSION_LABELS[p]}</li>
+            <li key={p}>{permissionLabel(p)}</li>
           ))}
-          <li className="plugins__trust-caveat">…according to its author. Not enforced.</li>
+          <li className="plugins__trust-caveat">{t('…according to its author. Not enforced.')}</li>
         </ul>
       )}
       <button className="plugins__trust-approve" onClick={() => onSetTrust(true)}>
-        Run {manifest.displayName}
+        {t('Run {name}', { name: manifestText(manifest, manifest.displayName) })}
       </button>
     </div>
   )
@@ -599,10 +605,10 @@ function summarise(contributes: PluginContributions | undefined): string[] {
   const status = contributes.statusBar?.map((c) => c.id) ?? []
   const overlays = contributes.overlays?.map((c) => c.id) ?? []
 
-  if (editors.length) out.push(`editors: ${editors.join(', ')}`)
-  if (tabs.length) out.push(`tabs: ${tabs.join(', ')}`)
-  if (views.length) out.push(`views: ${views.join(', ')}`)
-  if (status.length) out.push(`status bar: ${status.join(', ')}`)
-  if (overlays.length) out.push(`overlays: ${overlays.join(', ')}`)
+  if (editors.length) out.push(t('editors: {ids}', { ids: editors.join(', ') }))
+  if (tabs.length) out.push(t('tabs: {ids}', { ids: tabs.join(', ') }))
+  if (views.length) out.push(t('views: {ids}', { ids: views.join(', ') }))
+  if (status.length) out.push(t('status bar: {ids}', { ids: status.join(', ') }))
+  if (overlays.length) out.push(t('overlays: {ids}', { ids: overlays.join(', ') }))
   return out
 }

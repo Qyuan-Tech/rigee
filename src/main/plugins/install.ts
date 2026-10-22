@@ -24,10 +24,12 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PERMISSION_LABELS, type PluginId, type PluginPermission } from '@rigee/plugin-api/manifest'
+import type { PluginId, PluginPermission } from '@rigee/plugin-api/manifest'
+import { manifestText, t } from '@shared/l10n'
+import { permissionLabel } from '@shared/permissions'
 import { compareVersions, isOwnerName, isVersion, pluginIdOfRepo } from './convention'
 import { inspectPlugin, MAX_PLUGIN_BYTES, MAX_PLUGIN_FILES, type DiskPlugin } from './disk'
-import { downloadRelease, latestRelease, type PluginRelease } from './github'
+import { downloadRelease, latestRelease, RateLimited, type PluginRelease } from './github'
 import {
   approvePlugin,
   diskPlugin,
@@ -62,16 +64,16 @@ export async function installFromGitHub(
   repo: string,
   deps: InstallDeps
 ): Promise<PluginInstallResult> {
-  if (busy) return { ok: false, reason: 'Another plugin is being installed.' }
+  if (busy) return { ok: false, reason: t('Another plugin is being installed.') }
   busy = true
   let stage: string | null = null
   try {
-    if (!isOwnerName(owner)) return { ok: false, reason: `"${owner}" is not a GitHub account name` }
+    if (!isOwnerName(owner)) return { ok: false, reason: t('"{owner}" is not a GitHub account name', { owner }) }
     const id = pluginIdOfRepo(repo)
-    if (!id) return { ok: false, reason: `"${repo}" is not named rigee-plugin-<id>` }
+    if (!id) return { ok: false, reason: t('"{repo}" is not named rigee-plugin-<id>', { repo }) }
     const rules = discoveryRules()
     if (rules.reserved.has(id)) {
-      return { ok: false, reason: `"${id}" is the id of a plugin that ships with Rigee` }
+      return { ok: false, reason: t('"{id}" is the id of a plugin that ships with Rigee', { id }) }
     }
 
     // 1. The release, and its bytes.
@@ -97,12 +99,18 @@ export async function installFromGitHub(
       previous.hash === plugin.hash &&
       trustStateOf(id, previous.hash, previous.manifest.permissions ?? []).status === 'trusted'
     ) {
-      return { ok: false, reason: `${plugin.manifest.displayName} ${release.version} is already installed` }
+      return {
+        ok: false,
+        reason: t('{name} {version} is already installed', {
+          name: manifestText(plugin.manifest, plugin.manifest.displayName),
+          version: release.version
+        })
+      }
     }
 
     // 3. The question.
     const answer = await deps.ask(installQuestion(release, plugin, previous, existsSync(target)))
-    if (answer !== 0) return { ok: false, cancelled: true, reason: 'Cancelled.' }
+    if (answer !== 0) return { ok: false, cancelled: true, reason: t('Cancelled.') }
 
     // 4. Into place: stopped, swapped, recorded, approved.
     mkdirSync(deps.pluginsDir, { recursive: true })
@@ -130,7 +138,7 @@ export async function installFromGitHub(
     } satisfies PluginSource)
     rescanDiskPlugins()
     const approved = approvePlugin(id, plugin.hash)
-    if (!approved.ok) return { ok: false, reason: approved.reason ?? 'not approved' }
+    if (!approved.ok) return { ok: false, reason: approved.reason ?? t('not approved') }
     return { ok: true, id, version: release.version, updated: previous !== null }
   } catch (err) {
     return { ok: false, reason: message(err) }
@@ -153,14 +161,17 @@ function mismatch(dir: string, plugin: DiskPlugin, release: PluginRelease): stri
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg
   } catch (err) {
-    return `package.json is unreadable (${message(err)})`
+    return t('package.json is unreadable ({reason})', { reason: message(err) })
   }
   if (pkg.name !== release.repo) {
-    return `the package inside is named ${JSON.stringify(pkg.name)}, not "${release.repo}"`
+    return t('the package inside is named {name}, not "{repo}"', { name: JSON.stringify(pkg.name) ?? 'undefined', repo: release.repo })
   }
   if (pkg.version !== release.version || plugin.manifest.version !== release.version) {
-    return `the package says version ${String(pkg.version)} (rigee.version ${plugin.manifest.version}), ` +
-      `but the release is ${release.tag}`
+    return t('the package says version {version} (rigee.version {manifestVersion}), but the release is {tag}', {
+      version: String(pkg.version),
+      manifestVersion: plugin.manifest.version,
+      tag: release.tag
+    })
   }
   return null
 }
@@ -176,42 +187,56 @@ function installQuestion(
   previous: DiskPlugin | null,
   replacing: boolean
 ): AskOptions {
-  const displayName = shown(plugin.manifest.displayName)
+  const displayName = shown(manifestText(plugin.manifest, plugin.manifest.displayName))
   const { version } = plugin.manifest
   const wants = plugin.manifest.permissions ?? []
   const lines = [
-    `From github.com/${release.owner}/${release.repo}, release ${release.tag}.`,
+    t('From github.com/{owner}/{repo}, release {tag}.', { owner: release.owner, repo: release.repo, tag: release.tag }),
     '',
-    'Rigee found this plugin by searching public GitHub repositories tagged "rigee-plugin". ' +
-      'Anyone can publish one, and Rigee has not reviewed this one, so it cannot vouch for what ' +
-      'the plugin does.',
+    t('Rigee found this plugin by searching public GitHub repositories tagged "rigee-plugin". Anyone can publish one, and Rigee has not reviewed this one, so it cannot vouch for what the plugin does.'),
     '',
-    'Once it runs, its code has the same access Rigee has: your files, your terminals and the network.'
+    t('Once it runs, its code has the same access Rigee has: your files, your terminals and the network.')
   ]
   if (wants.length > 0) {
-    lines.push('', 'Its author says it needs to:', ...wants.map((p) => `  • ${PERMISSION_LABELS[p]}`), '(Declared by the author. Rigee does not enforce it.)')
+    lines.push(
+      '',
+      t('Its author says it needs to:'),
+      ...wants.map((p) => `  • ${permissionLabel(p)}`),
+      t('(Declared by the author. Rigee does not enforce it.)')
+    )
   }
   const added = previous ? addedPermissions(previous.manifest.permissions ?? [], wants) : []
   if (added.length > 0) {
-    lines.push('', `New in this version: ${added.map((p) => PERMISSION_LABELS[p].toLowerCase()).join(', ')}.`)
+    lines.push('', t('New in this version: {permissions}.', { permissions: added.map((p) => permissionLabel(p).toLowerCase()).join(', ') }))
   }
   if (previous || replacing) {
-    const was = previous ? `“${shown(previous.manifest.displayName)}” ${previous.manifest.version}` : `the files in plugins/${plugin.id}`
     const from = previous ? sourceOf(previous.id) : null
-    const where = from ? ` from github.com/${from.owner}/${from.repo}` : previous ? ', which was not installed from GitHub' : ''
-    lines.push('', `This replaces ${was}${where}.`)
+    const was = previous ? { name: shown(manifestText(previous.manifest, previous.manifest.displayName)), version: previous.manifest.version } : null
+    lines.push(
+      '',
+      was && from
+        ? t('This replaces “{name}” {version} from github.com/{owner}/{repo}.', { ...was, owner: from.owner, repo: from.repo })
+        : was
+          ? t('This replaces “{name}” {version}, which was not installed from GitHub.', was)
+          : t('This replaces the files in plugins/{id}.', { id: plugin.id })
+    )
   }
+  const sha = release.asset.sha256.slice(0, 16)
   lines.push(
     '',
-    `SHA-256 of the download: ${release.asset.sha256.slice(0, 16)}…${release.immutable ? ' (an immutable release)' : ''}`
+    release.immutable
+      ? t('SHA-256 of the download: {sha}… (an immutable release)', { sha })
+      : t('SHA-256 of the download: {sha}…', { sha })
   )
   const updating = previous !== null
   return {
     type: 'warning',
     // Quoted, so that whatever the author named it reads as a name and not as part of the question.
-    message: updating ? `Update “${displayName}” to ${version}?` : `Install “${displayName}” ${version}?`,
+    message: updating
+      ? t('Update “{name}” to {version}?', { name: displayName, version })
+      : t('Install “{name}” {version}?', { name: displayName, version }),
     detail: lines.join('\n'),
-    buttons: [updating ? 'Update and Run' : 'Install and Run', 'Cancel'],
+    buttons: [updating ? t('Update and Run') : t('Install and Run'), t('Cancel')],
     // Return cancels. Running somebody else's code should take a deliberate click.
     defaultId: 1,
     cancelId: 1
@@ -229,7 +254,7 @@ function installQuestion(
 function shown(name: string): string {
   // eslint-disable-next-line no-control-regex
   const flat = name.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return (flat.length > 60 ? `${flat.slice(0, 59)}…` : flat) || '(unnamed)'
+  return (flat.length > 60 ? `${flat.slice(0, 59)}…` : flat) || t('(unnamed)')
 }
 
 function addedPermissions(had: readonly PluginPermission[], wants: readonly PluginPermission[]): PluginPermission[] {
@@ -249,13 +274,13 @@ export async function uninstallPlugin(
 ): Promise<{ ok: boolean; reason?: string; cancelled?: boolean }> {
   const plugin = diskPlugin(id)
   const target = join(deps.pluginsDir, id)
-  if (!plugin || !existsSync(target)) return { ok: false, reason: `no plugin "${id}" is installed` }
+  if (!plugin || !existsSync(target)) return { ok: false, reason: t('no plugin "{id}" is installed', { id }) }
 
   const answer = await deps.ask({
     type: 'question',
-    message: `Uninstall “${shown(plugin.manifest.displayName)}”?`,
-    detail: `Its files are deleted from ${target}. Tabs it shows stay open and say that no plugin provides them.`,
-    buttons: ['Uninstall', 'Cancel'],
+    message: t('Uninstall “{name}”?', { name: shown(manifestText(plugin.manifest, plugin.manifest.displayName)) }),
+    detail: t('Its files are deleted from {folder}. Tabs it shows stay open and say that no plugin provides them.', { folder: target }),
+    buttons: [t('Uninstall'), t('Cancel')],
     defaultId: 0,
     cancelId: 1
   })
@@ -300,7 +325,7 @@ export async function checkForUpdates(): Promise<{ updates: PluginUpdate[]; prob
       }
     } catch (err) {
       problems.push(`${source.owner}/${source.repo}: ${message(err)}`)
-      if (/limit/i.test(message(err))) break
+      if (err instanceof RateLimited) break
     }
   }
   return { updates, problems }

@@ -65,6 +65,9 @@ jobs:
 
       - run: pnpm run typecheck
 
+      - name: Every string translated
+        run: pnpm run l10n:check
+
       - name: Source control self-test
         run: pnpm run git:selftest
 

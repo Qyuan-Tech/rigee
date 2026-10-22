@@ -1,3 +1,4 @@
+import { t } from '@shared/l10n'
 import { rpc } from './ipc'
 import { nextWorkspaceId, useApp } from './store'
 import {
@@ -96,7 +97,7 @@ export async function addFolders(workspaceId: WorkspaceId, paths: readonly strin
       folders: added.map((f) => ({ path: f.path, name: f.name }))
     })
   } catch (e) {
-    fileLeftBehind(`Added to “${now.name}”`, e)
+    fileLeftBehind(t('Added to “{name}”', { name: now.name }), e)
   }
 }
 
@@ -122,7 +123,7 @@ export async function removeFolders(workspaceId: WorkspaceId, paths: readonly st
   try {
     await rpc['workspace:removeFoldersFromFile']({ file: ws.filePath, paths: removed.map((f) => f.path) })
   } catch (e) {
-    fileLeftBehind(`Removed from “${ws.name}”`, e)
+    fileLeftBehind(t('Removed from “{name}”', { name: ws.name }), e)
   }
 }
 
@@ -130,8 +131,10 @@ export async function removeFolders(workspaceId: WorkspaceId, paths: readonly st
 function fileLeftBehind(done: string, e: unknown): void {
   // Main's reasons name the file, so this does not.
   useApp.getState().setWorkspaceError(
-    `${done}, but its workspace file could not be updated: ${reason(e).replace(/\.?$/, '.')} ` +
-      'Save Workspace As… writes it again.'
+    t('{done}, but its workspace file could not be updated: {reason}. Save Workspace As… writes it again.', {
+      done,
+      reason: reason(e).replace(/[.。]$/, '')
+    })
   )
 }
 

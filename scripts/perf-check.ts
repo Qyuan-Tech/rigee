@@ -42,8 +42,13 @@ const ASSETS = join(OUT, 'assets')
  * And to 337 kB for editor groups that stack, measured at 335,435 B against 331,890 B before: the
  * layout tree saying where each group is drawn is read back with the workspace and laid out on the
  * first frame, so neither it nor its repair of a document from disk can wait for a chunk.
+ *
+ * And to 344 kB for the languages, measured at 342,272 B against 335,917 B before: every word on
+ * the first frame now goes through `t()`, with what switches the window's language in place — and
+ * the bundled manifests' few translations, which the activity bar is drawn from before any plugin
+ * loads. The tables themselves are chunks of their own, fetched only for a language that is chosen.
  */
-const ENTRY_BUDGET_BYTES = 337_000
+const ENTRY_BUDGET_BYTES = 344_000
 
 let failures = 0
 let checks = 0

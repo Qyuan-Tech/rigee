@@ -1,4 +1,5 @@
 import { PLUGIN_MANIFESTS } from '@plugins/index'
+import { manifestText, onLocaleChange, t } from '@shared/l10n'
 import { pluginUiChanged } from './signal'
 import {
   matchesSelector,
@@ -45,8 +46,8 @@ type Owned<T> = T & { owner: PluginId }
  */
 export const SHELL_OWNER: PluginId = 'shell'
 
-const BUILTIN_VIEWS: Owned<ViewContribution>[] = [
-  { id: 'shell.plugins', title: 'Plugins', slot: 'left', icon: 'plugin', order: 100, owner: SHELL_OWNER }
+const builtinViews = (): Owned<ViewContribution>[] => [
+  { id: 'shell.plugins', title: t('Plugins'), slot: 'left', icon: 'plugin', order: 100, owner: SHELL_OWNER }
 ]
 
 /**
@@ -95,15 +96,38 @@ export function setDisabledPlugins(ids: Iterable<PluginId>): void {
 const live = <T,>(items: Owned<T>[]): Owned<T>[] =>
   items.filter((c) => !disabled.has(c.owner) && !untrusted.has(c.owner))
 
-/** Flatten one contribution point across every manifest, stamping each entry with its owner. */
+/**
+ * Flatten one contribution point across every manifest, stamping each entry with its owner and
+ * putting its words — a title, a name, a label — in the shell's language, from the manifest's own
+ * `l10n`. Done here, once per language, so every reader of these tables gets them already said.
+ */
 function collect<T>(pick: (c: PluginContributions) => readonly T[] | undefined): Owned<T>[] {
   const out: Owned<T>[] = []
   for (const manifest of [...PLUGIN_MANIFESTS, ...diskManifests]) {
     for (const contribution of pick(manifest.contributes ?? {}) ?? []) {
-      out.push({ ...contribution, owner: manifest.id })
+      out.push({ ...inOwnWords(manifest, contribution), owner: manifest.id })
     }
   }
   return out
+}
+
+/**
+ * A contribution with each of the words a manifest can give one in the shell's language. A disk
+ * plugin's contributions are checked for their ids only, so anything else is read defensively.
+ */
+function inOwnWords<T>(manifest: PluginManifest, c: T): T {
+  if (!manifest.l10n || !c || typeof c !== 'object') return c
+  const said = (v: unknown): unknown => (typeof v === 'string' ? manifestText(manifest, v) : v)
+  const out = { ...c } as Record<string, unknown>
+  for (const key of ['title', 'displayName']) if (key in out) out[key] = said(out[key])
+  for (const key of ['creatable', 'onRequest']) {
+    const inner = out[key]
+    if (!inner || typeof inner !== 'object') continue
+    const copy = { ...inner } as Record<string, unknown>
+    for (const field of ['label', 'tabPrefix']) if (field in copy) copy[field] = said(copy[field])
+    out[key] = copy
+  }
+  return out as T
 }
 
 /**
@@ -129,7 +153,7 @@ let overlays: Owned<OverlayContribution>[] = []
 function rebuild(): void {
   editors = collect((c) => c.editors).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
   tabs = collect((c) => c.tabs)
-  allViews = [...collect((c) => c.views), ...BUILTIN_VIEWS].sort(
+  allViews = [...collect((c) => c.views), ...builtinViews()].sort(
     (a, b) => (a.order ?? 0) - (b.order ?? 0)
   )
   statusItems = collect((c) => c.statusBar).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -137,6 +161,12 @@ function rebuild(): void {
 }
 
 rebuild()
+
+// Every title and label in the tables above is in the language they were built in.
+onLocaleChange(() => {
+  rebuild()
+  pluginUiChanged()
+})
 
 /**
  * Take the disk plugins main discovered at boot.

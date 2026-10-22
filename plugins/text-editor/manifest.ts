@@ -23,5 +23,11 @@ export const manifest: PluginManifest = {
         priority: -Infinity
       }
     ]
+  },
+  l10n: {
+    'zh-CN': {
+      'Text Editor': '文本编辑器',
+      'Monaco-backed text editing, and the fallback viewer for every file.': '基于 Monaco 的文本编辑，也是所有文件的后备查看器。'
+    }
   }
 }

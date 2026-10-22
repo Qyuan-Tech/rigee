@@ -29,5 +29,12 @@ export const manifest: PluginManifest = {
       }
     ],
     overlays: [{ id: 'browser.auth' }]
+  },
+  l10n: {
+    'zh-CN': {
+      Browser: '浏览器',
+      'Chromium tabs inside the workspace, with a persistent session.': '工作区内的 Chromium 标签页，会话保持登录。',
+      'New browser tab': '新建浏览器标签页'
+    }
   }
 }

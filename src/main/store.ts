@@ -297,6 +297,8 @@ function cleanSettings(raw: unknown): AppSettings {
   // Any name of an order, not only the ones this build has: the renderer reads one it does not
   // know as heat, and a newer build's choice comes back through an older one intact.
   if (typeof doc.workspaceSort !== 'string' || !doc.workspaceSort) delete out.workspaceSort
+  // The same: a language this build does not speak is a newer build's, read here as unset.
+  if (typeof doc.language !== 'string' || !doc.language) delete out.language
   return out
 }
 

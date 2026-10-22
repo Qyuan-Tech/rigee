@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { icons, onViewRevealed, openFile, setPluginState, useActiveWorkspace, usePluginState } from '@rigee/plugin-api'
 import type { SearchFileResult, SearchMatch, SearchResult } from '../types'
+import { useT } from './l10n'
 import { search } from './rpc'
 
 const PLUGIN_ID = 'search'
@@ -39,6 +40,7 @@ let searchSeq = 0
  * by file; clicking a line opens the file with the match selected.
  */
 export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.ReactElement {
+  const { t, tn } = useT()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id ?? null
   const saved = readOptions(usePluginState(PLUGIN_ID, workspaceId))
@@ -98,16 +100,16 @@ export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.R
   }, [])
 
   useEffect(() => {
-    const t = setTimeout(() => { void run(options, roots) }, DEBOUNCE_MS)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => { void run(options, roots) }, DEBOUNCE_MS)
+    return () => clearTimeout(timer)
     // `roots` is rebuilt every render; `rootKey` is its content, which is what matters.
   }, [options, rootKey, run])
 
   // Remembered, but not on every keystroke's re-render: once the typing settles.
   useEffect(() => {
     if (!workspaceId) return
-    const t = setTimeout(() => setPluginState(PLUGIN_ID, workspaceId, { ...options }), 500)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => setPluginState(PLUGIN_ID, workspaceId, { ...options }), 500)
+    return () => clearTimeout(timer)
   }, [options, workspaceId])
 
   // Leaving the panel cancels whatever it was waiting for.
@@ -132,8 +134,8 @@ export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.R
   return (
     <div className="search">
       <div className="section-header">
-        <span className="section-header__title">Search</span>
-        <button className="icon-button" title="Collapse panel" onClick={onCollapse}>
+        <span className="section-header__title">{t('Search')}</span>
+        <button className="icon-button" title={t('Collapse panel')} onClick={onCollapse}>
           <icons.CollapseRight size={14} />
         </button>
       </div>
@@ -142,7 +144,7 @@ export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.R
         <input
           ref={input}
           className="search__input"
-          placeholder="Search"
+          placeholder={t('Search')}
           spellCheck={false}
           value={options.query}
           onChange={(e) => set({ query: e.target.value })}
@@ -153,9 +155,9 @@ export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.R
             else if (e.key === 'Escape' && options.query) { e.preventDefault(); set({ query: '' }) }
           }}
         />
-        <Toggle label="Aa" title="Match case" on={options.caseSensitive} onClick={() => set({ caseSensitive: !options.caseSensitive })} />
-        <Toggle label="ab" title="Match whole word" underline on={options.wholeWord} onClick={() => set({ wholeWord: !options.wholeWord })} />
-        <Toggle label=".*" title="Use regular expression" on={options.regex} onClick={() => set({ regex: !options.regex })} />
+        <Toggle label="Aa" title={t('Match case')} on={options.caseSensitive} onClick={() => set({ caseSensitive: !options.caseSensitive })} />
+        <Toggle label="ab" title={t('Match whole word')} underline on={options.wholeWord} onClick={() => set({ wholeWord: !options.wholeWord })} />
+        <Toggle label=".*" title={t('Use regular expression')} on={options.regex} onClick={() => set({ regex: !options.regex })} />
       </div>
 
       <div
@@ -166,21 +168,24 @@ export function SearchPanel({ onCollapse }: { onCollapse: () => void }): React.R
           else if (e.key === 'ArrowUp') { e.preventDefault(); moveFocus(document.activeElement, -1) }
         }}
       >
-        {!workspace && <div className="muted search__note">Open a workspace to search it.</div>}
+        {!workspace && <div className="muted search__note">{t('Open a workspace to search it.')}</div>}
         {workspace && roots.length === 0 && (
-          <div className="muted search__note">This workspace has no folders to search. Add one from the explorer.</div>
+          <div className="muted search__note">{t('This workspace has no folders to search. Add one from the explorer.')}</div>
         )}
         {result?.error && <div className="search__error">{result.error}</div>}
         {result && !result.error && options.query && (
-          <div className="search__summary" title={`${result.engine}, ${result.elapsedMs} ms`}>
+          <div className="search__summary" title={t('{engine}, {ms} ms', { engine: result.engine, ms: result.elapsedMs })}>
             {result.matchCount === 0
-              ? 'No results'
-              : `${result.matchCount} result${result.matchCount === 1 ? '' : 's'} in ${result.files.length} file${result.files.length === 1 ? '' : 's'}`}
-            {result.truncated && ' — the first ones only; narrow the search to see the rest'}
+              ? t('No results')
+              : t('{results} in {files}', {
+                  results: tn(result.matchCount, '1 result', '{n} results'),
+                  files: tn(result.files.length, '1 file', '{n} files')
+                })}
+            {result.truncated && t(' — the first ones only; narrow the search to see the rest')}
             {busy && ' …'}
           </div>
         )}
-        {!result && busy && <div className="search__summary">Searching…</div>}
+        {!result && busy && <div className="search__summary">{t('Searching…')}</div>}
 
         {result?.files.map((file) => (
           <FileGroup

@@ -21,6 +21,7 @@
  */
 
 import type { FileStat, TabId, Workspace, WorkspaceId } from './data'
+import { translator, type Locale, type MessageParams, type Translations, type Translator } from './l10n'
 import type { PluginId, ViewType } from './manifest'
 import type { IconSet, NoticeProps } from './ui'
 import type { ComponentType, ReactElement } from 'react'
@@ -160,6 +161,10 @@ export interface ShellHost {
   /** The font stack the shell's editors use, so a plugin's does not look foreign. */
   monoFamily: () => string
   editorFontSize: () => number
+
+  // --- language -----------------------------------------------------------
+  locale: () => Locale
+  useLocale: () => Locale
 
   // --- workspaces ---------------------------------------------------------
   activeWorkspaceId: () => WorkspaceId | null
@@ -307,6 +312,52 @@ export const icons: IconSet = {} as IconSet
 export const isMac = (): boolean => shell().isMac()
 export const monoFamily = (): string => shell().monoFamily()
 export const editorFontSize = (): number => shell().editorFontSize()
+
+/**
+ * The language the shell is in — `en`, `zh-CN` — as chosen in Settings, or the system's. It can
+ * change while the plugin runs. Since Rigee 1.2.0.
+ */
+export const locale = (): Locale => shell().locale()
+
+/** The same, as a hook: re-renders when the user switches language. Since Rigee 1.2.0. */
+export const useLocale = (): Locale => shell().useLocale()
+
+/** A plugin's own words, in the shell's language. See `localize`. */
+export interface Localized {
+  /** In the language the shell is in now: for menus, notices, anything said outside a render. */
+  t(source: string, params?: MessageParams): string
+  tn(count: number, one: string, other: string, params?: MessageParams): string
+  /** In a component: the same two, and a re-render when the user switches language. */
+  useT(): Translator
+}
+
+/**
+ * A plugin's own words in whichever language the shell is in, from a table of its translations —
+ * each English string, as the plugin's code says it, to what it is in each other language:
+ *
+ *   const { t, useT } = localize({ 'zh-CN': { 'Refresh': '刷新', '{n} files': '{n} 个文件' } })
+ *
+ *   function Panel() {
+ *     const { t, tn } = useT()
+ *     return <button title={t('Refresh')}>{tn(count, '1 file', '{n} files')}</button>
+ *   }
+ *
+ * Anything the table does not have is said in English. A main half has no `localize`, being
+ * React-free: it gets the language from `ctx.shell.locale()` and makes a `translator` of its own,
+ * from `@rigee/plugin-api/l10n`. Since Rigee 1.2.0.
+ */
+export function localize(translations: Translations): Localized {
+  let cached: Translator | null = null
+  const at = (current: Locale): Translator => {
+    if (cached?.locale !== current) cached = translator(translations, current)
+    return cached
+  }
+  return {
+    t: (source, params) => at(locale()).t(source, params),
+    tn: (count, one, other, params) => at(locale()).tn(count, one, other, params),
+    useT: () => at(useLocale())
+  }
+}
 
 export const activeWorkspaceId = (): WorkspaceId | null => shell().activeWorkspaceId()
 export const useActiveWorkspace = (): Workspace | null => shell().useActiveWorkspace()

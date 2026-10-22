@@ -27,5 +27,13 @@ export const manifest: PluginManifest = {
       }
     ],
     statusBar: [{ id: 'scm.branch', align: 'left', order: 10 }]
+  },
+  l10n: {
+    'zh-CN': {
+      'Source Control': '源代码管理',
+      'Git status, staging down to the line, commits, and diffs.': 'Git 状态、精确到行的暂存、提交和差异。',
+      'Source control': '源代码管理',
+      Diff: '差异'
+    }
   }
 }

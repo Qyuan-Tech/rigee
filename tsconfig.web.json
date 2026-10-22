@@ -9,6 +9,7 @@
     "plugins/*/manifest.ts",
     "plugins/*/protocol.ts",
     "plugins/*/types.ts",
+    "plugins/*/locales/*",
     "plugins/*/renderer/**/*"
   ],
   "compilerOptions": {
@@ -34,7 +35,8 @@
       "@rigee/plugin-api": ["packages/plugin-api/src/index.ts"],
       "@rigee/plugin-api/data": ["packages/plugin-api/src/data.ts"],
       "@rigee/plugin-api/manifest": ["packages/plugin-api/src/manifest.ts"],
-      "@rigee/plugin-api/context": ["packages/plugin-api/src/context.ts"]
+      "@rigee/plugin-api/context": ["packages/plugin-api/src/context.ts"],
+      "@rigee/plugin-api/l10n": ["packages/plugin-api/src/l10n.ts"]
     }
   }
 }

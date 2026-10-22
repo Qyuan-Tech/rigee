@@ -23,6 +23,7 @@
 
 import type { Context } from 'cordis'
 import type { BrowserWindow, WebContents } from 'electron'
+import type { Locale } from './l10n'
 import type { PluginId, ViewType } from './manifest'
 import type {
   PluginEditorComponent,
@@ -115,6 +116,12 @@ export interface PluginShellService {
    * Through the shell rather than Electron's `dialog`, so that Rigee's own tests can answer it.
    */
   ask(options: AskOptions): Promise<number>
+  /**
+   * The language the shell is in — `en`, `zh-CN` — for what a main half says itself: a question,
+   * an error. It can change while the plugin runs, so ask each time rather than once. Since Rigee
+   * 1.2.0.
+   */
+  locale(): Locale
   /**
    * Offer to take keyboard focus instead of the shell — return true if you took it. For a plugin
    * that composites a native view over the window, which the window never focuses by itself.

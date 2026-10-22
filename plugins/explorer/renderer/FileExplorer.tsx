@@ -10,7 +10,8 @@ import {
   usePluginState,
   workspaceDir
 } from '@rigee/plugin-api'
-import type { FileDecoration, FileStat, Workspace } from '@rigee/plugin-api'
+import type { FileDecoration, FileStat, Translator, Workspace } from '@rigee/plugin-api'
+import { useT } from './l10n'
 import { invalidateAll, listings, useListingGeneration, watchFolders } from './listings'
 import {
   canDrop,
@@ -89,6 +90,7 @@ const copying = (e: React.DragEvent): boolean => (isMac() ? e.altKey : e.ctrlKey
 const indent = (depth: number): number => 8 + depth * 12
 
 export function FileExplorer(): React.ReactElement {
+  const { t } = useT()
   const workspace = useActiveWorkspace()
   const [dropping, setDropping] = useState(false)
   const workspaceId = workspace?.id ?? null
@@ -262,16 +264,16 @@ export function FileExplorer(): React.ReactElement {
       onDrop={(e) => run(onDrop(e))}
     >
       <div className="section-header">
-        <span className="section-header__title">Explorer</span>
-        <button className="icon-button" title="New File…" disabled={roots.length === 0} onClick={() => newEntry(false)}>
+        <span className="section-header__title">{t('Explorer')}</span>
+        <button className="icon-button" title={t('New File…')} disabled={roots.length === 0} onClick={() => newEntry(false)}>
           <icons.NewFile size={14} />
         </button>
-        <button className="icon-button" title="New Folder…" disabled={roots.length === 0} onClick={() => newEntry(true)}>
+        <button className="icon-button" title={t('New Folder…')} disabled={roots.length === 0} onClick={() => newEntry(true)}>
           <icons.AddFolder size={14} />
         </button>
         <button
           className="icon-button"
-          title="Refresh"
+          title={t('Refresh')}
           disabled={roots.length === 0}
           onClick={invalidateAll}
         >
@@ -279,7 +281,7 @@ export function FileExplorer(): React.ReactElement {
         </button>
         <button
           className="icon-button"
-          title={anyOpen ? 'Collapse all folders' : 'Expand folders'}
+          title={anyOpen ? t('Collapse all folders') : t('Expand folders')}
           disabled={roots.length === 0}
           onClick={toggleAll}
         >
@@ -300,10 +302,10 @@ export function FileExplorer(): React.ReactElement {
         // A click in the empty space below the rows lets go of the selection, as in VS Code.
         onMouseDown={(e) => { if (!rowAt(e.target) && e.target === e.currentTarget) select([], null) }}
       >
-        {!workspace && <div className="muted">Open a workspace to browse files.</div>}
+        {!workspace && <div className="muted">{t('Open a workspace to browse files.')}</div>}
         {workspace && roots.length === 0 && (
           <div className="muted">
-            No folders here. Terminals still work — drop a folder to make a workspace.
+            {t('No folders here. Terminals still work — drop a folder to make a workspace.')}
           </div>
         )}
         {roots.map((r) => (
@@ -355,9 +357,10 @@ function useReveal(row: React.RefObject<HTMLDivElement | null>, path: string, fl
  * workspace and coming back.
  */
 function DirNode({ path, name, depth, open, tree, root = false, own = false }: DirNodeProps): React.ReactElement {
+  const { t } = useT()
   const isOpen = open.has(path)
   const [children, setChildren] = useState<FileStat[] | null>(listings.get(path) ?? null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const decoration = useFileDecoration(path)
   const generation = useListingGeneration(path)
   const flags = useRowFlags(path)
@@ -379,11 +382,12 @@ function DirNode({ path, name, depth, open, tree, root = false, own = false }: D
         listings.set(path, list)
         if (!cancelled) { setChildren(list); setError(null) }
       })
-      .catch((e: Error) => { if (!cancelled) setError(listingProblem(e)) })
+      .catch((e: Error) => { if (!cancelled) setError(e) })
     return () => { cancelled = true }
   }, [isOpen, path, generation])
 
   const row: Row = { path, dir: true, root }
+  const problem = error && listingProblem(error, t)
   return (
     <>
       {flags & RENAMING ? (
@@ -400,7 +404,7 @@ function DirNode({ path, name, depth, open, tree, root = false, own = false }: D
           ref={ref}
           className={rowClass(flags, own ? ' explorer__own' : '')}
           style={{ paddingLeft: indent(depth) }}
-          title={own ? `${path}\nThe folder this workspace's .code-workspace file is in, where new terminals start.` : undefined}
+          title={own ? `${path}\n${t("The folder this workspace's .code-workspace file is in, where new terminals start.")}` : undefined}
           data-path={path}
           data-dir=""
           data-root={root ? '' : undefined}
@@ -420,13 +424,13 @@ function DirNode({ path, name, depth, open, tree, root = false, own = false }: D
               <icons.Folder size={13} />
             </span>
           )}
-          <Label name={name} decoration={decoration} tag={own ? 'Workspace' : undefined} />
+          <Label name={name} decoration={decoration} tag={own ? t('Workspace') : undefined} />
         </div>
       )}
       {/* One line, like every row: wrapped, a long reason ran over the rows around it. */}
-      {isOpen && error && (
-        <div className="row" style={{ paddingLeft: indent(depth + 1) }} title={error}>
-          <span className="row__label" style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{error}</span>
+      {isOpen && problem && (
+        <div className="row" style={{ paddingLeft: indent(depth + 1) }} title={problem}>
+          <span className="row__label" style={{ color: 'var(--git-deleted)', fontSize: 11 }}>{problem}</span>
         </div>
       )}
       {isOpen && flags & (NEW_FILE | NEW_FOLDER) ? (
@@ -454,11 +458,12 @@ function DirNode({ path, name, depth, open, tree, root = false, own = false }: D
 /**
  * What the tree says under a folder it could not read: main's reason, without the IPC plumbing
  * Electron wraps round it, and in words for the usual one — a folder that has gone, which is most
- * often a workspace's own, its file moved or deleted since it was opened.
+ * often a workspace's own, its file moved or deleted since it was opened. Worked out as the row is
+ * drawn rather than when the read failed, so that it follows a change of language.
  */
-function listingProblem(e: Error): string {
+function listingProblem(e: Error, t: Translator['t']): string {
   const reason = e.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?(?:[\w-]+:[\w-]+: )?/, '')
-  return reason.startsWith('ENOENT') ? 'This folder is no longer there.' : reason
+  return reason.startsWith('ENOENT') ? t('This folder is no longer there.') : reason
 }
 
 function FileNode({ stat, depth, tree }: { stat: FileStat; depth: number; tree: { readonly current: Tree } }): React.ReactElement {
@@ -524,6 +529,7 @@ function NameBox({ depth, folder, initial, issue, commit, tree }: {
   commit: (value: string) => Promise<void>
   tree: { readonly current: Tree }
 }): React.ReactElement {
+  const { t } = useT()
   const input = useRef<HTMLInputElement>(null)
   const [value, setValue] = useState(initial)
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -571,7 +577,7 @@ function NameBox({ depth, folder, initial, issue, commit, tree }: {
           className={`explorer__input${message ? (refusal || problem?.blocking ? ' explorer__input--error' : ' explorer__input--warning') : ''}`}
           value={value}
           spellCheck={false}
-          aria-label={initial ? `Rename ${initial}` : folder ? 'New folder name' : 'New file name'}
+          aria-label={initial ? t('Rename {name}', { name: initial }) : folder ? t('New folder name') : t('New file name')}
           onChange={(e) => {
             setValue(e.target.value)
             setRefusal(null)

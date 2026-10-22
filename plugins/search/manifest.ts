@@ -16,5 +16,11 @@ export const manifest: PluginManifest = {
   permissions: ['files:read', 'process:spawn'],
   contributes: {
     views: [{ id: 'search.panel', title: 'Search', slot: 'left', icon: 'search', order: 1 }]
+  },
+  l10n: {
+    'zh-CN': {
+      Search: '搜索',
+      'Find text in every file of the workspace.': '在工作区的所有文件中查找文本。'
+    }
   }
 }

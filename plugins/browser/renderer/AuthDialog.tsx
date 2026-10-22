@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useT } from './l10n'
 import { invoke, on } from './rpc'
 import type { AuthRequestedEvent } from '../protocol'
 
@@ -15,6 +16,7 @@ import type { AuthRequestedEvent } from '../protocol'
  * tab first renders — a challenge cannot arrive before there is a view to raise it.
  */
 export function AuthDialog(): React.ReactElement | null {
+  const { t, tn } = useT()
   const [queue, setQueue] = useState<AuthRequestedEvent[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -46,7 +48,7 @@ export function AuthDialog(): React.ReactElement | null {
         onSubmit={(e) => { e.preventDefault(); answer(username) }}
       >
         <div className="modal__title">
-          {current.isProxy ? 'The proxy requires a sign-in' : 'This site requires a sign-in'}
+          {current.isProxy ? t('The proxy requires a sign-in') : t('This site requires a sign-in')}
         </div>
         <div className="modal__body">
           <div className="modal__host">{current.host}</div>
@@ -54,11 +56,11 @@ export function AuthDialog(): React.ReactElement | null {
         </div>
 
         <label className="modal__field">
-          <span>Username</span>
+          <span>{t('Username')}</span>
           <input ref={userRef} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
         </label>
         <label className="modal__field">
-          <span>Password</span>
+          <span>{t('Password')}</span>
           <input
             type="password"
             value={password}
@@ -69,11 +71,11 @@ export function AuthDialog(): React.ReactElement | null {
         </label>
 
         <div className="modal__actions">
-          <button type="button" className="btn" onClick={() => answer(null)}>Cancel</button>
-          <button type="submit" className="btn btn--primary" disabled={!username}>Sign in</button>
+          <button type="button" className="btn" onClick={() => answer(null)}>{t('Cancel')}</button>
+          <button type="submit" className="btn btn--primary" disabled={!username}>{t('Sign in')}</button>
         </div>
         {queue.length > 1 && (
-          <div className="modal__more">{queue.length - 1} more request{queue.length > 2 ? 's' : ''} waiting</div>
+          <div className="modal__more">{tn(queue.length - 1, '1 more request waiting', '{n} more requests waiting')}</div>
         )}
       </form>
     </div>

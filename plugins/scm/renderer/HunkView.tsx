@@ -1,6 +1,7 @@
 import { icons } from '@rigee/plugin-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Notice } from '@rigee/plugin-api'
+import { useT } from './l10n'
 import { scm } from './rpc'
 import type { DiffTabState } from './diffTab'
 import type { DiffHunkView, SelectionAction } from '../protocol'
@@ -19,6 +20,7 @@ export function HunkView({
   target: DiffTabState
   onApplied: () => void
 }): React.ReactElement {
+  const { t, tn } = useT()
   const [hunks, setHunks] = useState<DiffHunkView[] | null>(null)
   const [binary, setBinary] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -112,10 +114,10 @@ export function HunkView({
     [selected, target.repoId, target.filePath, onApplied, load]
   )
 
-  if (binary) return <Notice>Binary file — individual lines cannot be staged.</Notice>
+  if (binary) return <Notice>{t('Binary file — individual lines cannot be staged.')}</Notice>
   if (error && hunks === null) return <Notice tone="error">{error}</Notice>
-  if (hunks === null) return <Notice>reading diff…</Notice>
-  if (hunks.length === 0) return <Notice>No changes in this file.</Notice>
+  if (hunks === null) return <Notice>{t('reading diff…')}</Notice>
+  if (hunks.length === 0) return <Notice>{t('No changes in this file.')}</Notice>
 
   const count = selected.size
 
@@ -123,29 +125,29 @@ export function HunkView({
     <div className="hunks">
       <div className="hunks__bar">
         <span className="hunks__count">
-          {count > 0 ? `${count} line${count === 1 ? '' : 's'} selected` : 'Select lines to stage'}
+          {count > 0 ? tn(count, '1 line selected', '{n} lines selected') : t('Select lines to stage')}
         </span>
         <button className="btn" disabled={busy || count === 0} onClick={() => setSelected(new Set())}>
-          Clear
+          {t('Clear')}
         </button>
         <button
           className="btn"
           disabled={busy || allIds.length === 0}
           onClick={() => setSelected(new Set(allIds))}
         >
-          Select all
+          {t('Select all')}
         </button>
         {primary === 'stage' ? (
           <>
             <button className="btn" disabled={busy || count === 0} onClick={() => void apply('discard')}>
-              <icons.Discard size={12} /> Discard
+              <icons.Discard size={12} /> {t('Discard')}
             </button>
             <button
               className="btn btn--primary"
               disabled={busy || count === 0}
               onClick={() => void apply('stage')}
             >
-              <icons.Stage size={12} /> Stage
+              <icons.Stage size={12} /> {t('Stage')}
             </button>
           </>
         ) : (
@@ -154,7 +156,7 @@ export function HunkView({
             disabled={busy || count === 0}
             onClick={() => void apply('unstage')}
           >
-            <icons.Unstage size={12} /> Unstage
+            <icons.Unstage size={12} /> {t('Unstage')}
           </button>
         )}
       </div>
@@ -165,7 +167,7 @@ export function HunkView({
           const allOn = ids.length > 0 && ids.every((id) => selected.has(id))
           return (
             <div key={hi}>
-              <div className="hunk__header" onClick={() => toggleHunk(hunk)} title="Toggle this hunk">
+              <div className="hunk__header" onClick={() => toggleHunk(hunk)} title={t('Toggle this hunk')}>
                 <span className="hunk__toggle">{allOn ? '−' : '+'}</span>
                 <span>
                   @@ −{hunk.oldStart} +{hunk.newStart} @@
@@ -190,7 +192,7 @@ export function HunkView({
                     <span className="hunk__marker">{line.kind}</span>
                     <span className="hunk__text">
                       {line.text || ' '}
-                      {line.noEol && <span className="hunk__noeol"> ↵ no newline at end of file</span>}
+                      {line.noEol && <span className="hunk__noeol"> ↵ {t('no newline at end of file')}</span>}
                     </span>
                   </div>
                 )
