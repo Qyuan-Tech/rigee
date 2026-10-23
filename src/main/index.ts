@@ -4155,8 +4155,9 @@ async function runVideoSmoke(): Promise<void> {
  * it is, its main half loaded only then; the document is drawn — GitHub's heading anchors, a
  * table, a task list, an alert, the front matter, code coloured without losing a tab — and nothing
  * hostile in it survives: no script runs, no style, no borrowed class, no bare id; a picture on disk
- * is shown and one on the web is not fetched until asked for; links go where they say and the
- * window never navigates; and the file changing, going and coming back is followed on screen.
+ * is shown and one on the web is not fetched until asked for; Cmd+F finds in the document as it
+ * reads, and keeps finding as the file grows; links go where they say and the window never
+ * navigates; and the file changing, going and coming back is followed on screen.
  *
  * The picture "on the web" is served from here, so every request for it is counted. RIGEE_SHOT
  * leaves a PNG of the preview.
@@ -4211,6 +4212,12 @@ async function runMarkdownSmoke(): Promise<void> {
     '',
     '- [x] done',
     '- [ ] todo',
+    '',
+    '<details><summary>More</summary>',
+    '',
+    'Folded away: a needle.',
+    '',
+    '</details>',
     '',
     '```ts',
     code + '```',
@@ -4562,6 +4569,89 @@ async function runMarkdownSmoke(): Promise<void> {
     })()`)
     trail.push(`a picture written after the document, shown at its next change: ${late}`)
     if (!late) return finish(false, 'a-picture-that-turned-up-was-not-shown')
+
+    // --- find in the document -----------------------------------------------------------------------
+    // Cmd+F in the preview. Matches are painted, not marked up, so the document stays the nodes it
+    // was; text is found as it reads — across bold, across coloured code's tokens, in any case — and
+    // never from one block into the next; a match folded in a <details> is opened to.
+    const finds = await js<Record<string, unknown>>(`(async () => {
+      ${helpers}
+      const scroller = document.querySelector('.markdown__scroller')
+      const box = () => document.querySelector('.markdown__findbox')
+      const painted = (name) => CSS.highlights.get(name)?.size ?? 0
+      const said = () => document.querySelector('.markdown__findcount')?.textContent + ' (' + painted('markdown-find') + '/' + painted('markdown-find-active') + ')'
+      const key = (target, key, more = {}) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...more }))
+      const type = async (text) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(box(), text)
+        box().dispatchEvent(new Event('input', { bubbles: true }))
+        await sleep(150)
+        return said()
+      }
+      const enter = async (shift = false) => { key(box(), 'Enter', { shiftKey: shift }); await sleep(150); return said() }
+      const inView = () => {
+        const range = [...(CSS.highlights.get('markdown-find-active') ?? [])][0]
+        if (!range) return false
+        const r = range.getBoundingClientRect(), v = scroller.getBoundingClientRect()
+        return r.height > 0 && r.top >= v.top && r.bottom <= v.bottom
+      }
+      const nodes = doc().querySelectorAll('*').length
+      scroller.scrollTop = 0
+      scroller.focus()
+      key(scroller, 'f', ${JSON.stringify(process.platform === 'darwin' ? { metaKey: true } : { ctrlKey: true })})
+      if (!(await until(() => box() && document.activeElement === box(), 3000))) return { ok: false, stage: 'cmd-f-opened-no-find-bar' }
+      const filler = await type('FILLER   paragraph 1')
+      const next = await enter()
+      const wrapped = [await enter(true), await enter(true)]
+      const last = { top: Math.round(scroller.scrollTop), inView: inView() }
+      const bold = await type('some bold')
+      const code = await type('const tabbed')
+      const across = await type('done todo')
+      const details = doc().querySelector('details')
+      const needle = await type('needle')
+      return {
+        ok: true, filler, next, wrapped, last, bold, code, across, needle,
+        opened: details?.open, needleInView: inView(), sameNodes: doc().querySelectorAll('*').length === nodes
+      }
+    })()`)
+    trail.push(`find: ${JSON.stringify(finds)}`)
+    if (!finds.ok) return finish(false, finds.stage as string, finds)
+    // The fillers 1 and 10 to 19, twice over; "1 of" because the reader was at the top.
+    if (finds.filler !== '1 of 22 (22/1)' || finds.next !== '2 of 22 (22/1)') return finish(false, 'find-counted-wrong', finds)
+    if (JSON.stringify(finds.wrapped) !== '["1 of 22 (22/1)","22 of 22 (22/1)"]') return finish(false, 'find-did-not-wrap', finds)
+    if (!(finds.last as { inView: boolean }).inView || (finds.last as { top: number }).top < 300) return finish(false, 'find-did-not-scroll-to-the-match', finds)
+    if (finds.bold !== '1 of 1 (1/1)' || finds.code !== '1 of 1 (1/1)') return finish(false, 'find-missed-text-split-across-elements', finds)
+    if (finds.across !== 'No results (0/0)') return finish(false, 'find-ran-from-one-block-into-the-next', finds)
+    if (finds.needle !== '1 of 1 (1/1)' || finds.opened !== true || !finds.needleInView) return finish(false, 'find-did-not-open-the-details-it-found-in', finds)
+    if (!finds.sameNodes) return finish(false, 'find-changed-the-document', finds)
+
+    // The file grows under the open bar, as a plan an agent is writing does: the new match is
+    // counted, the bar stays on the one it was on, and the reader — who has scrolled away from it
+    // by hand — is not taken back there.
+    const before = await js<number>(`(() => { const s = document.querySelector('.markdown__scroller'); s.scrollTop = 1500; return s.scrollTop })()`)
+    writeFileSync(readme, readmeText + '\n## Late\n\nThe picture is there now.\n\nAnother needle, written while the bar was open.\n')
+    const grown = await js<Record<string, unknown>>(`(async () => {
+      ${helpers}
+      const scroller = document.querySelector('.markdown__scroller')
+      const count = () => document.querySelector('.markdown__findcount')?.textContent
+      const counted = await until(() => count() === '1 of 2', 5000)
+      const top = scroller.scrollTop
+      document.querySelector('.markdown__findbox').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      await sleep(150)
+      return {
+        counted: !!counted, top,
+        closed: !document.querySelector('.markdown__findbox'),
+        painted: (CSS.highlights.get('markdown-find')?.size ?? 0) + (CSS.highlights.get('markdown-find-active')?.size ?? 0),
+        // The range's own text: the match may be folded away again, in the <details> the redraw made.
+        selected: window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0).toString() : null,
+        focused: document.activeElement === scroller,
+        offered: !!bar('Find')
+      }
+    })()`)
+    trail.push(`find, the file growing under it: ${JSON.stringify({ before, ...grown })}`)
+    if (!grown.counted) return finish(false, 'find-did-not-follow-the-file', grown)
+    if (Math.abs((grown.top as number) - before) > 1) return finish(false, 'find-moved-the-reader-on-a-redraw', { before, ...grown })
+    if (!grown.closed || grown.painted !== 0 || !grown.focused || !grown.offered) return finish(false, 'escape-did-not-close-find', grown)
+    if (grown.selected !== 'needle') return finish(false, 'closing-find-did-not-select-the-match', grown)
 
     // Read from below the tall picture, and measure what the reader sees — where the Install heading
     // sits — while the file grows at its end, as a plan an agent is writing does. Nothing above the
