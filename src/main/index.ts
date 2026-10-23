@@ -4625,8 +4625,8 @@ async function runMarkdownSmoke(): Promise<void> {
     if (!finds.sameNodes) return finish(false, 'find-changed-the-document', finds)
 
     // The file grows under the open bar, as a plan an agent is writing does: the new match is
-    // counted, the bar stays on the one it was on, and the reader — who has scrolled away from it
-    // by hand — is not taken back there.
+    // counted, the bar stays on the one it was on, the <details> it opened stays open, and the
+    // reader — who has scrolled away from it by hand — is not taken back there.
     const before = await js<number>(`(() => { const s = document.querySelector('.markdown__scroller'); s.scrollTop = 1500; return s.scrollTop })()`)
     writeFileSync(readme, readmeText + '\n## Late\n\nThe picture is there now.\n\nAnother needle, written while the bar was open.\n')
     const grown = await js<Record<string, unknown>>(`(async () => {
@@ -4635,14 +4635,14 @@ async function runMarkdownSmoke(): Promise<void> {
       const count = () => document.querySelector('.markdown__findcount')?.textContent
       const counted = await until(() => count() === '1 of 2', 5000)
       const top = scroller.scrollTop
+      const unfolded = doc().querySelector('details')?.open
       document.querySelector('.markdown__findbox').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
       await sleep(150)
       return {
-        counted: !!counted, top,
+        counted: !!counted, top, unfolded,
         closed: !document.querySelector('.markdown__findbox'),
         painted: (CSS.highlights.get('markdown-find')?.size ?? 0) + (CSS.highlights.get('markdown-find-active')?.size ?? 0),
-        // The range's own text: the match may be folded away again, in the <details> the redraw made.
-        selected: window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0).toString() : null,
+        selected: String(window.getSelection()),
         focused: document.activeElement === scroller,
         offered: !!bar('Find')
       }
@@ -4650,6 +4650,7 @@ async function runMarkdownSmoke(): Promise<void> {
     trail.push(`find, the file growing under it: ${JSON.stringify({ before, ...grown })}`)
     if (!grown.counted) return finish(false, 'find-did-not-follow-the-file', grown)
     if (Math.abs((grown.top as number) - before) > 1) return finish(false, 'find-moved-the-reader-on-a-redraw', { before, ...grown })
+    if (grown.unfolded !== true) return finish(false, 'a-redraw-folded-the-details-away-again', grown)
     if (!grown.closed || grown.painted !== 0 || !grown.focused || !grown.offered) return finish(false, 'escape-did-not-close-find', grown)
     if (grown.selected !== 'needle') return finish(false, 'closing-find-did-not-select-the-match', grown)
 
@@ -4682,8 +4683,9 @@ async function runMarkdownSmoke(): Promise<void> {
 
     // --- away and back ------------------------------------------------------------------------------
     // Another tab takes the column and the preview unmounts; coming back finds its pictures already
-    // here, so the page is its full height at once and the place is where it was.
-    const remount = await js<{ ok: boolean; stage?: string; at?: number | null }>(`(async () => {
+    // here, so the page is its full height at once and the place is where it was — and the
+    // <details> find opened is open again before it is laid out.
+    const remount = await js<{ ok: boolean; stage?: string; at?: number | null; unfolded?: boolean }>(`(async () => {
       ${helpers}
       const preview = tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0]
       const guide = tabsOf(${JSON.stringify(join(root, 'docs', 'guide.md'))}, 'markdown.preview')[0]
@@ -4694,10 +4696,11 @@ async function runMarkdownSmoke(): Promise<void> {
         return { ok: false, stage: 'readme-never-came-back' }
       }
       await sleep(500)
-      return { ok: true, at: ${where} }
+      return { ok: true, at: ${where}, unfolded: doc()?.querySelector('details')?.open }
     })()`)
-    trail.push(`away and back: Install heading at ${remount.at}px`)
+    trail.push(`away and back: Install heading at ${remount.at}px, the <details> find opened still open: ${remount.unfolded}`)
     if (!remount.ok) return finish(false, remount.stage ?? 'remount')
+    if (remount.unfolded !== true) return finish(false, 'coming-back-folded-the-details-away', remount)
     if (Math.abs((remount.at ?? 0) - (fresh.at ?? 0)) > 2) return finish(false, 'coming-back-lost-the-readers-place', { before: fresh.at, after: remount.at })
 
     // --- documents that render to too much ---------------------------------------------------------
