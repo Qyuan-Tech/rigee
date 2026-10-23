@@ -4157,7 +4157,8 @@ async function runVideoSmoke(): Promise<void> {
  * hostile in it survives: no script runs, no style, no borrowed class, no bare id; a picture on disk
  * is shown and one on the web is not fetched until asked for; Cmd+F finds in the document as it
  * reads, and keeps finding as the file grows; links go where they say and the window never
- * navigates; and the file changing, going and coming back is followed on screen.
+ * navigates; the file changing, going and coming back is followed on screen; and choosing Chinese
+ * in Settings puts the preview's own words into Chinese, main's included.
  *
  * The picture "on the web" is served from here, so every request for it is counted. RIGEE_SHOT
  * leaves a PNG of the preview.
@@ -4350,6 +4351,7 @@ async function runMarkdownSmoke(): Promise<void> {
         alert: d.querySelector('.markdown-alert--warning .markdown-alert__title')?.textContent,
         alertBody: d.querySelector('.markdown-alert--warning p:last-child')?.textContent,
         front: d.querySelector('.markdown-frontmatter code')?.textContent,
+        frontLabel: getComputedStyle(d.querySelector('.markdown-frontmatter'), '::before').content,
         coloured: !!coloured,
         code: code?.textContent
       }
@@ -4359,7 +4361,7 @@ async function runMarkdownSmoke(): Promise<void> {
     if (drawn.install !== 'user-content-install') return finish(false, 'heading-anchor-not-githubs', drawn)
     if (drawn.rows !== 2 || drawn.boxes !== 'xd,od') return finish(false, 'table-or-task-list-wrong', drawn)
     if (drawn.alert !== 'Warning' || drawn.alertBody !== 'Mind the gap.') return finish(false, 'alert-not-drawn', drawn)
-    if (drawn.front !== 'title: Smoke\n') return finish(false, 'front-matter-not-shown', drawn)
+    if (drawn.front !== 'title: Smoke\n' || drawn.frontLabel !== '"Front matter"') return finish(false, 'front-matter-not-shown', drawn)
     if (!drawn.coloured) return finish(false, 'code-never-coloured', drawn)
     if (drawn.code !== code) return finish(false, 'coloured-code-is-not-the-code', drawn.code)
 
@@ -4773,6 +4775,54 @@ async function runMarkdownSmoke(): Promise<void> {
     if (!renamed.ok) return finish(false, renamed.stage ?? 'rename', renamed)
     if (renamed.viewType !== 'markdown.preview' || renamed.title !== 'Preview OVERVIEW.md') return finish(false, 'a-renamed-preview-stopped-being-one', renamed)
     if (!followed) return finish(false, 'the-renamed-file-is-not-watched')
+
+    // --- in Chinese ---------------------------------------------------------------------------------
+    // Chosen in Settings with the preview open: its toolbar and find bar change at once, the shell's
+    // menu offers the preview in the manifest's own words, and the next redraw says the alert's title
+    // and why a picture is missing — the last from main — in Chinese too.
+    const chinese = await js<{ ok: boolean; stage?: string; [k: string]: unknown }>(`(async () => {
+      ${helpers}
+      store.getState().setSettingsOpen(true)
+      const select = await until(() => document.querySelector('.modal--settings .settings__select'), 10000)
+      if (!select) return { ok: false, stage: 'no-language-menu' }
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, 'zh-CN')
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await sleep(50)
+      ;[...document.querySelectorAll('.modal--settings .modal__actions .btn--primary')].pop()?.click()
+      if (!(await until(() => !document.querySelector('.modal--settings'), 5000))) return { ok: false, stage: 'settings-did-not-close' }
+      const toolbar = await until(() => bar('编辑') && bar('重新加载') && bar('查找') ? [...document.querySelectorAll('.markdown__bar .btn')].map(b => b.textContent) : null, 5000)
+      const offered = plugins.editorsOnRequest('/x/notes.md')
+      const scroller = document.querySelector('.markdown__scroller')
+      scroller.focus()
+      scroller.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true, ${process.platform === 'darwin' ? 'metaKey' : 'ctrlKey'}: true }))
+      const box = await until(() => document.querySelector('.markdown__findbox'), 3000)
+      if (!box) return { ok: false, stage: 'cmd-f-opened-no-find-bar-in-chinese' }
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(box, 'needle')
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      const count = await until(() => document.querySelector('.markdown__findcount')?.textContent?.startsWith('第') ? document.querySelector('.markdown__findcount').textContent : null, 3000)
+      const placeholder = box.placeholder
+      box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      return { ok: true, toolbar, offered, count, placeholder }
+    })()`)
+    writeFileSync(overview, readmeText + '\n## Renamed\n\nStill followed under its new name.\n\n## Chinese\n\nDrawn again in Chinese.\n')
+    // `<img src="x">` is refused by main, which says why: not a picture.
+    const redrawnInChinese = await js<{ alert?: string; front?: string; refused?: string[] | null }>(`(async () => {
+      ${helpers}
+      await until(() => doc()?.querySelector('#user-content-chinese'), 8000)
+      const box = await until(() => doc().querySelector('.markdown-image[title^="x 不"]'), 5000)
+      return {
+        alert: doc().querySelector('.markdown-alert--warning .markdown-alert__title')?.textContent,
+        front: getComputedStyle(doc().querySelector('.markdown-frontmatter'), '::before').content,
+        refused: box ? [box.textContent, box.title] : null
+      }
+    })()`)
+    trail.push(`in Chinese: ${JSON.stringify({ ...chinese, ...redrawnInChinese })}`)
+    if (!chinese.ok) return finish(false, chinese.stage ?? 'chinese', chinese)
+    if (JSON.stringify(chinese.toolbar) !== '["编辑","重新加载","查找"]') return finish(false, 'toolbar-not-in-chinese', chinese)
+    if (JSON.stringify(chinese.offered) !== '[{"viewType":"markdown.preview","label":"打开预览"}]') return finish(false, 'menu-label-not-in-chinese', chinese)
+    if (chinese.count !== '第 1 个，共 1 个' || chinese.placeholder !== '在文档中查找') return finish(false, 'find-bar-not-in-chinese', chinese)
+    if (redrawnInChinese.alert !== '警告' || redrawnInChinese.front !== '"前置元数据"') return finish(false, 'document-labels-not-in-chinese', redrawnInChinese)
+    if (JSON.stringify(redrawnInChinese.refused) !== '["图片","x 不是图片"]') return finish(false, 'mains-words-not-in-chinese', redrawnInChinese)
 
     finish(true, 'previewed')
   } catch (err) {
