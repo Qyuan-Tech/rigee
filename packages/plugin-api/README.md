@@ -140,8 +140,8 @@ needed. **The main half** has no `localize`, being React-free: it asks `ctx.shel
 time it says something and makes a `translator` from `@rigee/plugin-api/l10n`. `locale()` and
 `useLocale()` give a renderer half the language itself.
 
-All of it arrived in Rigee 1.2.0: a plugin that calls `localize`, `locale`, `useLocale` or
-`ctx.shell.locale` should say `"minAppVersion": "1.2.0"`. An older Rigee ignores `l10n`.
+All of it arrived in Rigee 1.1.1: a plugin that calls `localize`, `locale`, `useLocale` or
+`ctx.shell.locale` should say `"minAppVersion": "1.1.1"`. An older Rigee ignores `l10n`.
 
 ## Publishing, so that Rigee can find it
 
@@ -170,7 +170,7 @@ function does not bump it; removing or reshaping one does.
 
 `minAppVersion` is the oldest Rigee the plugin runs in. A function added to this package exists
 only in Rigee releases from then on, so a plugin that calls one should say so — `tokenizeCode` and
-`workerUrl` arrived in Rigee 1.1.0, and the language functions in 1.2.0. An older Rigee then refuses
+`workerUrl` arrived in Rigee 1.1.0, and the language functions in 1.1.1. An older Rigee then refuses
 the plugin by name instead of failing to link it.
 
 ## Permissions, and what they are not

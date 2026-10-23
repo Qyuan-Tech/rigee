@@ -288,7 +288,7 @@ export interface PluginManifest {
    * The manifest's own words in the other languages Rigee speaks: `displayName`, `description`, and
    * the titles and labels of its contributions, each English string as it is written above to what
    * it is in that language — `{ 'zh-CN': { 'Explorer': '资源管理器' } }`. The shell shows them in
-   * whichever language it is in, and anything missing in English. Since Rigee 1.2.0; an older Rigee
+   * whichever language it is in, and anything missing in English. Since Rigee 1.1.1; an older Rigee
    * shows the English.
    *
    * Only these words, and on purpose: a manifest is read at boot, in both realms, before any of the

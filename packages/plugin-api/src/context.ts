@@ -119,7 +119,7 @@ export interface PluginShellService {
   /**
    * The language the shell is in — `en`, `zh-CN` — for what a main half says itself: a question,
    * an error. It can change while the plugin runs, so ask each time rather than once. Since Rigee
-   * 1.2.0.
+   * 1.1.1.
    */
   locale(): Locale
   /**

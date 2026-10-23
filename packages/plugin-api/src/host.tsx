@@ -315,11 +315,11 @@ export const editorFontSize = (): number => shell().editorFontSize()
 
 /**
  * The language the shell is in — `en`, `zh-CN` — as chosen in Settings, or the system's. It can
- * change while the plugin runs. Since Rigee 1.2.0.
+ * change while the plugin runs. Since Rigee 1.1.1.
  */
 export const locale = (): Locale => shell().locale()
 
-/** The same, as a hook: re-renders when the user switches language. Since Rigee 1.2.0. */
+/** The same, as a hook: re-renders when the user switches language. Since Rigee 1.1.1. */
 export const useLocale = (): Locale => shell().useLocale()
 
 /** A plugin's own words, in the shell's language. See `localize`. */
@@ -344,7 +344,7 @@ export interface Localized {
  *
  * Anything the table does not have is said in English. A main half has no `localize`, being
  * React-free: it gets the language from `ctx.shell.locale()` and makes a `translator` of its own,
- * from `@rigee/plugin-api/l10n`. Since Rigee 1.2.0.
+ * from `@rigee/plugin-api/l10n`. Since Rigee 1.1.1.
  */
 export function localize(translations: Translations): Localized {
   let cached: Translator | null = null
