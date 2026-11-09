@@ -4157,11 +4157,13 @@ async function runVideoSmoke(): Promise<void> {
  * hostile in it survives: no script runs, no style, no borrowed class, no bare id; a picture on disk
  * is shown and one on the web is not fetched until asked for; Cmd+F finds in the document as it
  * reads, and keeps finding as the file grows; links go where they say and the window never
- * navigates; the file changing, going and coming back is followed on screen; and choosing Chinese
- * in Settings puts the preview's own words into Chinese, main's included.
+ * navigates; Mermaid diagrams are drawn as pictures that leave nothing of Mermaid's in the page,
+ * stay put while the file changes around them and never flash their text when edited; the file
+ * changing, going and coming back is followed on screen; and choosing Chinese in Settings puts the
+ * preview's own words into Chinese, main's included.
  *
  * The picture "on the web" is served from here, so every request for it is counted. RIGEE_SHOT
- * leaves a PNG of the preview.
+ * leaves a PNG of the preview, and one of the diagrams beside it.
  */
 async function runMarkdownSmoke(): Promise<void> {
   const wc = shellWc()
@@ -4262,6 +4264,26 @@ async function runMarkdownSmoke(): Promise<void> {
   const refs = join(root, 'docs', 'refs.md')
   writeFileSync(wide, `|${Array.from({ length: 1000 }, (_, i) => `c${i}`).join('|')}|\n|${'-|'.repeat(1000)}\n${'|a|\n'.repeat(2000)}`)
   writeFileSync(refs, `[d]: https://e.com/${'a'.repeat(5000)}\n\n${'[x][d] '.repeat(20000)}\n`)
+  // Mermaid: two diagrams, one whose labels try to run script, and three that are not drawn — a
+  // kind Mermaid does not know, one cut off mid-edge, and one longer than the preview draws.
+  const diagrams = join(root, 'docs', 'diagrams.md')
+  const fence = (body: string): string => ['```mermaid', body, '```', ''].join('\n')
+  const flow = (plan: string): string => `flowchart LR\n  A[${plan}] --> B{Agent}\n  B -->|writes| C[Code<br>and tests]\n  B -->|asks| D((You))`
+  const diagramsText = (plan: string, after = ''): string => [
+    '# Diagrams',
+    '',
+    fence(flow(plan)),
+    fence('sequenceDiagram\n  accTitle: Rigee and the preview\n  participant R as Rigee\n  participant P as Preview\n  R->>P: the file changed\n  P-->>R: drawn again'),
+    fence('flowchart TD\n  X["<img src=x onerror=window.__mdPwned=\'mermaid\'>"] --> Y["<a href=\'javascript:window.__mdPwned=1\'>y</a><script>window.__mdPwned=2</script>"]'),
+    fence('not a diagram at all'),
+    fence('flowchart TD\n  A -->'),
+    fence(`flowchart TD\n  %% ${'x'.repeat(50_000)}\n  A --> B`),
+    '## After',
+    '',
+    `Text below the diagrams.${after}`,
+    ''
+  ].join('\n')
+  writeFileSync(diagrams, diagramsText('Plan'))
   writeFileSync(source, 'export const a = 1\nexport const b = 2\nexport const c = 3\n')
 
   const helpers = `
@@ -4728,6 +4750,101 @@ async function runMarkdownSmoke(): Promise<void> {
     if (!bombs.wide || bombs.table) return finish(false, 'oversized-table-was-built', bombs)
     if (bombs.refs !== 'This document renders to more than the preview can show.') return finish(false, 'link-expansion-not-stopped', bombs)
 
+    // --- Mermaid diagrams ----------------------------------------------------------------------------
+    // Drawn as pictures, never as markup: an SVG in an <img> that decodes at its own size, and no
+    // <svg>, <style> or element of Mermaid's left in the shell's page. A label's script runs
+    // nowhere. A diagram that cannot be drawn says why over the text it was written as.
+    const shownDiagrams = await js<{ ok: boolean; stage?: string; [k: string]: unknown }>(`(async () => {
+      ${helpers}
+      const styles = document.querySelectorAll('style').length
+      store.getState().openTab('ws-markdown', {
+        id: 'md-diagrams', kind: 'editor', title: 'Preview diagrams.md', pinned: false,
+        filePath: ${JSON.stringify(diagrams)}, repoId: null, readOnly: false, viewType: 'markdown.preview'
+      })
+      const pictures = () => [...(doc()?.querySelectorAll('.markdown-mermaid--drawn img') ?? [])]
+      const ready = await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/diagrams.md'
+        && pictures().length === 3 && doc().querySelectorAll('.markdown-mermaid--failed').length === 3
+        && pictures().every(i => i.complete && i.naturalWidth > 0), 30000)
+      if (!ready) {
+        return { ok: false, stage: 'diagrams-never-drawn', drawn: pictures().length, html: doc()?.innerHTML.slice(0, 2000) }
+      }
+      await sleep(300)
+      const failed = [...doc().querySelectorAll('.markdown-mermaid--failed')]
+      return {
+        ok: true,
+        sizes: pictures().map(i => [i.naturalWidth, i.naturalHeight, Number(i.getAttribute('width')), Number(i.getAttribute('height'))]),
+        sources: pictures().map(i => i.src.slice(0, 30)),
+        alts: pictures().map(i => i.alt),
+        failed: failed.map(f => [f.querySelector('.markdown-mermaid__said')?.textContent, f.querySelector('.markdown-mermaid__reason')?.textContent.slice(0, 60)]),
+        written: failed.map(f => f.querySelector('pre code.language-mermaid')?.textContent.slice(0, 20)),
+        markup: doc().querySelectorAll('svg, style, foreignObject, script').length,
+        leftover: document.querySelectorAll('.markdown-mermaid-stage, [id^="markdown-mermaid-"], [id^="dmarkdown-mermaid-"], .mermaidTooltip, #cy').length,
+        styles: document.querySelectorAll('style').length - styles,
+        ran: window.__mdPwned ?? null
+      }
+    })()`)
+    trail.push(`diagrams: ${JSON.stringify(shownDiagrams)}`)
+    if (!shownDiagrams.ok) return finish(false, shownDiagrams.stage ?? 'diagrams', shownDiagrams)
+    if (shownDiagrams.ran !== null) return finish(false, 'a-diagram-ran-script', shownDiagrams)
+    if (shownDiagrams.markup !== 0 || shownDiagrams.leftover !== 0 || shownDiagrams.styles !== 0) {
+      return finish(false, 'mermaid-left-markup-in-the-page', shownDiagrams)
+    }
+    const sizes = shownDiagrams.sizes as number[][]
+    if (!sizes.every(([w, h, aw, ah]) => w === aw && h === ah && w > 50 && h > 50)) return finish(false, 'diagram-picture-not-at-its-own-size', shownDiagrams)
+    if (!(shownDiagrams.sources as string[]).every((s) => s.startsWith('data:image/svg+xml'))) return finish(false, 'diagram-not-a-picture', shownDiagrams)
+    if (JSON.stringify(shownDiagrams.alts) !== '["Diagram","Rigee and the preview","Diagram"]') return finish(false, 'diagram-alt-text-wrong', shownDiagrams)
+    const failed = shownDiagrams.failed as string[][]
+    if (!failed.every(([said]) => said === 'This diagram could not be drawn.')) return finish(false, 'diagram-failure-not-said', shownDiagrams)
+    if (failed[0]?.[1] !== 'Mermaid does not know this kind of diagram.') return finish(false, 'unknown-diagram-not-said', shownDiagrams)
+    if (!failed[1]?.[1]?.startsWith('Parse error on line')) return finish(false, 'parse-error-not-said', shownDiagrams)
+    if (!/^This diagram is \d+ characters long, past the 50000/.test(failed[2]?.[1] ?? '')) return finish(false, 'long-diagram-not-refused', shownDiagrams)
+    if (JSON.stringify(shownDiagrams.written) !== JSON.stringify(['not a diagram at all', 'flowchart TD\n  A -->', 'flowchart TD\n  %% xx'])) {
+      return finish(false, 'undrawn-diagram-not-shown-as-written', shownDiagrams)
+    }
+    if (process.env.RIGEE_SHOT) writeFileSync(process.env.RIGEE_SHOT.replace(/(\.png)?$/, '-diagrams.png'), (await wc.capturePage()).toPNG())
+
+    // The file changes below the diagrams, as a plan an agent is writing does: each picture stays
+    // the element it was, never drawn again. Then the first diagram is edited: until it is drawn
+    // again the picture it had stays in its place, and its text never reaches the page.
+    // Anything put on the page with the edited diagram's text in it: there should never be any.
+    await js(`(() => {
+      window.__mdFirst = document.querySelector('.markdown__doc .markdown-mermaid--drawn')
+      window.__mdSeen = []
+      window.__mdWatch = new MutationObserver((records) => {
+        for (const r of records) for (const n of r.addedNodes) {
+          if (n.textContent?.includes('Plan v2')) window.__mdSeen.push(n.nodeName + ': ' + n.textContent.slice(0, 40))
+        }
+      })
+      window.__mdWatch.observe(document.querySelector('.markdown__doc'), { childList: true, subtree: true, characterData: true })
+    })()`)
+    writeFileSync(diagrams, diagramsText('Plan', ' And more, written while it was open.'))
+    const kept = await js<{ redrawn: boolean; same: boolean }>(`(async () => {
+      ${helpers}
+      const redrawn = !!(await until(() => doc()?.textContent.includes('And more'), 5000))
+      return { redrawn, same: doc().querySelector('.markdown-mermaid--drawn') === window.__mdFirst }
+    })()`)
+    writeFileSync(diagrams, diagramsText('Plan v2', ' And more, written while it was open.'))
+    const reworked = await js<{ redrawn: boolean; seen: string[] }>(`(async () => {
+      ${helpers}
+      const old = window.__mdFirst.querySelector('img').src
+      const redrawn = !!(await until(() => {
+        const img = doc()?.querySelector('.markdown-mermaid img')
+        return img && img.src !== old && img.complete && img.naturalWidth > 0
+      }, 10000))
+      window.__mdWatch.disconnect()
+      return { redrawn, seen: window.__mdSeen }
+    })()`)
+    trail.push(`a change below the diagrams kept their pictures as they were: ${JSON.stringify(kept)}; editing one: ${JSON.stringify(reworked)}`)
+    if (!kept.redrawn || !kept.same) return finish(false, 'a-redraw-drew-an-unchanged-diagram-again', kept)
+    if (!reworked.redrawn) return finish(false, 'an-edited-diagram-was-not-drawn-again', reworked)
+    if (reworked.seen.length !== 0) return finish(false, 'an-edited-diagram-flashed-its-text', reworked)
+    await js(`(async () => {
+      ${helpers}
+      store.getState().closeTab('ws-markdown', 'md-diagrams')
+      store.getState().setActiveTab('ws-markdown', tabsOf(${JSON.stringify(readme)}, 'markdown.preview')[0].id)
+      await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/README.md' && doc()?.querySelector('h1'))
+    })()`)
+
     // --- the folder goes, and comes back --------------------------------------------------------------
     // A checkout of a branch without it, and back again: the preview says what happened, and then
     // follows the file again — including the change after, which needs the folder watched anew.
@@ -4816,13 +4933,29 @@ async function runMarkdownSmoke(): Promise<void> {
         refused: box ? [box.textContent, box.title] : null
       }
     })()`)
-    trail.push(`in Chinese: ${JSON.stringify({ ...chinese, ...redrawnInChinese })}`)
+    // A diagram Mermaid does not know, remembered from when the preview was in English, is said not
+    // to be drawn in Chinese: what is remembered is why, not the words for it.
+    writeFileSync(diagrams, diagramsText('Plan'))
+    const diagramInChinese = await js<string[] | null>(`(async () => {
+      ${helpers}
+      store.getState().openTab('ws-markdown', {
+        id: 'md-diagrams-zh', kind: 'editor', title: 'Preview diagrams.md', pinned: false,
+        filePath: ${JSON.stringify(diagrams)}, repoId: null, readOnly: false, viewType: 'markdown.preview'
+      })
+      const failed = await until(() => document.querySelector('.markdown__where')?.textContent === 'docs/diagrams.md'
+        && doc()?.querySelector('.markdown-mermaid--failed'), 10000)
+      const said = failed ? [failed.querySelector('.markdown-mermaid__said')?.textContent, failed.querySelector('.markdown-mermaid__reason')?.textContent] : null
+      store.getState().closeTab('ws-markdown', 'md-diagrams-zh')
+      return said
+    })()`)
+    trail.push(`in Chinese: ${JSON.stringify({ ...chinese, ...redrawnInChinese, diagram: diagramInChinese })}`)
     if (!chinese.ok) return finish(false, chinese.stage ?? 'chinese', chinese)
     if (JSON.stringify(chinese.toolbar) !== '["编辑","重新加载","查找"]') return finish(false, 'toolbar-not-in-chinese', chinese)
     if (JSON.stringify(chinese.offered) !== '[{"viewType":"markdown.preview","label":"打开预览"}]') return finish(false, 'menu-label-not-in-chinese', chinese)
     if (chinese.count !== '第 1 个，共 1 个' || chinese.placeholder !== '在文档中查找') return finish(false, 'find-bar-not-in-chinese', chinese)
     if (redrawnInChinese.alert !== '警告' || redrawnInChinese.front !== '"前置元数据"') return finish(false, 'document-labels-not-in-chinese', redrawnInChinese)
     if (JSON.stringify(redrawnInChinese.refused) !== '["图片","x 不是图片"]') return finish(false, 'mains-words-not-in-chinese', redrawnInChinese)
+    if (JSON.stringify(diagramInChinese) !== '["无法绘制此图表。","Mermaid 不认识这种图表。"]') return finish(false, 'diagram-failure-not-in-chinese', diagramInChinese)
 
     finish(true, 'previewed')
   } catch (err) {
