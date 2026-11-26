@@ -1,7 +1,7 @@
 import { loadXterm } from './lazy'
 import { noteOutput } from './activity'
 import { notePaneFocus, notePaneOutput } from './paneWatch'
-import { editorFontSize, monoFamily } from './fonts'
+import { editorFontSize, loadTerminalFonts, monoFamily } from './fonts'
 import { platform, rpc } from './ipc'
 import { allTabs } from './groups'
 import { leaves, neighbourOf, removeLeaf, roomForPane, setLeafCwd, splitLeaf } from './paneTree'
@@ -132,7 +132,10 @@ export async function ensureTerminal(key: string): Promise<TerminalHandle> {
   if (inFlight) return inFlight
 
   const promise = (async (): Promise<TerminalHandle> => {
-    const { Terminal, FitAddon, WebglAddon, SearchAddon } = await loadXterm()
+    const [{ Terminal, FitAddon, WebglAddon, SearchAddon }] = await Promise.all([
+      loadXterm(),
+      loadTerminalFonts()
+    ])
     SearchAddonCtor = SearchAddon
 
     const fontSize = pendingFontSize.get(key) ?? editorFontSize()

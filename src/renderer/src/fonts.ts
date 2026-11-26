@@ -10,11 +10,12 @@ import { platform } from './ipc'
  * for the React chrome only, and are set *from* these constants rather than the other way round.
  */
 
-/** VS Code EDITOR_FONT_DEFAULTS.fontFamily */
+/** VS Code EDITOR_FONT_DEFAULTS.fontFamily, with a bundled Nerd Font symbol fallback. */
+const SYMBOLS = "'Symbols Nerd Font Mono'"
 const MONO: Record<string, string> = {
-  darwin: "Menlo, Monaco, 'Courier New', monospace",
-  win32: "Consolas, 'Courier New', monospace",
-  linux: "'Droid Sans Mono', 'monospace', monospace"
+  darwin: `${SYMBOLS}, Menlo, Monaco, 'Courier New', monospace`,
+  win32: `${SYMBOLS}, Consolas, 'Courier New', monospace`,
+  linux: `${SYMBOLS}, 'Droid Sans Mono', 'monospace', monospace`
 }
 
 /** VS Code DEFAULT_FONT_FAMILY (the workbench chrome) */
@@ -40,6 +41,18 @@ function pick<T>(table: Record<string, T>, fallback: T): T {
 export const monoFamily = (): string => pick(MONO, MONO.linux!)
 export const uiFamily = (): string => pick(UI, UI.linux!)
 export const editorFontSize = (): number => pick(EDITOR_SIZE, 14)
+let symbolFontReady: Promise<void> | null = null
+
+/** Load the bundled PUA font before xterm measures and caches its glyph atlas. */
+export function loadTerminalFonts(): Promise<void> {
+  if (!document.fonts) return Promise.resolve()
+  symbolFontReady ??= document.fonts
+    .load(`14px ${SYMBOLS}`, '\u{E0B0}\u{E5FA}\u{F07C}')
+    .then(() => undefined)
+    .catch((err) => console.warn('[terminal] symbol font unavailable; using platform fallback:', err))
+  return symbolFontReady
+}
+
 
 /** Workbench chrome size. VS Code uses 13px; one more, for the same reason as EDITOR_SIZE. */
 export const UI_FONT_SIZE = 14

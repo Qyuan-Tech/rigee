@@ -8073,6 +8073,12 @@ async function runTerminalSmoke(): Promise<void> {
         if (!handle.paneId) return JSON.stringify({ ok: false, stage: 'pty-never-bound', trail })
         trail.push('pty ' + handle.paneId)
 
+        const symbol = String.fromCodePoint(0xe5fa)
+        await document.fonts.load("14px 'Symbols Nerd Font Mono'", symbol)
+        const symbolFontLoaded = document.fonts.check("14px 'Symbols Nerd Font Mono'", symbol)
+        trail.push('symbol font loaded: ' + symbolFontLoaded)
+        if (!symbolFontLoaded) return JSON.stringify({ ok: false, stage: 'symbol-font-not-loaded', trail })
+
         const read = () => {
           const b = handle.term.buffer.active
           let out = ''
